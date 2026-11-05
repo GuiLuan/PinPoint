@@ -36,6 +36,14 @@ class CanvasManager {
     };
   }
 
+  boardToScreen(boardX, boardY) {
+    const { x, y, zoom } = store.state.viewport;
+    return {
+      x: boardX * zoom + x,
+      y: boardY * zoom + y
+    };
+  }
+
   bindEvents() {
     this.viewportEl.addEventListener('mousedown', (e) => {
       const isCanvasBackground = e.target === this.viewportEl ||

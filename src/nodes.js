@@ -18,11 +18,13 @@ class NodeManager {
   constructor() {
     this.containerEl = null;
     this.selectionPopoverEl = null;
+    this.capsuleActionBarEl = null;
     this.marqueeBoxEl = null;
     this.alignmentBarEl = null;
     this.viewportEl = null;
     this.currentRange = null;
     this.targetCapsule = null;
+    this.selectedCapsule = null;
     this.targetHeaderCard = null;
     this.selectedColor = '#30d158';
     this.selectedCardIds = new Set();
@@ -30,12 +32,14 @@ class NodeManager {
     this.activeDrag = null;
   }
 
-  init(containerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl) {
+  init(containerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl) {
     this.containerEl = containerEl;
     this.selectionPopoverEl = selectionPopoverEl;
+    this.capsuleActionBarEl = capsuleActionBarEl || document.getElementById('capsule-action-bar');
     this.marqueeBoxEl = marqueeBoxEl;
     this.alignmentBarEl = alignmentBarEl;
     this.viewportEl = viewportEl;
+    this.bindCapsuleActionEvents();
     this.bindSelectionEvents();
     this.bindAlignmentEvents();
     this.bindMarqueeEvents();
@@ -191,6 +195,8 @@ class NodeManager {
         e.preventDefault();
         e.stopPropagation();
         wires.clearFocus();
+        wires.dismissDropMenu(true);
+        this.clearCapsuleSelection();
         window.getSelection()?.removeAllRanges();
         this.hideSelectionPopover();
 
@@ -229,6 +235,8 @@ class NodeManager {
         e.preventDefault();
         e.stopPropagation();
         wires.clearFocus();
+        wires.dismissDropMenu(true);
+        this.clearCapsuleSelection();
         window.getSelection()?.removeAllRanges();
         this.hideSelectionPopover();
 
@@ -316,7 +324,7 @@ class NodeManager {
         color = card.headerColor;
       }
 
-      wires.startConnect(pinId, startPos, color);
+      wires.startConnect(pinId, startPos, color, e.clientX, e.clientY);
       pinEl.classList.add('pin-active');
     });
 
@@ -353,31 +361,13 @@ class NodeManager {
         wires.clearFocus();
       });
 
-      // Right click un-capsules text
+      // Right click capsule: open color customization popover (same mental model as header)
       capsule.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
         wires.clearFocus();
-
-        store.state.connections = store.state.connections.filter(c => c.fromPinId !== pinId && c.toPinId !== pinId);
-
-        const text = capsule.innerText.trim();
-        const textNode = document.createTextNode(text);
-        const cardEl = capsule.closest('.note-card');
-        const cardId = cardEl?.id.replace('card-dom-', '');
-
-        capsule.parentNode.replaceChild(textNode, capsule);
-
-        if (cardId) {
-          const card = store.state.cards.find(c => c.id === cardId);
-          if (card) {
-            card.contentHtml = cardEl.querySelector('.note-body').innerHTML;
-          }
-        }
-
-        store.commit();
-        wires.render();
-        store.scheduleAutoSave();
+        this.clearCapsuleSelection();
+        this.openPopoverForCapsule(capsule);
       });
 
       // Prevent mousedown on capsule from triggering text selection on the atomic node
@@ -387,13 +377,91 @@ class NodeManager {
         e.preventDefault();
       });
 
-      // Click capsule body to change its color
+      // Click capsule body to select it and reveal delete button
       capsule.addEventListener('click', (e) => {
         if (e.target.closest('.capsule-pin')) return;
         e.stopPropagation();
-        this.openPopoverForCapsule(capsule);
+        this.selectCapsule(capsule);
       });
     });
+  }
+
+  bindCapsuleActionEvents() {
+    if (!this.capsuleActionBarEl) return;
+    this.capsuleActionBarEl.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    const btnDelete = this.capsuleActionBarEl.querySelector('#btn-delete-capsule');
+    btnDelete?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.selectedCapsule) {
+        this.deleteCapsule(this.selectedCapsule);
+      }
+    });
+  }
+
+  selectCapsule(capsule) {
+    if (!capsule) return;
+    this.hideSelectionPopover();
+    this.clearCapsuleSelection();
+
+    this.selectedCapsule = capsule;
+    capsule.classList.add('capsule-selected');
+    this.updateCapsuleActionPosition();
+  }
+
+  clearCapsuleSelection() {
+    if (this.selectedCapsule) {
+      this.selectedCapsule.classList.remove('capsule-selected');
+      this.selectedCapsule = null;
+    }
+    if (this.capsuleActionBarEl) {
+      this.capsuleActionBarEl.style.display = 'none';
+    }
+  }
+
+  updateCapsuleActionPosition() {
+    if (!this.selectedCapsule || !this.capsuleActionBarEl) return;
+    const rects = this.selectedCapsule.getClientRects();
+    const rect = rects.length > 0 ? rects[0] : this.selectedCapsule.getBoundingClientRect();
+    if ((rect.width === 0 && rect.height === 0) || rect.bottom < 0 || rect.top > window.innerHeight) {
+      this.capsuleActionBarEl.style.display = 'none';
+      return;
+    }
+    this.capsuleActionBarEl.style.display = 'flex';
+    this.capsuleActionBarEl.style.left = `${rect.left + rect.width / 2}px`;
+    this.capsuleActionBarEl.style.top = `${rect.top}px`;
+  }
+
+  deleteCapsule(capsule) {
+    if (!capsule) return;
+    wires.clearFocus();
+    const pinId = capsule.getAttribute('data-pin-id');
+    if (pinId) {
+      store.state.connections = store.state.connections.filter(c => c.fromPinId !== pinId && c.toPinId !== pinId);
+    }
+
+    const text = capsule.innerText.trim();
+    const textNode = document.createTextNode(text);
+    const cardEl = capsule.closest('.note-card');
+    const cardId = cardEl?.id.replace('card-dom-', '');
+
+    capsule.parentNode?.replaceChild(textNode, capsule);
+
+    if (cardId) {
+      const card = store.state.cards.find(c => c.id === cardId);
+      if (card && cardEl) {
+        card.contentHtml = cardEl.querySelector('.note-body').innerHTML;
+      }
+    }
+
+    this.clearCapsuleSelection();
+    store.commit();
+    wires.render();
+    store.scheduleAutoSave();
   }
 
   setSelectedColor(color) {
@@ -418,6 +486,7 @@ class NodeManager {
   }
 
   openPopoverForCapsule(capsule) {
+    this.clearCapsuleSelection();
     window.getSelection()?.removeAllRanges();
     this.currentRange = null;
     this.targetHeaderCard = null;
@@ -432,6 +501,7 @@ class NodeManager {
   }
 
   openPopoverForHeader(card, headerEl) {
+    this.clearCapsuleSelection();
     window.getSelection()?.removeAllRanges();
     this.currentRange = null;
     this.targetCapsule = null;
@@ -449,9 +519,11 @@ class NodeManager {
     if (this.targetHeaderCard) {
       rect = this.targetHeaderCard.headerEl.getBoundingClientRect();
     } else if (this.targetCapsule) {
-      rect = this.targetCapsule.getBoundingClientRect();
+      const rects = this.targetCapsule.getClientRects();
+      rect = rects.length > 0 ? rects[0] : this.targetCapsule.getBoundingClientRect();
     } else if (this.currentRange) {
-      rect = this.currentRange.getBoundingClientRect();
+      const rects = this.currentRange.getClientRects();
+      rect = rects.length > 0 ? rects[0] : this.currentRange.getBoundingClientRect();
     }
 
     if (!rect || (rect.width === 0 && rect.height === 0)) {
@@ -544,6 +616,11 @@ class NodeManager {
     }
 
     document.addEventListener('mousedown', (e) => {
+      if (this.capsuleActionBarEl && this.capsuleActionBarEl.contains(e.target)) return;
+      if (!e.target.closest('.text-capsule')) {
+        this.clearCapsuleSelection();
+      }
+
       if (this.selectionPopoverEl && this.selectionPopoverEl.contains(e.target)) return;
       if (e.target.closest('.text-capsule, .note-header')) return;
       this.hideSelectionPopover();
@@ -914,6 +991,9 @@ class NodeManager {
       if (!isBg) return;
       if (e.button !== 0 || canvas.isSpacePressed) return;
 
+      this.clearCapsuleSelection();
+      wires.dismissDropMenu(true);
+
       this.activeMarquee = {
         startX: e.clientX,
         startY: e.clientY,
@@ -1056,12 +1136,20 @@ class NodeManager {
         return;
       }
 
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditingText) {
-        if (this.selectedCardIds.size > 0) {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (this.selectedCapsule) {
+          e.preventDefault();
+          this.deleteCapsule(this.selectedCapsule);
+          return;
+        }
+        if (!isEditingText && this.selectedCardIds.size > 0) {
           e.preventDefault();
           this.deleteSelectedCards();
         }
       } else if (e.key === 'Escape') {
+        if (this.selectedCapsule) {
+          this.clearCapsuleSelection();
+        }
         if (this.selectedCardIds.size > 0 && !wires.activeDrag) {
           this.clearSelection();
         }

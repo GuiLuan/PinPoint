@@ -99,6 +99,22 @@
     </button>
   </div>
 
+  <!-- 胶囊操作条（点击胶囊后显示删除按钮） -->
+  <div id="capsule-action-bar" class="capsule-action-bar" style="display: none;">
+    <button class="capsule-delete-btn" id="btn-delete-capsule" title="删除胶囊 (Delete)">
+      <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+      <span>删除</span>
+    </button>
+  </div>
+
+  <!-- 导线拖拽释放选单（未连接到节点时弹出） -->
+  <div id="wire-drop-menu" class="wire-drop-menu" style="display: none;">
+    <button class="wire-drop-menu-item" id="btn-wire-spawn-node">
+      <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      <span>新建节点</span>
+    </button>
+  </div>
+
   <!-- 原生 ES 模块启动 -->
   <script type="module" src="src/main.js"></script>
 </body>

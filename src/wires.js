@@ -6,13 +6,17 @@ class WireManager {
     this.svgEl = null;
     this.tempWireEl = null;
     this.connectionsGroupEl = null;
+    this.wireDropMenuEl = null;
     this.activeDrag = null;
+    this.pendingDrop = null;
     this.spawnNodeCallback = null;
   }
 
-  init(svgEl, spawnNodeCallback) {
+  init(svgEl, spawnNodeCallback, wireDropMenuEl) {
     this.svgEl = svgEl;
     this.spawnNodeCallback = spawnNodeCallback;
+    this.wireDropMenuEl = wireDropMenuEl || document.getElementById('wire-drop-menu');
+
     this.guidesGroupEl = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     this.guidesGroupEl.setAttribute('id', 'guides-group');
     this.svgEl.appendChild(this.guidesGroupEl);
@@ -24,6 +28,18 @@ class WireManager {
     this.tempWireEl.setAttribute('class', 'wire-temp');
     this.tempWireEl.style.display = 'none';
     this.svgEl.appendChild(this.tempWireEl);
+
+    if (this.wireDropMenuEl) {
+      this.wireDropMenuEl.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+      });
+      const btnSpawn = this.wireDropMenuEl.querySelector('#btn-wire-spawn-node');
+      btnSpawn?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onSpawnNodeFromMenu();
+      });
+    }
 
     this.bindGlobalEvents();
   }
@@ -143,6 +159,7 @@ class WireManager {
         e.preventDefault();
         e.stopPropagation();
         this.clearFocus();
+        this.dismissDropMenu(true);
         window.getSelection()?.removeAllRanges();
         document.body.classList.add('is-wire-dragging');
 
@@ -154,7 +171,10 @@ class WireManager {
           connId: conn.id,
           fromPinId: conn.fromPinId,
           startPos,
-          wireColor: color
+          wireColor: color,
+          startClientX: e.clientX,
+          startClientY: e.clientY,
+          moved: false
         };
 
         g.classList.add('wire-reconnecting');
@@ -166,9 +186,6 @@ class WireManager {
       hitZone.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.clearFocus();
-        store.removeConnection(conn.id);
-        this.render();
       });
 
       this.connectionsGroupEl.appendChild(g);
@@ -266,17 +283,115 @@ class WireManager {
     }
   }
 
-  startConnect(fromPinId, startPos, color) {
+  startConnect(fromPinId, startPos, color, clientX = 0, clientY = 0) {
+    this.dismissDropMenu(true);
     window.getSelection()?.removeAllRanges();
     document.body.classList.add('is-wire-dragging');
     this.activeDrag = {
       type: 'CONNECT',
       fromPinId,
       startPos,
-      wireColor: color
+      wireColor: color,
+      startClientX: clientX,
+      startClientY: clientY,
+      moved: false
     };
     this.tempWireEl.style.display = 'block';
     this.tempWireEl.style.stroke = color;
+  }
+
+  showDropMenu(clientX, clientY, dropBoardPos, dragInfo) {
+    this.pendingDrop = {
+      type: dragInfo.type,
+      connId: dragInfo.connId,
+      fromPinId: dragInfo.fromPinId,
+      wireColor: dragInfo.wireColor,
+      startPos: dragInfo.startPos,
+      dropBoardPos
+    };
+
+    if (!this.wireDropMenuEl) return;
+
+    let left = clientX + 10;
+    let top = clientY - 18;
+    const menuWidth = 130;
+    const menuHeight = 44;
+
+    if (left + menuWidth > window.innerWidth - 12) {
+      left = clientX - menuWidth - 10;
+    }
+    if (top + menuHeight > window.innerHeight - 12) {
+      top = window.innerHeight - menuHeight - 12;
+    }
+    if (top < 12) top = 12;
+
+    this.wireDropMenuEl.style.left = `${left}px`;
+    this.wireDropMenuEl.style.top = `${top}px`;
+    this.wireDropMenuEl.style.display = 'flex';
+
+    const fromDir = this.pendingDrop.fromPinId.includes('left') ? 'left' : 'right';
+    const toDir = this.pendingDrop.dropBoardPos.x < this.pendingDrop.startPos.x ? 'right' : 'left';
+    this.tempWireEl.style.display = 'block';
+    this.tempWireEl.style.stroke = this.pendingDrop.wireColor;
+    this.updateTempWire(this.pendingDrop.startPos, this.pendingDrop.dropBoardPos, fromDir, toDir);
+  }
+
+  onSpawnNodeFromMenu() {
+    if (!this.pendingDrop) return;
+    const { type, connId, fromPinId, wireColor, startPos, dropBoardPos } = this.pendingDrop;
+
+    const newNode = this.spawnNodeCallback(dropBoardPos, true);
+    const isLeft = startPos.x < dropBoardPos.x;
+    const newHeadPinId = isLeft ? `pin-head-left-${newNode.id}` : `pin-head-right-${newNode.id}`;
+
+    if (type === 'RECONNECT') {
+      store.reconnect(connId, newHeadPinId);
+    } else {
+      store.addConnection(fromPinId, newHeadPinId, wireColor);
+    }
+
+    this.dismissDropMenu(false);
+    store.commit();
+    this.render();
+    store.scheduleAutoSave();
+  }
+
+  dismissDropMenu(isDiscard = true) {
+    if (!this.pendingDrop) return;
+
+    if (isDiscard) {
+      if (this.pendingDrop.type === 'RECONNECT') {
+        store.removeConnection(this.pendingDrop.connId);
+        store.commit();
+        store.scheduleAutoSave();
+      }
+    }
+
+    this.pendingDrop = null;
+    if (this.wireDropMenuEl) {
+      this.wireDropMenuEl.style.display = 'none';
+    }
+    this.tempWireEl.style.display = 'none';
+    this.render();
+  }
+
+  updateDropMenuPosition() {
+    if (!this.pendingDrop || !this.wireDropMenuEl || this.wireDropMenuEl.style.display === 'none') return;
+    const screenPos = canvas.boardToScreen(this.pendingDrop.dropBoardPos.x, this.pendingDrop.dropBoardPos.y);
+    let left = screenPos.x + 10;
+    let top = screenPos.y - 18;
+    const menuWidth = 130;
+    const menuHeight = 44;
+    if (left + menuWidth > window.innerWidth - 12) left = screenPos.x - menuWidth - 10;
+    if (top + menuHeight > window.innerHeight - 12) top = window.innerHeight - menuHeight - 12;
+    if (top < 12) top = 12;
+
+    this.wireDropMenuEl.style.left = `${left}px`;
+    this.wireDropMenuEl.style.top = `${top}px`;
+
+    const fromDir = this.pendingDrop.fromPinId.includes('left') ? 'left' : 'right';
+    const toDir = this.pendingDrop.dropBoardPos.x < this.pendingDrop.startPos.x ? 'right' : 'left';
+    this.updateTempWire(this.pendingDrop.startPos, this.pendingDrop.dropBoardPos, fromDir, toDir);
   }
 
   bindGlobalEvents() {
@@ -286,8 +401,18 @@ class WireManager {
       }
     });
 
+    window.addEventListener('mousedown', (e) => {
+      if (this.wireDropMenuEl && this.wireDropMenuEl.contains(e.target)) return;
+      if (this.pendingDrop) {
+        this.dismissDropMenu(true);
+      }
+    });
+
     window.addEventListener('mousemove', (e) => {
       if (!this.activeDrag) return;
+      if (Math.hypot(e.clientX - this.activeDrag.startClientX, e.clientY - this.activeDrag.startClientY) > 5) {
+        this.activeDrag.moved = true;
+      }
       const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
 
       const fromDir = this.activeDrag.fromPinId.includes('left') ? 'left' : 'right';
@@ -383,7 +508,7 @@ class WireManager {
         targetPinId = pinEl?.getAttribute('data-header-pin-id');
       }
 
-      const { type, connId, fromPinId, wireColor } = this.activeDrag;
+      const { type, connId, fromPinId, wireColor, moved } = this.activeDrag;
 
       if (targetPinId && store.canConnect(fromPinId, targetPinId)) {
         if (type === 'RECONNECT') {
@@ -391,33 +516,39 @@ class WireManager {
         } else {
           store.addConnection(fromPinId, targetPinId, wireColor);
         }
-      } else if (!targetPinId && this.spawnNodeCallback) {
-        // Dragged to empty space: seamlessly spawn a pure node at cursor location!
-        const dropPos = canvas.screenToBoard(e.clientX, e.clientY);
-        const newNode = this.spawnNodeCallback(dropPos, true);
-        const isLeft = this.activeDrag.startPos.x < dropPos.x;
-        const newHeadPinId = isLeft ? `pin-head-left-${newNode.id}` : `pin-head-right-${newNode.id}`;
-
-        if (type === 'RECONNECT') {
-          store.reconnect(connId, newHeadPinId);
+        this.activeDrag = null;
+        this.render();
+      } else {
+        if (type === 'RECONNECT' && !moved) {
+          this.activeDrag = null;
+          this.render();
+        } else if (this.spawnNodeCallback) {
+          const dropPos = canvas.screenToBoard(e.clientX, e.clientY);
+          const dragInfo = this.activeDrag;
+          this.activeDrag = null;
+          this.showDropMenu(e.clientX, e.clientY, dropPos, dragInfo);
         } else {
-          store.addConnection(fromPinId, newHeadPinId, wireColor);
+          this.activeDrag = null;
+          this.render();
         }
       }
 
-      this.activeDrag = null;
-      this.render();
       window.getSelection()?.removeAllRanges();
     });
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.activeDrag) {
-        document.body.classList.remove('is-wire-dragging');
-        document.body.style.cursor = '';
-        this.tempWireEl.style.display = 'none';
-        this.activeDrag = null;
-        this.render();
-        window.getSelection()?.removeAllRanges();
+      if (e.key === 'Escape') {
+        if (this.pendingDrop) {
+          this.dismissDropMenu(true);
+        }
+        if (this.activeDrag) {
+          document.body.classList.remove('is-wire-dragging');
+          document.body.style.cursor = '';
+          this.tempWireEl.style.display = 'none';
+          this.activeDrag = null;
+          this.render();
+          window.getSelection()?.removeAllRanges();
+        }
       }
     });
   }

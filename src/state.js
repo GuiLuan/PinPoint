@@ -8,8 +8,8 @@ const DEFAULT_STATE = {
       title: '灵感源头',
       x: 140,
       y: 200,
-      width: 310,
-      contentHtml: '在这里记录最初的想法。你可以划选任意<span class="text-capsule" data-pin-id="pin-1"><i class="capsule-pin"></i>核心词汇</span>，直接连线到其他节点。'
+      width: 340,
+      contentHtml: '记录最初的想法。你可以划选任意<span class="text-capsule" data-pin-id="pin-1"><i class="capsule-pin"></i>核心词汇</span>，直接连线到其他节点。'
     },
     {
       id: 'card-2',

@@ -12,16 +12,20 @@ function initApp() {
   const marqueeBoxEl = document.getElementById('marquee-box');
   const alignmentBarEl = document.getElementById('alignment-bar');
   const fileStatusEl = document.getElementById('hud-file-status');
+  const capsuleActionBarEl = document.getElementById('capsule-action-bar');
+  const wireDropMenuEl = document.getElementById('wire-drop-menu');
 
   canvas.init(viewportEl, boardEl);
-  wires.init(wireSvgEl, (pos, skipCommit) => nodes.spawnNode(pos, '未命名节点', skipCommit));
-  nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl);
+  wires.init(wireSvgEl, (pos, skipCommit) => nodes.spawnNode(pos, '未命名节点', skipCommit), wireDropMenuEl);
+  nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl);
   window.__store = store;
   window.__nodes = nodes;
   window.__wires = wires;
   canvas.onTransform = () => {
     nodes.updatePopoverPosition();
     nodes.updateAlignmentBar();
+    nodes.updateCapsuleActionPosition();
+    wires.updateDropMenuPosition();
   };
 
   function updateStatus(text) {
