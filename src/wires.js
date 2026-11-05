@@ -13,6 +13,10 @@ class WireManager {
   init(svgEl, spawnNodeCallback) {
     this.svgEl = svgEl;
     this.spawnNodeCallback = spawnNodeCallback;
+    this.guidesGroupEl = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    this.guidesGroupEl.setAttribute('id', 'guides-group');
+    this.svgEl.appendChild(this.guidesGroupEl);
+
     this.connectionsGroupEl = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     this.svgEl.appendChild(this.connectionsGroupEl);
 
@@ -252,6 +256,26 @@ class WireManager {
     this.tempWireEl.setAttribute('d', this.createBezierPath(p1, p2));
   }
 
+  showGuideLines(lines) {
+    if (!this.guidesGroupEl) return;
+    this.guidesGroupEl.innerHTML = '';
+    lines.forEach(l => {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', l.x1);
+      line.setAttribute('y1', l.y1);
+      line.setAttribute('x2', l.x2);
+      line.setAttribute('y2', l.y2);
+      line.setAttribute('class', 'snap-guide-line');
+      this.guidesGroupEl.appendChild(line);
+    });
+  }
+
+  clearGuideLines() {
+    if (this.guidesGroupEl) {
+      this.guidesGroupEl.innerHTML = '';
+    }
+  }
+
   startConnect(fromPinId, startPos, color) {
     window.getSelection()?.removeAllRanges();
     document.body.classList.add('is-wire-dragging');
@@ -331,7 +355,7 @@ class WireManager {
       } else if (!targetPinId && this.spawnNodeCallback) {
         // Dragged to empty space: seamlessly spawn a pure node at cursor location!
         const dropPos = canvas.screenToBoard(e.clientX, e.clientY);
-        const newNode = this.spawnNodeCallback(dropPos);
+        const newNode = this.spawnNodeCallback(dropPos, true);
         const newHeadPinId = `pin-head-${newNode.id}`;
 
         if (type === 'RECONNECT') {

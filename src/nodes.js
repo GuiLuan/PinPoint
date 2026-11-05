@@ -18,20 +18,30 @@ class NodeManager {
   constructor() {
     this.containerEl = null;
     this.selectionPopoverEl = null;
+    this.marqueeBoxEl = null;
+    this.alignmentBarEl = null;
+    this.viewportEl = null;
     this.currentRange = null;
     this.targetCapsule = null;
     this.selectedColor = '#30d158';
+    this.selectedCardIds = new Set();
+    this.activeMarquee = null;
     this.activeDrag = null;
   }
 
-  init(containerEl, selectionPopoverEl) {
+  init(containerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl) {
     this.containerEl = containerEl;
     this.selectionPopoverEl = selectionPopoverEl;
+    this.marqueeBoxEl = marqueeBoxEl;
+    this.alignmentBarEl = alignmentBarEl;
+    this.viewportEl = viewportEl;
     this.bindSelectionEvents();
+    this.bindAlignmentEvents();
+    this.bindMarqueeEvents();
     this.bindGlobalGestures();
   }
 
-  spawnNode(pos, title = '未命名节点') {
+  spawnNode(pos, title = '未命名节点', skipCommit = false) {
     const card = {
       id: `card-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       title: title || '未命名节点',
@@ -40,7 +50,7 @@ class NodeManager {
       width: 310,
       contentHtml: ''
     };
-    store.addCard(card);
+    store.addCard(card, skipCommit);
     this.render();
     return card;
   }
@@ -50,7 +60,7 @@ class NodeManager {
 
     store.state.cards.forEach(card => {
       const cardEl = document.createElement('div');
-      cardEl.className = 'note-card';
+      cardEl.className = 'note-card' + (this.selectedCardIds.has(card.id) ? ' selected' : '');
       cardEl.id = `card-dom-${card.id}`;
       cardEl.style.left = `${card.x}px`;
       cardEl.style.top = `${card.y}px`;
@@ -79,7 +89,9 @@ class NodeManager {
       const titleSpan = cardEl.querySelector('.header-title');
       const titleInput = cardEl.querySelector('.header-title-input');
 
+      let prevTitle = card.title || '';
       const startTitleEdit = () => {
+        prevTitle = card.title || '';
         titleSpan.style.display = 'none';
         titleInput.style.display = 'block';
         titleInput.value = card.title || '';
@@ -90,10 +102,13 @@ class NodeManager {
       const finishTitleEdit = () => {
         if (titleInput.style.display === 'none') return;
         const newTitle = titleInput.value.trim() || '未命名节点';
+        const changed = newTitle !== prevTitle;
         card.title = newTitle;
+        prevTitle = newTitle;
         titleSpan.textContent = newTitle;
         titleInput.style.display = 'none';
         titleSpan.style.display = '';
+        if (changed) store.commit();
         store.scheduleAutoSave();
       };
 
@@ -130,6 +145,13 @@ class NodeManager {
         wires.render();
       });
 
+      cardEl.addEventListener('mousedown', (e) => {
+        if (e.shiftKey && !e.target.closest('.header-pin, .capsule-pin, .card-close-btn')) {
+          e.preventDefault();
+          this.selectCard(card.id, true);
+        }
+      });
+
       // Drag node by header
       const headerEl = cardEl.querySelector('.note-header');
       headerEl.addEventListener('mousedown', (e) => {
@@ -141,15 +163,27 @@ class NodeManager {
         window.getSelection()?.removeAllRanges();
         this.hideSelectionPopover();
 
+        if (e.shiftKey) {
+          this.selectCard(card.id, true);
+        } else if (!this.selectedCardIds.has(card.id)) {
+          this.selectCard(card.id, false);
+        }
+
         this.activeDrag = {
-          type: 'MOVE_CARD',
-          cardId: card.id,
+          type: 'MOVE_CARDS',
+          leadCardId: card.id,
           startX: e.clientX,
           startY: e.clientY,
-          initX: card.x,
-          initY: card.y
+          initialPositions: new Map(
+            [...this.selectedCardIds].map(id => {
+              const c = store.state.cards.find(x => x.id === id);
+              return [id, { x: c.x, y: c.y, width: c.width || 310 }];
+            })
+          )
         };
-        cardEl.classList.add('active');
+        this.selectedCardIds.forEach(id => {
+          document.getElementById(`card-dom-${id}`)?.classList.add('active');
+        });
       });
 
       headerEl.addEventListener('dblclick', (e) => {
@@ -180,12 +214,40 @@ class NodeManager {
       const headPinEl = cardEl.querySelector('.header-pin');
       this.bindPinEvents(headPinEl, headPinId);
 
-      // Body input
+      // Body input & keyboard events
       const bodyEl = cardEl.querySelector('.note-body');
+      let bodyTypingTimeout = null;
+
       bodyEl.addEventListener('input', () => {
         card.contentHtml = bodyEl.innerHTML;
         wires.render();
         store.scheduleAutoSave();
+
+        clearTimeout(bodyTypingTimeout);
+        bodyTypingTimeout = setTimeout(() => {
+          store.commit();
+        }, 700);
+      });
+
+      bodyEl.addEventListener('blur', () => {
+        clearTimeout(bodyTypingTimeout);
+        store.commit();
+      });
+
+      bodyEl.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
+          e.preventDefault();
+          document.execCommand('redo');
+          card.contentHtml = bodyEl.innerHTML;
+          wires.render();
+          store.scheduleAutoSave();
+        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+          setTimeout(() => {
+            card.contentHtml = bodyEl.innerHTML;
+            wires.render();
+            store.scheduleAutoSave();
+          }, 0);
+        }
       });
 
       this.containerEl.appendChild(cardEl);
@@ -271,6 +333,7 @@ class NodeManager {
           }
         }
 
+        store.commit();
         wires.render();
         store.scheduleAutoSave();
       });
@@ -432,7 +495,7 @@ class NodeManager {
       if (this.selectionPopoverEl && this.selectionPopoverEl.style.display === 'flex') {
         if (e.key === 'Escape') {
           this.hideSelectionPopover();
-        } else if (e.key === 'Enter' && !e.target.closest('input, [contenteditable="true"]')) {
+        } else if (e.key === 'Enter' && !e.target?.closest?.('input, [contenteditable="true"]')) {
           e.preventDefault();
           this.applyColor();
         }
@@ -476,6 +539,7 @@ class NodeManager {
       }
     }
 
+    store.commit();
     wires.render();
     store.scheduleAutoSave();
   }
@@ -515,54 +579,419 @@ class NodeManager {
     }
 
     this.bindCapsuleEvents();
+    store.commit();
     wires.render();
     store.scheduleAutoSave();
   }
 
+  selectCard(cardId, isShift = false) {
+    if (isShift) {
+      if (this.selectedCardIds.has(cardId)) {
+        this.selectedCardIds.delete(cardId);
+      } else {
+        this.selectedCardIds.add(cardId);
+      }
+    } else {
+      this.selectedCardIds.clear();
+      this.selectedCardIds.add(cardId);
+    }
+    this.updateSelectionVisuals();
+    this.updateAlignmentBar();
+  }
+
+  clearSelection() {
+    this.selectedCardIds.clear();
+    this.updateSelectionVisuals();
+    this.updateAlignmentBar();
+  }
+
+  filterSelectionAfterRestore() {
+    this.selectedCardIds = new Set(
+      [...this.selectedCardIds].filter(id => store.state.cards.some(c => c.id === id))
+    );
+  }
+
+  updateSelectionVisuals() {
+    document.querySelectorAll('.note-card').forEach(cardEl => {
+      const cardId = cardEl.id.replace('card-dom-', '');
+      cardEl.classList.toggle('selected', this.selectedCardIds.has(cardId));
+    });
+  }
+
+  updateAlignmentBar() {
+    if (!this.alignmentBarEl) return;
+    const count = this.selectedCardIds.size;
+    if (count >= 2) {
+      this.alignmentBarEl.style.display = 'flex';
+      const distributeH = this.alignmentBarEl.querySelector('#btn-distribute-h');
+      const distributeV = this.alignmentBarEl.querySelector('#btn-distribute-v');
+      if (distributeH) {
+        distributeH.style.opacity = count >= 3 ? '1' : '0.35';
+        distributeH.style.pointerEvents = count >= 3 ? 'auto' : 'none';
+      }
+      if (distributeV) {
+        distributeV.style.opacity = count >= 3 ? '1' : '0.35';
+        distributeV.style.pointerEvents = count >= 3 ? 'auto' : 'none';
+      }
+    } else {
+      this.alignmentBarEl.style.display = 'none';
+    }
+  }
+
+  deleteSelectedCards() {
+    if (this.selectedCardIds.size === 0) return;
+    const toDelete = [...this.selectedCardIds];
+    store.removeCards(toDelete);
+    this.clearSelection();
+    this.render();
+    wires.render();
+    store.scheduleAutoSave();
+  }
+
+  bindAlignmentEvents() {
+    if (!this.alignmentBarEl) return;
+    const actions = {
+      'btn-align-left': 'left',
+      'btn-align-center-h': 'center-h',
+      'btn-align-right': 'right',
+      'btn-align-top': 'top',
+      'btn-align-center-v': 'center-v',
+      'btn-align-bottom': 'bottom',
+      'btn-distribute-h': 'distribute-h',
+      'btn-distribute-v': 'distribute-v'
+    };
+
+    Object.entries(actions).forEach(([btnId, type]) => {
+      this.alignmentBarEl.querySelector(`#${btnId}`)?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.align(type);
+      });
+    });
+  }
+
+  align(type) {
+    if (this.selectedCardIds.size < 2) return;
+    const cards = store.state.cards.filter(c => this.selectedCardIds.has(c.id));
+    if (cards.length < 2) return;
+
+    cards.forEach(c => {
+      const el = document.getElementById(`card-dom-${c.id}`);
+      c.domWidth = el?.offsetWidth || c.width || 310;
+      c.domHeight = el?.offsetHeight || 140;
+    });
+
+    const minX = Math.min(...cards.map(c => c.x));
+    const maxX = Math.max(...cards.map(c => c.x + c.domWidth));
+    const minY = Math.min(...cards.map(c => c.y));
+    const maxY = Math.max(...cards.map(c => c.y + c.domHeight));
+
+    switch (type) {
+      case 'left':
+        cards.forEach(c => { c.x = minX; });
+        break;
+      case 'center-h':
+        const centerX = (minX + maxX) / 2;
+        cards.forEach(c => { c.x = Math.round(centerX - c.domWidth / 2); });
+        break;
+      case 'right':
+        cards.forEach(c => { c.x = Math.round(maxX - c.domWidth); });
+        break;
+      case 'top':
+        cards.forEach(c => { c.y = minY; });
+        break;
+      case 'center-v':
+        const centerY = (minY + maxY) / 2;
+        cards.forEach(c => { c.y = Math.round(centerY - c.domHeight / 2); });
+        break;
+      case 'bottom':
+        cards.forEach(c => { c.y = Math.round(maxY - c.domHeight); });
+        break;
+      case 'distribute-h':
+        if (cards.length >= 3) {
+          cards.sort((a, b) => a.x - b.x);
+          const totalWidth = cards.reduce((sum, c) => sum + c.domWidth, 0);
+          const totalSpan = (cards[cards.length - 1].x + cards[cards.length - 1].domWidth) - cards[0].x;
+          const gap = (totalSpan - totalWidth) / (cards.length - 1);
+          let curX = cards[0].x;
+          cards.forEach((c, idx) => {
+            if (idx > 0 && idx < cards.length - 1) {
+              c.x = Math.round(curX);
+            }
+            curX += c.domWidth + gap;
+          });
+        }
+        break;
+      case 'distribute-v':
+        if (cards.length >= 3) {
+          cards.sort((a, b) => a.y - b.y);
+          const totalHeight = cards.reduce((sum, c) => sum + c.domHeight, 0);
+          const totalSpan = (cards[cards.length - 1].y + cards[cards.length - 1].domHeight) - cards[0].y;
+          const gap = (totalSpan - totalHeight) / (cards.length - 1);
+          let curY = cards[0].y;
+          cards.forEach((c, idx) => {
+            if (idx > 0 && idx < cards.length - 1) {
+              c.y = Math.round(curY);
+            }
+            curY += c.domHeight + gap;
+          });
+        }
+        break;
+    }
+
+    cards.forEach(c => {
+      const el = document.getElementById(`card-dom-${c.id}`);
+      if (el) {
+        el.style.left = `${c.x}px`;
+        el.style.top = `${c.y}px`;
+      }
+    });
+
+    store.commit();
+    wires.render();
+    store.scheduleAutoSave();
+  }
+
+  calcSnap(leadCard, candidateX, candidateY) {
+    const leadEl = document.getElementById(`card-dom-${leadCard.id}`);
+    const leadW = leadEl?.offsetWidth || leadCard.width || 310;
+    const leadH = leadEl?.offsetHeight || 140;
+
+    const threshold = 8;
+    const otherCards = store.state.cards.filter(c => !this.selectedCardIds.has(c.id));
+
+    let bestX = { dist: threshold + 1, delta: 0, guide: null };
+    let bestY = { dist: threshold + 1, delta: 0, guide: null };
+
+    otherCards.forEach(target => {
+      const targetEl = document.getElementById(`card-dom-${target.id}`);
+      const targetW = targetEl?.offsetWidth || target.width || 310;
+      const targetH = targetEl?.offsetHeight || 140;
+
+      const candXPairs = [
+        { cand: candidateX, target: target.x },
+        { cand: candidateX, target: target.x + targetW },
+        { cand: candidateX + leadW, target: target.x },
+        { cand: candidateX + leadW, target: target.x + targetW },
+        { cand: candidateX + leadW / 2, target: target.x + targetW / 2 }
+      ];
+
+      candXPairs.forEach(p => {
+        const diff = p.target - p.cand;
+        if (Math.abs(diff) < bestX.dist) {
+          bestX = {
+            dist: Math.abs(diff),
+            delta: diff,
+            guide: {
+              x1: p.target,
+              y1: Math.min(candidateY, target.y) - 24,
+              x2: p.target,
+              y2: Math.max(candidateY + leadH, target.y + targetH) + 24
+            }
+          };
+        }
+      });
+
+      const candYPairs = [
+        { cand: candidateY, target: target.y },
+        { cand: candidateY, target: target.y + targetH },
+        { cand: candidateY + leadH, target: target.y },
+        { cand: candidateY + leadH, target: target.y + targetH },
+        { cand: candidateY + leadH / 2, target: target.y + targetH / 2 }
+      ];
+
+      candYPairs.forEach(p => {
+        const diff = p.target - p.cand;
+        if (Math.abs(diff) < bestY.dist) {
+          bestY = {
+            dist: Math.abs(diff),
+            delta: diff,
+            guide: {
+              x1: Math.min(candidateX, target.x) - 24,
+              y1: p.target,
+              x2: Math.max(candidateX + leadW, target.x + targetW) + 24,
+              y2: p.target
+            }
+          };
+        }
+      });
+    });
+
+    const guideLines = [];
+    if (bestX.guide) guideLines.push(bestX.guide);
+    if (bestY.guide) guideLines.push(bestY.guide);
+
+    return {
+      snappedX: candidateX + bestX.delta,
+      snappedY: candidateY + bestY.delta,
+      guideLines
+    };
+  }
+
+  bindMarqueeEvents() {
+    this.viewportEl.addEventListener('mousedown', (e) => {
+      const isBg = e.target === this.viewportEl ||
+                   e.target === document.getElementById('board') ||
+                   e.target.id === 'wire-svg';
+      if (!isBg) return;
+      if (e.button !== 0 || canvas.isSpacePressed) return;
+
+      this.activeMarquee = {
+        startX: e.clientX,
+        startY: e.clientY,
+        isShift: e.shiftKey,
+        initialSelection: new Set(this.selectedCardIds),
+        moved: false
+      };
+    });
+  }
+
   bindGlobalGestures() {
     window.addEventListener('mousemove', (e) => {
-      if (!this.activeDrag) return;
-      const { zoom } = store.state.viewport;
+      if (this.activeMarquee) {
+        const dist = Math.hypot(e.clientX - this.activeMarquee.startX, e.clientY - this.activeMarquee.startY);
+        if (dist > 4) {
+          this.activeMarquee.moved = true;
+          const left = Math.min(e.clientX, this.activeMarquee.startX);
+          const top = Math.min(e.clientY, this.activeMarquee.startY);
+          const width = Math.abs(e.clientX - this.activeMarquee.startX);
+          const height = Math.abs(e.clientY - this.activeMarquee.startY);
 
-      if (this.activeDrag.type === 'MOVE_CARD') {
-        const dx = (e.clientX - this.activeDrag.startX) / zoom;
-        const dy = (e.clientY - this.activeDrag.startY) / zoom;
-        const card = store.state.cards.find(c => c.id === this.activeDrag.cardId);
-        if (card) {
-          card.x = this.activeDrag.initX + dx;
-          card.y = this.activeDrag.initY + dy;
-          const cardEl = document.getElementById(`card-dom-${card.id}`);
-          if (cardEl) {
-            cardEl.style.left = `${card.x}px`;
-            cardEl.style.top = `${card.y}px`;
+          this.marqueeBoxEl.style.display = 'block';
+          this.marqueeBoxEl.style.left = `${left}px`;
+          this.marqueeBoxEl.style.top = `${top}px`;
+          this.marqueeBoxEl.style.width = `${width}px`;
+          this.marqueeBoxEl.style.height = `${height}px`;
+
+          const marqueeRect = { left, top, right: left + width, bottom: top + height };
+          const intersected = new Set();
+
+          store.state.cards.forEach(card => {
+            const el = document.getElementById(`card-dom-${card.id}`);
+            if (!el) return;
+            const r = el.getBoundingClientRect();
+            const overlap = !(r.right < marqueeRect.left || r.left > marqueeRect.right || r.bottom < marqueeRect.top || r.top > marqueeRect.bottom);
+            if (overlap) intersected.add(card.id);
+          });
+
+          if (this.activeMarquee.isShift) {
+            this.selectedCardIds = new Set([...this.activeMarquee.initialSelection, ...intersected]);
+          } else {
+            this.selectedCardIds = intersected;
           }
-          wires.render();
+
+          this.updateSelectionVisuals();
+          this.updateAlignmentBar();
         }
-      } else if (this.activeDrag.type === 'RESIZE_CARD') {
-        const dx = (e.clientX - this.activeDrag.startX) / zoom;
-        const card = store.state.cards.find(c => c.id === this.activeDrag.cardId);
-        if (card) {
-          const newWidth = Math.max(250, Math.round(this.activeDrag.initWidth + dx));
-          card.width = newWidth;
-          const cardEl = document.getElementById(`card-dom-${card.id}`);
-          if (cardEl) {
-            cardEl.style.width = `${newWidth}px`;
+      }
+
+      if (this.activeDrag) {
+        const { zoom } = store.state.viewport;
+
+        if (this.activeDrag.type === 'MOVE_CARDS') {
+          let dx = (e.clientX - this.activeDrag.startX) / zoom;
+          let dy = (e.clientY - this.activeDrag.startY) / zoom;
+
+          const leadCard = store.state.cards.find(c => c.id === this.activeDrag.leadCardId);
+          const leadInitPos = this.activeDrag.initialPositions.get(this.activeDrag.leadCardId);
+
+          if (e.ctrlKey && leadCard && leadInitPos) {
+            const snap = this.calcSnap(leadCard, leadInitPos.x + dx, leadInitPos.y + dy);
+            dx = snap.snappedX - leadInitPos.x;
+            dy = snap.snappedY - leadInitPos.y;
+            wires.showGuideLines(snap.guideLines);
+          } else {
+            wires.clearGuideLines();
           }
+
+          this.activeDrag.initialPositions.forEach((initPos, cardId) => {
+            const card = store.state.cards.find(c => c.id === cardId);
+            if (card) {
+              card.x = Math.round(initPos.x + dx);
+              card.y = Math.round(initPos.y + dy);
+              const cardEl = document.getElementById(`card-dom-${card.id}`);
+              if (cardEl) {
+                cardEl.style.left = `${card.x}px`;
+                cardEl.style.top = `${card.y}px`;
+              }
+            }
+          });
+
           wires.render();
+        } else if (this.activeDrag.type === 'RESIZE_CARD') {
+          const dx = (e.clientX - this.activeDrag.startX) / zoom;
+          const card = store.state.cards.find(c => c.id === this.activeDrag.cardId);
+          if (card) {
+            const newWidth = Math.max(250, Math.round(this.activeDrag.initWidth + dx));
+            card.width = newWidth;
+            const cardEl = document.getElementById(`card-dom-${card.id}`);
+            if (cardEl) {
+              cardEl.style.width = `${newWidth}px`;
+            }
+            wires.render();
+          }
         }
       }
     });
 
-    window.addEventListener('mouseup', () => {
+    window.addEventListener('mouseup', (e) => {
+      if (this.activeMarquee) {
+        this.marqueeBoxEl.style.display = 'none';
+        if (!this.activeMarquee.moved && !this.activeMarquee.isShift) {
+          this.clearSelection();
+        }
+        this.activeMarquee = null;
+      }
+
       if (this.activeDrag) {
-        if (this.activeDrag.type === 'MOVE_CARD') {
-          document.getElementById(`card-dom-${this.activeDrag.cardId}`)?.classList.remove('active');
+        wires.clearGuideLines();
+        if (this.activeDrag.type === 'MOVE_CARDS') {
+          const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
+          if (dist < 4 && !e.shiftKey && this.selectedCardIds.size > 1) {
+            this.selectCard(this.activeDrag.leadCardId, false);
+          }
+          this.activeDrag.initialPositions.forEach((_, id) => {
+            document.getElementById(`card-dom-${id}`)?.classList.remove('active');
+          });
         } else if (this.activeDrag.type === 'RESIZE_CARD') {
           document.querySelectorAll('.card-resize-handle.active').forEach(h => h.classList.remove('active'));
         }
         this.activeDrag = null;
+        store.commit();
         wires.render();
         store.scheduleAutoSave();
+      }
+    });
+
+    window.addEventListener('keydown', (e) => {
+      const isEditingText = e.target?.closest?.('input, textarea, [contenteditable="true"]');
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !isEditingText) {
+        e.preventDefault();
+        store.undo();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) && !isEditingText) {
+        e.preventDefault();
+        store.redo();
+        return;
+      }
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditingText) {
+        if (this.selectedCardIds.size > 0) {
+          e.preventDefault();
+          this.deleteSelectedCards();
+        }
+      } else if (e.key === 'Escape') {
+        if (this.selectedCardIds.size > 0 && !wires.activeDrag) {
+          this.clearSelection();
+        }
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.key === 'Control') {
+        wires.clearGuideLines();
       }
     });
   }

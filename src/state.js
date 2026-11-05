@@ -32,6 +32,59 @@ class StateManager {
     this.fileName = '';
     this.listeners = new Set();
     this.saveTimeout = null;
+    this.undoStack = [this.snapshot()];
+    this.redoStack = [];
+  }
+
+  snapshot() {
+    return JSON.stringify({
+      cards: this.state.cards,
+      connections: this.state.connections
+    });
+  }
+
+  commit() {
+    const snap = this.snapshot();
+    if (this.undoStack.length > 0 && this.undoStack[this.undoStack.length - 1] === snap) {
+      return;
+    }
+    this.undoStack.push(snap);
+    if (this.undoStack.length > 60) this.undoStack.shift();
+    this.redoStack = [];
+    this.notify({ type: 'HISTORY_CHANGED' });
+  }
+
+  canUndo() {
+    return this.undoStack.length > 1;
+  }
+
+  canRedo() {
+    return this.redoStack.length > 0;
+  }
+
+  undo() {
+    if (this.undoStack.length <= 1) return false;
+    const current = this.undoStack.pop();
+    this.redoStack.push(current);
+    const prevSnap = this.undoStack[this.undoStack.length - 1];
+    const data = JSON.parse(prevSnap);
+    this.state.cards = JSON.parse(JSON.stringify(data.cards));
+    this.state.connections = JSON.parse(JSON.stringify(data.connections));
+    this.scheduleAutoSave();
+    this.notify({ type: 'STATE_RESTORED' });
+    return true;
+  }
+
+  redo() {
+    if (this.redoStack.length === 0) return false;
+    const nextSnap = this.redoStack.pop();
+    this.undoStack.push(nextSnap);
+    const data = JSON.parse(nextSnap);
+    this.state.cards = JSON.parse(JSON.stringify(data.cards));
+    this.state.connections = JSON.parse(JSON.stringify(data.connections));
+    this.scheduleAutoSave();
+    this.notify({ type: 'STATE_RESTORED' });
+    return true;
   }
 
   loadInitialState() {
@@ -99,19 +152,25 @@ class StateManager {
 
   addCard(card) {
     this.state.cards.push(card);
+    this.commit();
     this.notify({ type: 'CARD_ADDED', card });
     return card;
   }
 
-  removeCard(cardId) {
-    this.state.cards = this.state.cards.filter(c => c.id !== cardId);
-    const headPinId = `pin-head-${cardId}`;
+  removeCards(cardIds) {
+    const idSet = new Set(cardIds);
+    this.state.cards = this.state.cards.filter(c => !idSet.has(c.id));
     this.state.connections = this.state.connections.filter(c => {
       const c1 = this.findCardIdByPin(c.fromPinId);
       const c2 = this.findCardIdByPin(c.toPinId);
-      return c1 !== cardId && c2 !== cardId && c.fromPinId !== headPinId && c.toPinId !== headPinId;
+      return !idSet.has(c1) && !idSet.has(c2);
     });
-    this.notify({ type: 'CARD_REMOVED', cardId });
+    this.commit();
+    this.notify({ type: 'CARD_REMOVED', cardIds });
+  }
+
+  removeCard(cardId) {
+    this.removeCards([cardId]);
   }
 
   updateCard(cardId, patch) {
@@ -137,12 +196,14 @@ class StateManager {
       color: color || '#98989d'
     };
     this.state.connections.push(conn);
+    this.commit();
     this.notify({ type: 'CONNECTION_ADDED', conn });
     return conn;
   }
 
   removeConnection(connId) {
     this.state.connections = this.state.connections.filter(c => c.id !== connId);
+    this.commit();
     this.notify({ type: 'CONNECTION_REMOVED', connId });
   }
 
@@ -151,6 +212,7 @@ class StateManager {
     if (!conn) return false;
     if (!this.canConnect(conn.fromPinId, newToPinId)) return false;
     conn.toPinId = newToPinId;
+    this.commit();
     this.notify({ type: 'CONNECTION_RECONNECTED', conn });
     return true;
   }
@@ -160,6 +222,8 @@ class StateManager {
     this.fileHandle = null;
     this.fileName = '';
     localStorage.removeItem(STORAGE_KEY);
+    this.undoStack = [this.snapshot()];
+    this.redoStack = [];
     this.notify({ type: 'STATE_RESET' });
   }
 
@@ -227,6 +291,8 @@ class StateManager {
             cards: data.cards,
             connections: data.connections.filter(c => this.validateConnection(c, data.cards))
           };
+          this.undoStack = [this.snapshot()];
+          this.redoStack = [];
           this.notify({ type: 'FILE_OPENED', fileName: this.fileName });
           return { success: true, fileName: this.fileName };
         }
@@ -253,6 +319,8 @@ class StateManager {
               cards: data.cards,
               connections: data.connections.filter(c => this.validateConnection(c, data.cards))
             };
+            this.undoStack = [this.snapshot()];
+            this.redoStack = [];
             this.notify({ type: 'FILE_OPENED', fileName: this.fileName });
             resolve({ success: true, fileName: file.name });
           }

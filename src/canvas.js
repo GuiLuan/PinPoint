@@ -6,6 +6,7 @@ class CanvasManager {
     this.boardEl = null;
     this.dragAction = null;
     this.onTransform = null;
+    this.isSpacePressed = false;
   }
 
   init(viewportEl, boardEl) {
@@ -37,24 +38,26 @@ class CanvasManager {
 
   bindEvents() {
     this.viewportEl.addEventListener('mousedown', (e) => {
-      if (e.button !== 0 && e.button !== 1) return;
       const isCanvasBackground = e.target === this.viewportEl ||
                                  e.target === this.boardEl ||
                                  e.target.id === 'wire-svg';
       if (!isCanvasBackground) return;
-      e.preventDefault();
 
-      this.dragAction = {
-        type: 'PAN',
-        startX: e.clientX,
-        startY: e.clientY,
-        initViewX: store.state.viewport.x,
-        initViewY: store.state.viewport.y
-      };
+      if (e.button === 1 || this.isSpacePressed) {
+        e.preventDefault();
+        this.dragAction = {
+          type: 'PAN',
+          startX: e.clientX,
+          startY: e.clientY,
+          initViewX: store.state.viewport.x,
+          initViewY: store.state.viewport.y
+        };
+      }
     });
 
     window.addEventListener('mousemove', (e) => {
       if (!this.dragAction || this.dragAction.type !== 'PAN') return;
+      this.viewportEl.style.cursor = 'grabbing';
       const dx = e.clientX - this.dragAction.startX;
       const dy = e.clientY - this.dragAction.startY;
       store.state.viewport.x = this.dragAction.initViewX + dx;
@@ -65,6 +68,7 @@ class CanvasManager {
     window.addEventListener('mouseup', () => {
       if (this.dragAction?.type === 'PAN') {
         this.dragAction = null;
+        this.viewportEl.style.cursor = this.isSpacePressed ? 'grab' : '';
         store.scheduleAutoSave();
       }
     });
@@ -87,9 +91,21 @@ class CanvasManager {
     }, { passive: false });
 
     window.addEventListener('keydown', (e) => {
+      const isEditingText = e.target?.closest?.('input, textarea, [contenteditable="true"]');
+      if (e.code === 'Space' && !e.repeat && !isEditingText) {
+        this.isSpacePressed = true;
+        this.viewportEl.style.cursor = 'grab';
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         store.saveToFile();
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'Space') {
+        this.isSpacePressed = false;
+        if (!this.dragAction) this.viewportEl.style.cursor = '';
       }
     });
   }
