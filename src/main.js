@@ -14,10 +14,11 @@ function initApp() {
   const fileStatusEl = document.getElementById('hud-file-status');
   const capsuleActionBarEl = document.getElementById('capsule-action-bar');
   const wireDropMenuEl = document.getElementById('wire-drop-menu');
+  const canvasContextMenuEl = document.getElementById('canvas-context-menu');
 
   canvas.init(viewportEl, boardEl);
   wires.init(wireSvgEl, (pos, skipCommit) => nodes.spawnNode(pos, '未命名节点', skipCommit), wireDropMenuEl);
-  nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl);
+  nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl);
   window.__store = store;
   window.__nodes = nodes;
   window.__wires = wires;

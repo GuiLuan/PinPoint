@@ -2,6 +2,10 @@ const STORAGE_KEY = 'pinpoint_workspace_data';
 
 const DEFAULT_STATE = {
   viewport: { x: 0, y: 0, zoom: 1.0 },
+  settings: {
+    alignMode: false,
+    gridSnapMode: false
+  },
   cards: [
     {
       id: 'card-1',
@@ -95,6 +99,7 @@ class StateManager {
         if (parsed.cards && parsed.connections) {
           return {
             viewport: parsed.viewport || { x: 0, y: 0, zoom: 1.0 },
+            settings: parsed.settings || { alignMode: false, gridSnapMode: false },
             cards: parsed.cards,
             connections: parsed.connections.filter(c => this.validateConnection(c, parsed.cards))
           };
@@ -145,11 +150,28 @@ class StateManager {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
           viewport: this.state.viewport,
+          settings: this.state.settings,
           cards: this.state.cards,
           connections: this.state.connections
         }));
       } catch (e) {}
     }, 400);
+  }
+
+  toggleAlignMode() {
+    if (!this.state.settings) this.state.settings = { alignMode: false, gridSnapMode: false };
+    this.state.settings.alignMode = !this.state.settings.alignMode;
+    this.scheduleAutoSave();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+    return this.state.settings.alignMode;
+  }
+
+  toggleGridSnapMode() {
+    if (!this.state.settings) this.state.settings = { alignMode: false, gridSnapMode: false };
+    this.state.settings.gridSnapMode = !this.state.settings.gridSnapMode;
+    this.scheduleAutoSave();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+    return this.state.settings.gridSnapMode;
   }
 
   addCard(card) {
@@ -234,6 +256,7 @@ class StateManager {
       version: 1,
       timestamp: Date.now(),
       viewport: this.state.viewport,
+      settings: this.state.settings,
       cards: this.state.cards,
       connections: this.state.connections
     };
@@ -290,6 +313,7 @@ class StateManager {
           this.fileName = handle.name;
           this.state = {
             viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
+            settings: data.settings || { alignMode: false, gridSnapMode: false },
             cards: data.cards,
             connections: data.connections.filter(c => this.validateConnection(c, data.cards))
           };
@@ -318,6 +342,7 @@ class StateManager {
             this.fileName = file.name;
             this.state = {
               viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
+              settings: data.settings || { alignMode: false, gridSnapMode: false },
               cards: data.cards,
               connections: data.connections.filter(c => this.validateConnection(c, data.cards))
             };

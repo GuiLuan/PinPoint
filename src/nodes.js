@@ -19,6 +19,7 @@ class NodeManager {
     this.containerEl = null;
     this.selectionPopoverEl = null;
     this.capsuleActionBarEl = null;
+    this.canvasContextMenuEl = null;
     this.marqueeBoxEl = null;
     this.alignmentBarEl = null;
     this.viewportEl = null;
@@ -32,14 +33,17 @@ class NodeManager {
     this.activeDrag = null;
   }
 
-  init(containerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl) {
+  init(containerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl) {
     this.containerEl = containerEl;
     this.selectionPopoverEl = selectionPopoverEl;
     this.capsuleActionBarEl = capsuleActionBarEl || document.getElementById('capsule-action-bar');
+    this.canvasContextMenuEl = canvasContextMenuEl || document.getElementById('canvas-context-menu');
     this.marqueeBoxEl = marqueeBoxEl;
     this.alignmentBarEl = alignmentBarEl;
     this.viewportEl = viewportEl;
     this.bindCapsuleActionEvents();
+    this.bindCanvasContextMenuEvents();
+    this.bindCanvasShortcuts();
     this.bindSelectionEvents();
     this.bindAlignmentEvents();
     this.bindMarqueeEvents();
@@ -47,11 +51,18 @@ class NodeManager {
   }
 
   spawnNode(pos, title = '未命名节点', skipCommit = false) {
+    let x = Math.round(pos.x - 20);
+    let y = Math.round(pos.y - 20);
+    if (store.state.settings?.gridSnapMode) {
+      const GRID_SIZE = 24;
+      x = Math.round(x / GRID_SIZE) * GRID_SIZE;
+      y = Math.round(y / GRID_SIZE) * GRID_SIZE;
+    }
     const card = {
       id: `card-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       title: title || '未命名节点',
-      x: Math.round(pos.x - 20),
-      y: Math.round(pos.y - 20),
+      x,
+      y,
       width: 310,
       contentHtml: ''
     };
@@ -464,6 +475,123 @@ class NodeManager {
     store.scheduleAutoSave();
   }
 
+  bindCanvasContextMenuEvents() {
+    if (!this.canvasContextMenuEl) return;
+    this.canvasContextMenuEl.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+    });
+
+    const btnAlign = this.canvasContextMenuEl.querySelector('#menu-toggle-align');
+    btnAlign?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      store.toggleAlignMode();
+      this.updateContextMenuToggles();
+    });
+
+    const btnGrid = this.canvasContextMenuEl.querySelector('#menu-toggle-gridsnap');
+    btnGrid?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      store.toggleGridSnapMode();
+      this.updateContextMenuToggles();
+    });
+  }
+
+  bindCanvasShortcuts() {
+    if (!this.viewportEl) return;
+
+    // Double click on empty canvas to quickly spawn node at cursor
+    this.viewportEl.addEventListener('dblclick', (e) => {
+      const isBg = (e.target === this.viewportEl ||
+                    e.target === document.getElementById('board') ||
+                    e.target.id === 'wire-svg') &&
+                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu, #canvas-context-menu');
+      if (!isBg || e.button !== 0) return;
+
+      this.hideAllMenus();
+      const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
+      const newNode = this.spawnNode(boardPos);
+      wires.render();
+
+      setTimeout(() => {
+        const cardEl = document.getElementById(`card-dom-${newNode.id}`);
+        if (cardEl) {
+          const titleSpan = cardEl.querySelector('.header-title');
+          titleSpan?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        }
+      }, 30);
+    });
+
+    // Right click on empty canvas to open context menu
+    this.viewportEl.addEventListener('contextmenu', (e) => {
+      const isBg = (e.target === this.viewportEl ||
+                    e.target === document.getElementById('board') ||
+                    e.target.id === 'wire-svg') &&
+                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu');
+      if (!isBg) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      this.showCanvasContextMenu(e.clientX, e.clientY);
+    });
+  }
+
+  showCanvasContextMenu(screenX, screenY) {
+    if (!this.canvasContextMenuEl) return;
+    this.hideAllMenus();
+    this.updateContextMenuToggles();
+
+    const menu = this.canvasContextMenuEl;
+    menu.style.display = 'flex';
+
+    const menuWidth = 185;
+    const menuHeight = 110;
+    let left = screenX + 2;
+    let top = screenY + 2;
+
+    if (left + menuWidth > window.innerWidth - 10) {
+      left = screenX - menuWidth - 2;
+    }
+    if (top + menuHeight > window.innerHeight - 10) {
+      top = screenY - menuHeight - 2;
+    }
+    if (left < 10) left = 10;
+    if (top < 10) top = 10;
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  hideCanvasContextMenu() {
+    if (this.canvasContextMenuEl) {
+      this.canvasContextMenuEl.style.display = 'none';
+    }
+  }
+
+  updateContextMenuToggles() {
+    const alignActive = !!store.state.settings?.alignMode;
+    const gridActive = !!store.state.settings?.gridSnapMode;
+    const alignPill = document.getElementById('toggle-align-pill');
+    const gridPill = document.getElementById('toggle-gridsnap-pill');
+    if (alignPill) alignPill.classList.toggle('is-active', alignActive);
+    if (gridPill) gridPill.classList.toggle('is-active', gridActive);
+  }
+
+  hideAllMenus() {
+    this.clearCapsuleSelection();
+    this.hideSelectionPopover();
+    this.hideCanvasContextMenu();
+    wires.dismissDropMenu(true);
+  }
+
+  selectAllCards() {
+    this.hideAllMenus();
+    this.selectedCardIds = new Set(store.state.cards.map(c => c.id));
+    this.updateSelectionVisuals();
+    this.updateAlignmentBar();
+  }
+
   setSelectedColor(color) {
     this.selectedColor = color;
     let matchedPreset = false;
@@ -616,6 +744,9 @@ class NodeManager {
     }
 
     document.addEventListener('mousedown', (e) => {
+      if (this.canvasContextMenuEl && this.canvasContextMenuEl.contains(e.target)) return;
+      this.hideCanvasContextMenu();
+
       if (this.capsuleActionBarEl && this.capsuleActionBarEl.contains(e.target)) return;
       if (!e.target.closest('.text-capsule')) {
         this.clearCapsuleSelection();
@@ -1053,13 +1184,31 @@ class NodeManager {
           const leadCard = store.state.cards.find(c => c.id === this.activeDrag.leadCardId);
           const leadInitPos = this.activeDrag.initialPositions.get(this.activeDrag.leadCardId);
 
-          if (e.ctrlKey && leadCard && leadInitPos) {
-            const snap = this.calcSnap(leadCard, leadInitPos.x + dx, leadInitPos.y + dy);
-            dx = snap.snappedX - leadInitPos.x;
-            dy = snap.snappedY - leadInitPos.y;
-            wires.showGuideLines(snap.guideLines);
-          } else {
-            wires.clearGuideLines();
+          if (leadCard && leadInitPos) {
+            let candX = leadInitPos.x + dx;
+            let candY = leadInitPos.y + dy;
+
+            const alignMode = !!store.state.settings?.alignMode;
+            const gridSnapMode = !!store.state.settings?.gridSnapMode;
+            const shouldAlign = alignMode ? !e.ctrlKey : e.ctrlKey;
+
+            if (gridSnapMode) {
+              const GRID_SIZE = 24;
+              candX = Math.round(candX / GRID_SIZE) * GRID_SIZE;
+              candY = Math.round(candY / GRID_SIZE) * GRID_SIZE;
+            }
+
+            if (shouldAlign) {
+              const snap = this.calcSnap(leadCard, candX, candY);
+              candX = snap.snappedX;
+              candY = snap.snappedY;
+              wires.showGuideLines(snap.guideLines);
+            } else {
+              wires.clearGuideLines();
+            }
+
+            dx = candX - leadInitPos.x;
+            dy = candY - leadInitPos.y;
           }
 
           this.activeDrag.initialPositions.forEach((initPos, cardId) => {
@@ -1136,6 +1285,14 @@ class NodeManager {
         return;
       }
 
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        if (!isEditingText) {
+          e.preventDefault();
+          this.selectAllCards();
+          return;
+        }
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (this.selectedCapsule) {
           e.preventDefault();
@@ -1147,6 +1304,7 @@ class NodeManager {
           this.deleteSelectedCards();
         }
       } else if (e.key === 'Escape') {
+        this.hideCanvasContextMenu();
         if (this.selectedCapsule) {
           this.clearCapsuleSelection();
         }
@@ -1158,7 +1316,9 @@ class NodeManager {
 
     window.addEventListener('keyup', (e) => {
       if (e.key === 'Control') {
-        wires.clearGuideLines();
+        if (!store.state.settings?.alignMode) {
+          wires.clearGuideLines();
+        }
       }
     });
   }
