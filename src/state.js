@@ -115,6 +115,8 @@ class StateManager {
 
   findCardIdByPin(pinId, cards = this.state.cards) {
     if (!pinId) return null;
+    if (pinId.startsWith('pin-head-left-')) return pinId.replace('pin-head-left-', '');
+    if (pinId.startsWith('pin-head-right-')) return pinId.replace('pin-head-right-', '');
     if (pinId.startsWith('pin-head-')) return pinId.replace('pin-head-', '');
     const card = cards.find(c => c.contentHtml && c.contentHtml.includes(pinId));
     return card ? card.id : null;

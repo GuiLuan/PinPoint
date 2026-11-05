@@ -33,6 +33,11 @@ class WireManager {
     if (!pinEl) {
       pinEl = document.querySelector(`[data-header-pin-id="${pinId}"]`);
     }
+    if (!pinEl && pinId.startsWith('pin-head-') && !pinId.startsWith('pin-head-left-') && !pinId.startsWith('pin-head-right-')) {
+      const cardId = pinId.replace('pin-head-', '');
+      pinEl = document.querySelector(`[data-header-pin-id="pin-head-left-${cardId}"]`) ||
+              document.querySelector(`[data-header-pin-id="pin-head-right-${cardId}"]`);
+    }
     if (!pinEl) return null;
 
     const rect = pinEl.getBoundingClientRect();
@@ -44,42 +49,24 @@ class WireManager {
     };
   }
 
-  createBezierPath(p1, p2) {
+  createBezierPath(p1, p2, fromDir = 'right', toDir = 'left') {
     const dx = p2.x - p1.x;
-    let c1x, c1y, c2x, c2y;
-
-    if (dx >= 0) {
-      c1x = p1.x + Math.min(Math.max(dx * 0.45, 40), 120);
-      c1y = p1.y;
-      c2x = p2.x - Math.min(Math.max(dx * 0.45, 40), 120);
-      c2y = p2.y;
-    } else {
-      const tension = Math.max(Math.abs(dx) * 0.5, 60);
-      c1x = p1.x + tension;
-      c1y = p1.y;
-      c2x = p2.x - tension;
-      c2y = p2.y;
-    }
+    const tension = Math.min(Math.max(Math.abs(dx) * 0.45, 45), 140);
+    const c1x = fromDir === 'left' ? p1.x - tension : p1.x + tension;
+    const c1y = p1.y;
+    const c2x = toDir === 'right' ? p2.x + tension : p2.x - tension;
+    const c2y = p2.y;
 
     return `M ${p1.x} ${p1.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p2.x} ${p2.y}`;
   }
 
-  getBezierMidpoint(p1, p2) {
+  getBezierMidpoint(p1, p2, fromDir = 'right', toDir = 'left') {
     const dx = p2.x - p1.x;
-    let c1x, c1y, c2x, c2y;
-
-    if (dx >= 0) {
-      c1x = p1.x + Math.min(Math.max(dx * 0.45, 40), 120);
-      c1y = p1.y;
-      c2x = p2.x - Math.min(Math.max(dx * 0.45, 40), 120);
-      c2y = p2.y;
-    } else {
-      const tension = Math.max(Math.abs(dx) * 0.5, 60);
-      c1x = p1.x + tension;
-      c1y = p1.y;
-      c2x = p2.x - tension;
-      c2y = p2.y;
-    }
+    const tension = Math.min(Math.max(Math.abs(dx) * 0.45, 45), 140);
+    const c1x = fromDir === 'left' ? p1.x - tension : p1.x + tension;
+    const c1y = p1.y;
+    const c2x = toDir === 'right' ? p2.x + tension : p2.x - tension;
+    const c2y = p2.y;
 
     const t = 0.5;
     const om = 1 - t;
@@ -96,7 +83,9 @@ class WireManager {
       const p2 = this.getPinBoardPos(conn.toPinId);
       if (!p1 || !p2) return;
 
-      const pathData = this.createBezierPath(p1, p2);
+      const fromDir = conn.fromPinId.includes('left') ? 'left' : 'right';
+      const toDir = conn.toPinId.includes('right') ? 'right' : 'left';
+      const pathData = this.createBezierPath(p1, p2, fromDir, toDir);
       const color = conn.color || '#98989d';
 
       const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -124,7 +113,7 @@ class WireManager {
       g.appendChild(pulse);
 
       // 4. Subtle reroute node in middle
-      const mid = this.getBezierMidpoint(p1, p2);
+      const mid = this.getBezierMidpoint(p1, p2, fromDir, toDir);
       const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       dot.setAttribute('cx', mid.x);
       dot.setAttribute('cy', mid.y);
@@ -250,10 +239,11 @@ class WireManager {
     document.querySelectorAll('.focus-card').forEach(el => el.classList.remove('focus-card'));
     document.querySelectorAll('.target-highlight').forEach(el => el.classList.remove('target-highlight'));
     document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
+    document.querySelectorAll('.pin-ghost').forEach(el => el.classList.remove('pin-ghost'));
   }
 
-  updateTempWire(p1, p2) {
-    this.tempWireEl.setAttribute('d', this.createBezierPath(p1, p2));
+  updateTempWire(p1, p2, fromDir = 'right', toDir = 'left') {
+    this.tempWireEl.setAttribute('d', this.createBezierPath(p1, p2, fromDir, toDir));
   }
 
   showGuideLines(lines) {
@@ -299,25 +289,60 @@ class WireManager {
     window.addEventListener('mousemove', (e) => {
       if (!this.activeDrag) return;
       const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
-      this.updateTempWire(this.activeDrag.startPos, boardPos);
+
+      const fromDir = this.activeDrag.fromPinId.includes('left') ? 'left' : 'right';
+      let toDir = boardPos.x < this.activeDrag.startPos.x ? 'right' : 'left';
 
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
+      document.querySelectorAll('.pin-ghost').forEach(el => el.classList.remove('pin-ghost'));
       document.querySelectorAll('.target-highlight').forEach(el => el.classList.remove('target-highlight'));
 
-      const targetPin = e.target?.closest ? e.target.closest('.capsule-pin, .header-pin') : null;
-      const targetCapsule = e.target?.closest ? e.target.closest('.text-capsule') : null;
+      const hitEl = (e.clientX !== undefined && e.clientY !== undefined ? document.elementFromPoint(e.clientX, e.clientY) : null) || e.target;
+      const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
+      const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
+      const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
+      const targetCard = hitEl?.closest ? hitEl.closest('.note-card') : null;
 
       let targetId = null;
-      if (targetPin) {
+      let activePinEl = null;
+
+      if (targetSlot) {
+        activePinEl = targetSlot.querySelector('.header-pin');
+        targetId = activePinEl?.getAttribute('data-header-pin-id');
+        toDir = targetId?.includes('right') ? 'right' : 'left';
+      } else if (targetPin) {
         targetId = targetPin.getAttribute('data-header-pin-id') || targetPin.closest('.text-capsule')?.getAttribute('data-pin-id');
+        activePinEl = targetPin;
+        toDir = targetId?.includes('right') ? 'right' : 'left';
       } else if (targetCapsule) {
         targetId = targetCapsule.getAttribute('data-pin-id');
+        activePinEl = targetCapsule.querySelector('.capsule-pin');
+        toDir = 'left';
+      } else if (targetCard) {
+        const rect = targetCard.getBoundingClientRect();
+        const isLeft = e.clientX < rect.left + rect.width / 2;
+        const pinEl = isLeft
+          ? targetCard.querySelector('.header-pin-left')
+          : targetCard.querySelector('.header-pin-right');
+        if (pinEl) {
+          targetId = pinEl.getAttribute('data-header-pin-id');
+          activePinEl = pinEl;
+          toDir = isLeft ? 'left' : 'right';
+        }
       }
+
+      this.updateTempWire(this.activeDrag.startPos, boardPos, fromDir, toDir);
 
       if (targetId) {
         if (store.canConnect(this.activeDrag.fromPinId, targetId)) {
           document.body.style.cursor = 'crosshair';
-          if (targetPin) targetPin.classList.add('pin-active');
+          if (activePinEl) {
+            if (activePinEl.classList.contains('pin-connected')) {
+              activePinEl.classList.add('pin-active');
+            } else {
+              activePinEl.classList.add('pin-ghost');
+            }
+          }
           if (targetCapsule) targetCapsule.classList.add('target-highlight');
         } else {
           document.body.style.cursor = 'not-allowed';
@@ -333,15 +358,29 @@ class WireManager {
       document.body.style.cursor = '';
       this.tempWireEl.style.display = 'none';
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
+      document.querySelectorAll('.pin-ghost').forEach(el => el.classList.remove('pin-ghost'));
       document.querySelectorAll('.target-highlight').forEach(el => el.classList.remove('target-highlight'));
 
-      const targetPin = e.target?.closest ? e.target.closest('.capsule-pin, .header-pin') : null;
-      const targetCapsule = e.target?.closest ? e.target.closest('.text-capsule') : null;
+      const hitEl = (e.clientX !== undefined && e.clientY !== undefined ? document.elementFromPoint(e.clientX, e.clientY) : null) || e.target;
+      const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
+      const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
+      const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
+      const targetCard = hitEl?.closest ? hitEl.closest('.note-card') : null;
       let targetPinId = null;
-      if (targetPin) {
+
+      if (targetSlot) {
+        targetPinId = targetSlot.querySelector('.header-pin')?.getAttribute('data-header-pin-id');
+      } else if (targetPin) {
         targetPinId = targetPin.getAttribute('data-header-pin-id') || targetPin.closest('.text-capsule')?.getAttribute('data-pin-id');
       } else if (targetCapsule) {
         targetPinId = targetCapsule.getAttribute('data-pin-id');
+      } else if (targetCard) {
+        const rect = targetCard.getBoundingClientRect();
+        const isLeft = e.clientX < rect.left + rect.width / 2;
+        const pinEl = isLeft
+          ? targetCard.querySelector('.header-pin-left')
+          : targetCard.querySelector('.header-pin-right');
+        targetPinId = pinEl?.getAttribute('data-header-pin-id');
       }
 
       const { type, connId, fromPinId, wireColor } = this.activeDrag;
@@ -356,7 +395,8 @@ class WireManager {
         // Dragged to empty space: seamlessly spawn a pure node at cursor location!
         const dropPos = canvas.screenToBoard(e.clientX, e.clientY);
         const newNode = this.spawnNodeCallback(dropPos, true);
-        const newHeadPinId = `pin-head-${newNode.id}`;
+        const isLeft = this.activeDrag.startPos.x < dropPos.x;
+        const newHeadPinId = isLeft ? `pin-head-left-${newNode.id}` : `pin-head-right-${newNode.id}`;
 
         if (type === 'RECONNECT') {
           store.reconnect(connId, newHeadPinId);

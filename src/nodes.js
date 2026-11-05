@@ -23,6 +23,7 @@ class NodeManager {
     this.viewportEl = null;
     this.currentRange = null;
     this.targetCapsule = null;
+    this.targetHeaderCard = null;
     this.selectedColor = '#30d158';
     this.selectedCardIds = new Set();
     this.activeMarquee = null;
@@ -66,20 +67,51 @@ class NodeManager {
       cardEl.style.top = `${card.y}px`;
       cardEl.style.width = `${card.width || 310}px`;
 
-      const headPinId = `pin-head-${card.id}`;
-      const conn = store.state.connections.find(c => c.toPinId === headPinId);
-      const headColor = conn?.color || '#98989d';
+      const leftPinId = `pin-head-left-${card.id}`;
+      const rightPinId = `pin-head-right-${card.id}`;
+      const legacyPinId = `pin-head-${card.id}`;
+
+      const leftConn = store.state.connections.find(c => c.toPinId === leftPinId || c.fromPinId === leftPinId || c.toPinId === legacyPinId);
+      const rightConn = store.state.connections.find(c => c.toPinId === rightPinId || c.fromPinId === rightPinId);
+
+      const leftConnected = !!leftConn;
+      const rightConnected = !!rightConn;
+
+      const leftColor = leftConn?.color || card.headerColor || '#98989d';
+      const rightColor = rightConn?.color || card.headerColor || '#98989d';
+
+      let headerStyle = '';
+      if (card.headerColor) {
+        cardEl.style.setProperty('--card-theme-border', hexToRgba(card.headerColor, 0.75));
+        cardEl.style.setProperty('--card-theme-glow', hexToRgba(card.headerColor, 0.45));
+        const bg1 = hexToRgba(card.headerColor, 0.24);
+        const bg2 = hexToRgba(card.headerColor, 0.10);
+        const borderOutline = hexToRgba(card.headerColor, 0.70);
+        const borderDivider = hexToRgba(card.headerColor, 0.35);
+        headerStyle = `style="background: linear-gradient(180deg, ${bg1} 0%, ${bg2} 100%); border-color: ${borderOutline}; border-top-color: ${card.headerColor}; border-bottom-color: ${borderDivider};"`;
+      } else {
+        cardEl.style.removeProperty('--card-theme-border');
+        cardEl.style.removeProperty('--card-theme-glow');
+      }
 
       cardEl.innerHTML = `
-        <div class="note-header">
-          <div class="header-left">
-            <i class="header-pin" data-header-pin-id="${headPinId}" style="background-color: ${headColor};" title="节点端口：可连出 / 可连入"></i>
+        <div class="note-header" ${headerStyle}>
+          <div class="header-port-slot header-port-slot-left" title="连接端口 (左)">
+            <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}" 
+               data-header-pin-id="${leftPinId}" 
+               style="background-color: ${leftColor}; color: ${leftColor};"></i>
+          </div>
+
+          <div class="header-content">
             <span class="header-title" title="双击重命名">${card.title || '未命名节点'}</span>
             <input class="header-title-input" value="${card.title || ''}" placeholder="未命名节点" style="display: none;" />
           </div>
-          <button class="card-close-btn" title="删除节点">
-            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-          </button>
+
+          <div class="header-port-slot header-port-slot-right" title="连接端口 (右)">
+            <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}" 
+               data-header-pin-id="${rightPinId}" 
+               style="background-color: ${rightColor}; color: ${rightColor};"></i>
+          </div>
         </div>
         <div class="note-body" contenteditable="true" spellcheck="false">${card.contentHtml || ''}</div>
         <div class="card-resize-handle" title="按住左右拖拽调节宽度"></div>
@@ -136,26 +168,25 @@ class NodeManager {
         e.stopPropagation();
       });
 
-      // Delete node
-      const closeBtn = cardEl.querySelector('.card-close-btn');
-      closeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        store.removeCard(card.id);
-        this.render();
-        wires.render();
-      });
-
       cardEl.addEventListener('mousedown', (e) => {
-        if (e.shiftKey && !e.target.closest('.header-pin, .capsule-pin, .card-close-btn')) {
+        if (e.shiftKey && !e.target.closest('.header-pin, .header-port-slot, .capsule-pin')) {
           e.preventDefault();
           this.selectCard(card.id, true);
         }
       });
 
-      // Drag node by header
+      // Drag node by header or open color popover via right click
       const headerEl = cardEl.querySelector('.note-header');
+
+      headerEl.addEventListener('contextmenu', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot, .capsule-pin')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.openPopoverForHeader(card, headerEl);
+      });
+
       headerEl.addEventListener('mousedown', (e) => {
-        if (e.target.closest('.header-pin, .card-close-btn') || e.target === titleInput) return;
+        if (e.target.closest('.header-pin, .header-port-slot') || e.target === titleInput) return;
         if (e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
@@ -187,7 +218,7 @@ class NodeManager {
       });
 
       headerEl.addEventListener('dblclick', (e) => {
-        if (e.target.closest('.header-pin, .card-close-btn') || e.target === titleInput) return;
+        if (e.target.closest('.header-pin, .header-port-slot') || e.target === titleInput) return;
         startTitleEdit();
       });
 
@@ -210,9 +241,11 @@ class NodeManager {
         resizeHandle.classList.add('active');
       });
 
-      // Header pin connection
-      const headPinEl = cardEl.querySelector('.header-pin');
-      this.bindPinEvents(headPinEl, headPinId);
+      // Header pins connection (left and right)
+      const headPinLeftEl = cardEl.querySelector('.header-pin-left');
+      const headPinRightEl = cardEl.querySelector('.header-pin-right');
+      this.bindPinEvents(headPinLeftEl, leftPinId);
+      this.bindPinEvents(headPinRightEl, rightPinId);
 
       // Body input & keyboard events
       const bodyEl = cardEl.querySelector('.note-body');
@@ -258,8 +291,10 @@ class NodeManager {
 
   bindPinEvents(pinEl, pinId) {
     if (!pinEl) return;
+    const slotEl = pinEl.closest('.header-port-slot');
+    const triggerEl = slotEl || pinEl;
 
-    pinEl.addEventListener('mousedown', (e) => {
+    triggerEl.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
@@ -270,26 +305,33 @@ class NodeManager {
       if (!startPos) return;
 
       const capsule = pinEl.closest('.text-capsule');
+      const cardEl = pinEl.closest('.note-card');
+      const cardId = cardEl?.id.replace('card-dom-', '');
+      const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
+
       let color = '#98989d';
       if (capsule) {
         color = window.getComputedStyle(capsule).getPropertyValue('--capsule-pin').trim() || '#30d158';
+      } else if (card?.headerColor) {
+        color = card.headerColor;
       }
 
       wires.startConnect(pinId, startPos, color);
       pinEl.classList.add('pin-active');
     });
 
-    pinEl.addEventListener('mouseenter', () => {
+    triggerEl.addEventListener('mouseenter', () => {
       if (wires.activeDrag) {
         if (store.canConnect(wires.activeDrag.fromPinId, pinId)) {
-          pinEl.classList.add('pin-active');
+          pinEl.classList.add(pinEl.classList.contains('pin-connected') ? 'pin-active' : 'pin-ghost');
         }
       }
     });
 
-    pinEl.addEventListener('mouseleave', () => {
+    triggerEl.addEventListener('mouseleave', () => {
       if (wires.activeDrag) {
         pinEl.classList.remove('pin-active');
+        pinEl.classList.remove('pin-ghost');
       }
     });
   }
@@ -319,7 +361,7 @@ class NodeManager {
 
         store.state.connections = store.state.connections.filter(c => c.fromPinId !== pinId && c.toPinId !== pinId);
 
-        const text = capsule.innerText.replace('↗', '').trim();
+        const text = capsule.innerText.trim();
         const textNode = document.createTextNode(text);
         const cardEl = capsule.closest('.note-card');
         const cardId = cardEl?.id.replace('card-dom-', '');
@@ -378,6 +420,7 @@ class NodeManager {
   openPopoverForCapsule(capsule) {
     window.getSelection()?.removeAllRanges();
     this.currentRange = null;
+    this.targetHeaderCard = null;
     this.targetCapsule = capsule;
 
     const currentColor = capsule.style.getPropertyValue('--capsule-pin').trim() ||
@@ -388,11 +431,24 @@ class NodeManager {
     this.updatePopoverPosition();
   }
 
+  openPopoverForHeader(card, headerEl) {
+    window.getSelection()?.removeAllRanges();
+    this.currentRange = null;
+    this.targetCapsule = null;
+    this.targetHeaderCard = { card, headerEl };
+
+    const currentColor = card.headerColor || '#30d158';
+    this.setSelectedColor(currentColor);
+    this.updatePopoverPosition();
+  }
+
   updatePopoverPosition() {
     if (!this.selectionPopoverEl) return;
 
     let rect = null;
-    if (this.targetCapsule) {
+    if (this.targetHeaderCard) {
+      rect = this.targetHeaderCard.headerEl.getBoundingClientRect();
+    } else if (this.targetCapsule) {
       rect = this.targetCapsule.getBoundingClientRect();
     } else if (this.currentRange) {
       rect = this.currentRange.getBoundingClientRect();
@@ -419,6 +475,7 @@ class NodeManager {
     }
     this.currentRange = null;
     this.targetCapsule = null;
+    this.targetHeaderCard = null;
   }
 
   bindSelectionEvents() {
@@ -430,24 +487,25 @@ class NodeManager {
 
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-        if (!this.targetCapsule) this.hideSelectionPopover();
+        if (!this.targetCapsule && !this.targetHeaderCard) this.hideSelectionPopover();
         return;
       }
 
       const text = selection.toString().trim();
       if (!text) {
-        if (!this.targetCapsule) this.hideSelectionPopover();
+        if (!this.targetCapsule && !this.targetHeaderCard) this.hideSelectionPopover();
         return;
       }
 
       const anchor = selection.anchorNode;
       const bodyEl = anchor?.nodeType === 3 ? anchor.parentElement.closest('.note-body') : anchor?.closest('.note-body');
       if (!bodyEl) {
-        if (!this.targetCapsule) this.hideSelectionPopover();
+        if (!this.targetCapsule && !this.targetHeaderCard) this.hideSelectionPopover();
         return;
       }
 
       this.targetCapsule = null;
+      this.targetHeaderCard = null;
       this.currentRange = selection.getRangeAt(0).cloneRange();
       this.setSelectedColor(this.selectedColor || '#30d158');
       this.updatePopoverPosition();
@@ -487,7 +545,7 @@ class NodeManager {
 
     document.addEventListener('mousedown', (e) => {
       if (this.selectionPopoverEl && this.selectionPopoverEl.contains(e.target)) return;
-      if (e.target.closest('.text-capsule')) return;
+      if (e.target.closest('.text-capsule, .note-header')) return;
       this.hideSelectionPopover();
     });
 
@@ -504,12 +562,33 @@ class NodeManager {
   }
 
   applyColor() {
-    if (this.targetCapsule) {
+    if (this.targetHeaderCard) {
+      this.applyHeaderColor(this.targetHeaderCard.card, this.selectedColor);
+    } else if (this.targetCapsule) {
       this.recolorCapsule(this.targetCapsule, this.selectedColor);
     } else if (this.currentRange) {
       this.createCapsuleFromSelection(this.selectedColor);
     }
     this.hideSelectionPopover();
+  }
+
+  applyHeaderColor(card, newColor) {
+    card.headerColor = newColor;
+
+    const leftPinId = `pin-head-left-${card.id}`;
+    const rightPinId = `pin-head-right-${card.id}`;
+    const legacyPinId = `pin-head-${card.id}`;
+
+    store.state.connections.forEach(conn => {
+      if (conn.fromPinId === leftPinId || conn.fromPinId === rightPinId || conn.fromPinId === legacyPinId) {
+        conn.color = newColor;
+      }
+    });
+
+    store.commit();
+    this.render();
+    wires.render();
+    store.scheduleAutoSave();
   }
 
   recolorCapsule(capsule, newColor) {

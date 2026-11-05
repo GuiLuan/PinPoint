@@ -225,36 +225,53 @@ html, body {
 }
 
 .note-card.selected {
-  border-color: var(--accent-blue) !important;
-  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.4), 0 16px 44px rgba(0, 0, 0, 0.75) !important;
+  border-color: var(--card-theme-border, var(--accent-blue)) !important;
+  box-shadow: 0 0 0 2px var(--card-theme-glow, rgba(10, 132, 255, 0.4)), 0 16px 44px rgba(0, 0, 0, 0.75) !important;
 }
 
 .note-header {
-  padding: 10px 14px;
+  margin: -1px -1px 0 -1px;
+  padding: 8px 10px;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.1px;
-  border-top-left-radius: 11px;
-  border-top-right-radius: 11px;
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
   background: var(--card-header);
+  border: 1px solid transparent;
   border-bottom: 1px solid var(--card-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   cursor: grab;
   position: relative;
+  box-sizing: border-box;
+  transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .note-header:active {
   cursor: grabbing;
 }
 
-.header-left {
+.header-port-slot {
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  cursor: crosshair;
+  z-index: 5;
+  border-radius: 50%;
+}
+
+.header-content {
+  display: flex;
+  align-items: center;
   flex: 1;
   min-width: 0;
+  padding: 0 4px;
 }
 
 .header-title {
@@ -271,7 +288,7 @@ html, body {
   border-radius: 4px;
   border: 1px solid transparent;
   transition: background 0.15s ease, border-color 0.15s ease;
-  max-width: 220px;
+  max-width: 240px;
 }
 
 .note-header:active .header-title {
@@ -292,7 +309,7 @@ html, body {
   font-weight: 600;
   color: var(--text-primary);
   width: 100%;
-  max-width: 220px;
+  max-width: 240px;
   padding: 2px 5px;
   cursor: text;
   box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.25);
@@ -303,15 +320,17 @@ html, body {
 }
 
 .header-pin {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   border: 1.5px solid #000;
   background-color: var(--default-wire);
-  flex-shrink: 0;
   cursor: crosshair;
-  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
   position: relative;
+  z-index: 5;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .header-pin::after {
@@ -321,42 +340,35 @@ html, body {
   border-radius: 50%;
 }
 
-.header-pin:hover,
+.header-port-slot:hover .header-pin:not(.pin-connected) {
+  opacity: 0.5;
+  pointer-events: auto;
+  transform: scale(1.15);
+  box-shadow: 0 0 6px currentColor;
+}
+
+.header-pin.pin-ghost {
+  opacity: 0.55 !important;
+  pointer-events: auto !important;
+  transform: scale(1.2);
+  box-shadow: 0 0 8px currentColor;
+  filter: blur(0.2px);
+}
+
+.header-pin.pin-connected {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  transform: scale(1);
+  box-shadow: 0 0 5px currentColor;
+  filter: none;
+}
+
+.header-pin.pin-connected:hover,
 .header-pin.pin-active {
-  transform: scale(1.4);
+  opacity: 1 !important;
+  transform: scale(1.35);
   box-shadow: 0 0 10px currentColor;
-}
-
-.card-close-btn {
-  opacity: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
-  flex-shrink: 0;
-}
-
-.note-card:hover .card-close-btn {
-  opacity: 1;
-}
-
-.card-close-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-}
-
-.card-close-btn svg {
-  width: 10px;
-  height: 10px;
-  stroke: currentColor;
-  stroke-width: 2;
+  pointer-events: auto !important;
 }
 
 .note-body {
@@ -413,7 +425,8 @@ html, body {
   user-select: none;
   -webkit-user-select: none;
   contenteditable: false;
-  white-space: nowrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
   --capsule-pin: #30d158;
   transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
@@ -477,16 +490,6 @@ html, body {
 .capsule-pin.pin-active {
   transform: scale(1.4);
   box-shadow: 0 0 10px currentColor;
-}
-
-.text-capsule.has-connection::after {
-  content: '↗';
-  font-size: 10px;
-  line-height: 1;
-  color: var(--capsule-pin);
-  opacity: 0.75;
-  margin-left: 3px;
-  font-weight: 700;
 }
 
 .text-capsule.target-highlight {

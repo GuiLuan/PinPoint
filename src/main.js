@@ -16,6 +16,9 @@ function initApp() {
   canvas.init(viewportEl, boardEl);
   wires.init(wireSvgEl, (pos, skipCommit) => nodes.spawnNode(pos, '未命名节点', skipCommit));
   nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl);
+  window.__store = store;
+  window.__nodes = nodes;
+  window.__wires = wires;
   canvas.onTransform = () => {
     nodes.updatePopoverPosition();
     nodes.updateAlignmentBar();
@@ -117,6 +120,9 @@ function initApp() {
       nodes.render();
       wires.render();
       nodes.updateAlignmentBar();
+    } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED') {
+      nodes.render();
+      wires.render();
     }
   });
 
