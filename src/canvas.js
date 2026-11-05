@@ -1,0 +1,98 @@
+import { store } from './state.js';
+
+class CanvasManager {
+  constructor() {
+    this.viewportEl = null;
+    this.boardEl = null;
+    this.dragAction = null;
+    this.onTransform = null;
+  }
+
+  init(viewportEl, boardEl) {
+    this.viewportEl = viewportEl;
+    this.boardEl = boardEl;
+    this.applyTransform();
+    this.bindEvents();
+  }
+
+  applyTransform() {
+    const { x, y, zoom } = store.state.viewport;
+    this.boardEl.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+
+    const minorSize = 24 * zoom;
+    const majorSize = 120 * zoom;
+    this.viewportEl.style.backgroundSize = `${minorSize}px ${minorSize}px, ${minorSize}px ${minorSize}px, ${majorSize}px ${majorSize}px, ${majorSize}px ${majorSize}px`;
+    this.viewportEl.style.backgroundPosition = `${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px`;
+
+    if (this.onTransform) this.onTransform();
+  }
+
+  screenToBoard(clientX, clientY) {
+    const { x, y, zoom } = store.state.viewport;
+    return {
+      x: (clientX - x) / zoom,
+      y: (clientY - y) / zoom
+    };
+  }
+
+  bindEvents() {
+    this.viewportEl.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 && e.button !== 1) return;
+      const isCanvasBackground = e.target === this.viewportEl ||
+                                 e.target === this.boardEl ||
+                                 e.target.id === 'wire-svg';
+      if (!isCanvasBackground) return;
+      e.preventDefault();
+
+      this.dragAction = {
+        type: 'PAN',
+        startX: e.clientX,
+        startY: e.clientY,
+        initViewX: store.state.viewport.x,
+        initViewY: store.state.viewport.y
+      };
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!this.dragAction || this.dragAction.type !== 'PAN') return;
+      const dx = e.clientX - this.dragAction.startX;
+      const dy = e.clientY - this.dragAction.startY;
+      store.state.viewport.x = this.dragAction.initViewX + dx;
+      store.state.viewport.y = this.dragAction.initViewY + dy;
+      this.applyTransform();
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (this.dragAction?.type === 'PAN') {
+        this.dragAction = null;
+        store.scheduleAutoSave();
+      }
+    });
+
+    this.viewportEl.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+      const { zoom, x, y } = store.state.viewport;
+      const nextZoom = Math.min(Math.max(zoom * zoomFactor, 0.35), 2.5);
+
+      const mouseX = e.clientX;
+      const mouseY = e.clientY;
+
+      store.state.viewport.x = mouseX - (mouseX - x) * (nextZoom / zoom);
+      store.state.viewport.y = mouseY - (mouseY - y) * (nextZoom / zoom);
+      store.state.viewport.zoom = nextZoom;
+
+      this.applyTransform();
+      store.scheduleAutoSave();
+    }, { passive: false });
+
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        store.saveToFile();
+      }
+    });
+  }
+}
+
+export const canvas = new CanvasManager();
