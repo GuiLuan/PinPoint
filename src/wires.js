@@ -428,7 +428,7 @@ class WireManager {
     });
 
     window.addEventListener('mousedown', (e) => {
-      if (this.wireDropMenuEl && this.wireDropMenuEl.contains(e.target)) return;
+      if (this.wireDropMenuEl && e.target instanceof Node && this.wireDropMenuEl.contains(e.target)) return;
       if (this.pendingDrop) {
         this.dismissDropMenu(true);
       }
@@ -447,10 +447,11 @@ class WireManager {
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
       document.querySelectorAll('.pin-ghost').forEach(el => {
         el.classList.remove('pin-ghost');
-        const cardEl = el.closest('.note-card, .node-group');
-        const cardId = cardEl?.id.replace('card-dom-', '');
-        const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
-        if (!card?.headerColor && !el.classList.contains('pin-connected')) {
+        const cardEl = el.closest('.note-card');
+        const groupEl = el.closest('.node-group');
+        const card = cardEl ? store.state.cards.find(c => c.id === cardEl.id.replace('card-dom-', '')) : null;
+        const group = groupEl ? store.state.groups?.find(g => g.id === groupEl.id.replace('group-dom-', '')) : null;
+        if (!card?.headerColor && !group?.headerColor && !el.classList.contains('pin-connected')) {
           el.style.backgroundColor = '';
           el.style.color = '';
         }
@@ -461,7 +462,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetCard = hitEl?.closest ? hitEl.closest('.note-card, .node-group') : null;
+      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .group-header') : null;
 
       let targetId = null;
       let activePinEl = null;
@@ -478,12 +479,12 @@ class WireManager {
         targetId = targetCapsule.getAttribute('data-pin-id');
         activePinEl = targetCapsule.querySelector('.capsule-pin');
         toDir = 'left';
-      } else if (targetCard) {
-        const rect = targetCard.getBoundingClientRect();
+      } else if (targetHeader) {
+        const rect = targetHeader.getBoundingClientRect();
         const isLeft = e.clientX < rect.left + rect.width / 2;
         const pinEl = isLeft
-          ? targetCard.querySelector('.header-pin-left')
-          : targetCard.querySelector('.header-pin-right');
+          ? targetHeader.querySelector('.header-pin-left')
+          : targetHeader.querySelector('.header-pin-right');
         if (pinEl) {
           targetId = pinEl.getAttribute('data-header-pin-id');
           activePinEl = pinEl;
@@ -501,10 +502,12 @@ class WireManager {
               activePinEl.classList.add('pin-active');
             } else {
               activePinEl.classList.add('pin-ghost');
-              const cardEl = activePinEl.closest('.note-card, .node-group');
-              const cardId = cardEl?.id.replace('card-dom-', '');
-              const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
-              if (!card?.headerColor && this.activeDrag.wireColor && this.activeDrag.wireColor !== '#98989d') {
+              const cardEl = activePinEl.closest('.note-card');
+              const groupEl = activePinEl.closest('.node-group');
+              const card = cardEl ? store.state.cards.find(c => c.id === cardEl.id.replace('card-dom-', '')) : null;
+              const group = groupEl ? store.state.groups?.find(g => g.id === groupEl.id.replace('group-dom-', '')) : null;
+              const hasColor = card?.headerColor || group?.headerColor;
+              if (!hasColor && this.activeDrag.wireColor && this.activeDrag.wireColor !== '#98989d') {
                 activePinEl.style.backgroundColor = this.activeDrag.wireColor;
                 activePinEl.style.color = this.activeDrag.wireColor;
               }
@@ -527,10 +530,11 @@ class WireManager {
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
       document.querySelectorAll('.pin-ghost').forEach(el => {
         el.classList.remove('pin-ghost');
-        const cardEl = el.closest('.note-card, .node-group');
-        const cardId = cardEl?.id.replace('card-dom-', '');
-        const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
-        if (!card?.headerColor && !el.classList.contains('pin-connected')) {
+        const cardEl = el.closest('.note-card');
+        const groupEl = el.closest('.node-group');
+        const card = cardEl ? store.state.cards.find(c => c.id === cardEl.id.replace('card-dom-', '')) : null;
+        const group = groupEl ? store.state.groups?.find(g => g.id === groupEl.id.replace('group-dom-', '')) : null;
+        if (!card?.headerColor && !group?.headerColor && !el.classList.contains('pin-connected')) {
           el.style.backgroundColor = '';
           el.style.color = '';
         }
@@ -541,7 +545,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetCard = hitEl?.closest ? hitEl.closest('.note-card, .node-group') : null;
+      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .group-header') : null;
       let targetPinId = null;
 
       if (targetSlot) {
@@ -550,12 +554,12 @@ class WireManager {
         targetPinId = targetPin.getAttribute('data-header-pin-id') || targetPin.closest('.text-capsule')?.getAttribute('data-pin-id');
       } else if (targetCapsule) {
         targetPinId = targetCapsule.getAttribute('data-pin-id');
-      } else if (targetCard) {
-        const rect = targetCard.getBoundingClientRect();
+      } else if (targetHeader) {
+        const rect = targetHeader.getBoundingClientRect();
         const isLeft = e.clientX < rect.left + rect.width / 2;
         const pinEl = isLeft
-          ? targetCard.querySelector('.header-pin-left')
-          : targetCard.querySelector('.header-pin-right');
+          ? targetHeader.querySelector('.header-pin-left')
+          : targetHeader.querySelector('.header-pin-right');
         targetPinId = pinEl?.getAttribute('data-header-pin-id');
       }
 
@@ -609,10 +613,11 @@ class WireManager {
           this.tempWireEl.style.display = 'none';
           document.querySelectorAll('.pin-ghost').forEach(el => {
             el.classList.remove('pin-ghost');
-            const cardEl = el.closest('.note-card, .node-group');
-            const cardId = cardEl?.id.replace('card-dom-', '');
-            const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
-            if (!card?.headerColor && !el.classList.contains('pin-connected')) {
+            const cardEl = el.closest('.note-card');
+            const groupEl = el.closest('.node-group');
+            const card = cardEl ? store.state.cards.find(c => c.id === cardEl.id.replace('card-dom-', '')) : null;
+            const group = groupEl ? store.state.groups?.find(g => g.id === groupEl.id.replace('group-dom-', '')) : null;
+            if (!card?.headerColor && !group?.headerColor && !el.classList.contains('pin-connected')) {
               el.style.backgroundColor = '';
               el.style.color = '';
             }

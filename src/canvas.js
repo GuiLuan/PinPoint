@@ -14,6 +14,21 @@ class CanvasManager {
     this.boardEl = boardEl;
     this.applyTransform();
     this.bindEvents();
+
+    const resetScroll = () => {
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+      if (document.documentElement.scrollTop !== 0) document.documentElement.scrollTop = 0;
+      if (document.documentElement.scrollLeft !== 0) document.documentElement.scrollLeft = 0;
+      if (document.body.scrollTop !== 0) document.body.scrollTop = 0;
+      if (document.body.scrollLeft !== 0) document.body.scrollLeft = 0;
+      if (this.viewportEl && (this.viewportEl.scrollTop !== 0 || this.viewportEl.scrollLeft !== 0)) {
+        this.viewportEl.scrollTop = 0;
+        this.viewportEl.scrollLeft = 0;
+      }
+    };
+
+    window.addEventListener('scroll', resetScroll, { passive: false, capture: true });
+    this.viewportEl.addEventListener('scroll', resetScroll, { passive: false, capture: true });
   }
 
   applyTransform() {

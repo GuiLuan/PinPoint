@@ -89,9 +89,13 @@
   <!-- 鼠标直接拉选框 -->
   <div id="marquee-box"></div>
 
-  <!-- 划选/改色浮动工具栏（5常用色 + 1调色盘 + 确认应用按钮） -->
+  <!-- 划选/改色浮动工具栏（无颜色 + 常用色 + 1调色盘 + 确认应用按钮） -->
   <div id="selection-popover">
     <div class="popover-colors-row">
+      <button class="popover-color-btn popover-none-btn" data-color="none" title="无颜色 / 默认">
+        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.6" fill="none"></circle><line x1="4.5" y1="4.5" x2="15.5" y2="15.5" stroke="currentColor" stroke-width="1.6"></line></svg>
+      </button>
+      <div class="popover-divider"></div>
       <button class="popover-color-btn" data-color="#30d158" style="--btn-color: #30d158;" title="绿色"></button>
       <button class="popover-color-btn" data-color="#0a84ff" style="--btn-color: #0a84ff;" title="蓝色"></button>
       <button class="popover-color-btn" data-color="#bf5af2" style="--btn-color: #bf5af2;" title="紫色"></button>

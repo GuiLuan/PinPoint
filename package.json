@@ -1,0 +1,9 @@
+{
+  "name": "pinpoint",
+  "version": "1.7.0",
+  "description": "极简无限白板思维图谱工具",
+  "private": true,
+  "scripts": {
+    "start": "python server.py"
+  }
+}

@@ -33,6 +33,7 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overflow: clip;
   background-color: var(--bg-color);
   font-family: var(--font-stack);
   color: var(--text-primary);
@@ -44,6 +45,7 @@ html, body {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  overflow: clip;
   cursor: default;
   background-color: var(--bg-color);
   background-image:
@@ -131,7 +133,7 @@ html, body {
   background: rgba(26, 28, 34, 0.94);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border-top: 2.5px solid var(--group-theme, var(--accent-blue));
+  border-top: 2.5px solid var(--group-theme, rgba(255, 255, 255, 0.22));
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px 14px 0 0;
   cursor: grab;
@@ -780,9 +782,14 @@ body.is-wire-dragging * {
 }
 
 body.is-wire-dragging .note-body {
-  cursor: crosshair !important;
   user-select: none !important;
   -webkit-user-select: none !important;
+}
+
+body.is-wire-dragging .text-capsule,
+body.is-wire-dragging .note-header,
+body.is-wire-dragging .group-header {
+  cursor: crosshair !important;
 }
 
 /* Selection Color Popover */
@@ -836,6 +843,38 @@ body.is-wire-dragging .note-body {
 
 .popover-color-btn:active {
   transform: scale(0.95);
+}
+
+.popover-none-btn {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.3) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  color: #ff453a !important;
+}
+
+.popover-none-btn svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  display: block;
+}
+
+.popover-none-btn:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 10px rgba(255, 69, 58, 0.5) !important;
+  border-color: #ff453a !important;
+  background: rgba(255, 69, 58, 0.16) !important;
+}
+
+.popover-none-btn.selected {
+  transform: scale(1.22);
+  box-shadow: 0 0 0 2px rgba(28, 28, 30, 0.95), 0 0 0 3px #ff453a !important;
+  border-color: #ffffff !important;
+  background: rgba(255, 69, 58, 0.22) !important;
 }
 
 .popover-divider {

@@ -638,6 +638,27 @@ class NodeManager {
     const palette = store.getPalette();
     colorsRow.innerHTML = '';
 
+    // "无颜色 / 默认" button
+    const noneBtn = document.createElement('button');
+    noneBtn.className = 'popover-color-btn popover-none-btn' + (this.selectedColor === null ? ' selected' : '');
+    noneBtn.setAttribute('data-color', 'none');
+    noneBtn.title = '无颜色 / 默认';
+    noneBtn.innerHTML = `
+      <svg viewBox="0 0 20 20" class="none-color-icon">
+        <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.6" fill="none"></circle>
+        <line x1="4.5" y1="4.5" x2="15.5" y2="15.5" stroke="currentColor" stroke-width="1.6"></line>
+      </svg>
+    `;
+    noneBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setSelectedColor(null);
+    });
+    colorsRow.appendChild(noneBtn);
+
+    const dividerLeft = document.createElement('div');
+    dividerLeft.className = 'popover-divider';
+    colorsRow.appendChild(dividerLeft);
+
     palette.forEach((color, idx) => {
       const btn = document.createElement('button');
       btn.className = 'popover-color-btn';
@@ -673,28 +694,44 @@ class NodeManager {
     label.appendChild(input);
     colorsRow.appendChild(label);
 
-    this.setSelectedColor(this.selectedColor || palette[0] || '#30d158');
+    this.setSelectedColor(this.selectedColor);
   }
 
   setSelectedColor(color) {
-    this.selectedColor = color;
+    this.selectedColor = (color === 'none' || color === '' || color === undefined) ? null : color;
     let matchedPreset = false;
-    this.selectionPopoverEl.querySelectorAll('.popover-color-btn').forEach(btn => {
+
+    const noneBtn = this.selectionPopoverEl.querySelector('.popover-none-btn');
+    if (noneBtn) {
+      noneBtn.classList.toggle('selected', this.selectedColor === null);
+    }
+
+    this.selectionPopoverEl.querySelectorAll('.popover-color-btn:not(.popover-none-btn)').forEach(btn => {
       const btnColor = btn.getAttribute('data-color');
-      const isMatch = btnColor?.toLowerCase() === color?.toLowerCase();
+      const isMatch = this.selectedColor && btnColor?.toLowerCase() === this.selectedColor?.toLowerCase();
       btn.classList.toggle('selected', isMatch);
       if (isMatch) matchedPreset = true;
     });
 
     const paletteBtn = this.selectionPopoverEl.querySelector('.popover-palette-btn');
     if (paletteBtn) {
-      paletteBtn.classList.toggle('selected', !matchedPreset);
+      paletteBtn.classList.toggle('selected', this.selectedColor !== null && !matchedPreset);
       const colorPicker = paletteBtn.querySelector('.popover-color-picker');
-      if (colorPicker && color && color.startsWith('#')) colorPicker.value = color;
+      if (colorPicker && this.selectedColor && this.selectedColor.startsWith('#')) colorPicker.value = this.selectedColor;
     }
 
     const dot = this.selectionPopoverEl.querySelector('.apply-color-dot');
-    if (dot) dot.style.backgroundColor = color;
+    if (dot) {
+      if (this.selectedColor) {
+        dot.style.backgroundColor = this.selectedColor;
+        dot.style.borderColor = 'transparent';
+        dot.innerHTML = '';
+      } else {
+        dot.style.backgroundColor = 'transparent';
+        dot.style.borderColor = 'rgba(255, 255, 255, 0.4)';
+        dot.innerHTML = `<svg viewBox="0 0 12 12" style="width:100%;height:100%;color:#ff453a;display:block;"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.8"></line></svg>`;
+      }
+    }
   }
 
   openPopoverForCapsule(capsule) {
@@ -702,12 +739,12 @@ class NodeManager {
     window.getSelection()?.removeAllRanges();
     this.currentRange = null;
     this.targetHeaderCard = null;
+    this.targetGroup = null;
     this.targetCapsule = capsule;
 
     this.renderPopoverPalette();
-    const currentColor = capsule.style.getPropertyValue('--capsule-pin').trim() ||
-                         window.getComputedStyle(capsule).getPropertyValue('--capsule-pin').trim() ||
-                         '#30d158';
+    const pinColor = capsule.style.getPropertyValue('--capsule-pin').trim();
+    const currentColor = (pinColor && pinColor !== '#98989d') ? pinColor : null;
 
     this.setSelectedColor(currentColor);
     this.updatePopoverPosition();
@@ -718,10 +755,11 @@ class NodeManager {
     window.getSelection()?.removeAllRanges();
     this.currentRange = null;
     this.targetCapsule = null;
+    this.targetGroup = null;
     this.targetHeaderCard = { card, headerEl };
 
     this.renderPopoverPalette();
-    const currentColor = card.headerColor || '#30d158';
+    const currentColor = card.headerColor || null;
     this.setSelectedColor(currentColor);
     this.updatePopoverPosition();
   }
@@ -865,14 +903,20 @@ class NodeManager {
 
     store.state.connections.forEach(conn => {
       if (headPins.has(conn.fromPinId)) {
-        conn.color = newColor;
+        if (newColor) {
+          conn.color = newColor;
+        } else {
+          const otherId = store.findCardIdByPin(conn.toPinId);
+          const otherCard = store.state.cards.find(c => c.id === otherId);
+          conn.color = otherCard?.headerColor || '#98989d';
+        }
       } else if (headPins.has(conn.toPinId)) {
         // If arriving from an uncolored header node, update connection color
         const otherCardId = store.findCardIdByPin(conn.fromPinId);
         const otherCard = store.state.cards.find(c => c.id === otherCardId);
         const isFromCapsule = conn.fromPinId.startsWith('pin-') && !conn.fromPinId.startsWith('pin-head-');
-        if (!isFromCapsule && !otherCard?.headerColor) {
-          conn.color = newColor;
+        if (!isFromCapsule) {
+          conn.color = otherCard?.headerColor || newColor || '#98989d';
         }
       }
     });
@@ -885,10 +929,11 @@ class NodeManager {
 
   recolorCapsule(capsule, newColor) {
     const pinId = capsule.getAttribute('data-pin-id');
-    const bg = hexToRgba(newColor, 0.14);
-    const border = hexToRgba(newColor, 0.38);
+    const color = newColor || '#98989d';
+    const bg = newColor ? hexToRgba(newColor, 0.14) : 'rgba(255, 255, 255, 0.08)';
+    const border = newColor ? hexToRgba(newColor, 0.38) : 'rgba(255, 255, 255, 0.2)';
 
-    capsule.style.setProperty('--capsule-pin', newColor);
+    capsule.style.setProperty('--capsule-pin', color);
     capsule.style.backgroundColor = bg;
     capsule.style.borderColor = border;
 
@@ -896,7 +941,7 @@ class NodeManager {
     if (pinId) {
       store.state.connections.forEach(conn => {
         if (conn.fromPinId === pinId || conn.toPinId === pinId) {
-          conn.color = newColor;
+          conn.color = color;
         }
       });
     }
@@ -1024,11 +1069,14 @@ class NodeManager {
     store.scheduleAutoSave();
   }
 
-  cloneCards(cardsToClone) {
+  cloneCardsAndGroups(cardsToClone, groupsToClone = [], connectionsToClone = null) {
     const cardIdMap = new Map();
+    const groupIdMap = new Map();
     const pinIdMap = new Map();
     const newCards = [];
+    const newGroups = [];
 
+    // 1. Generate new IDs and map header pins for cards
     cardsToClone.forEach(c => {
       const newCardId = `card-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`;
       cardIdMap.set(c.id, newCardId);
@@ -1037,6 +1085,21 @@ class NodeManager {
       pinIdMap.set(`pin-head-${c.id}`, `pin-head-left-${newCardId}`);
     });
 
+    // 2. Generate new IDs and map pins for groups
+    groupsToClone.forEach(g => {
+      const newGroupId = `group-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`;
+      groupIdMap.set(g.id, newGroupId);
+      pinIdMap.set(`pin-group-left-${g.id}`, `pin-group-left-${newGroupId}`);
+      pinIdMap.set(`pin-group-right-${g.id}`, `pin-group-right-${newGroupId}`);
+      pinIdMap.set(`pin-group-${g.id}`, `pin-group-left-${newGroupId}`);
+
+      const clonedGroup = JSON.parse(JSON.stringify(g));
+      clonedGroup.id = newGroupId;
+      clonedGroup.cardIds = (g.cardIds || []).map(oldId => cardIdMap.get(oldId)).filter(Boolean);
+      newGroups.push(clonedGroup);
+    });
+
+    // 3. Clone cards and remap capsule pins in contentHtml
     cardsToClone.forEach(c => {
       const newCardId = cardIdMap.get(c.id);
       const cloned = JSON.parse(JSON.stringify(c));
@@ -1047,7 +1110,7 @@ class NodeManager {
         tempDiv.innerHTML = cloned.contentHtml;
         tempDiv.querySelectorAll('.text-capsule').forEach(capsule => {
           const oldPinId = capsule.getAttribute('data-pin-id');
-          const newPinId = `pin-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+          const newPinId = `pin-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`;
           capsule.setAttribute('data-pin-id', newPinId);
           if (oldPinId) pinIdMap.set(oldPinId, newPinId);
         });
@@ -1056,41 +1119,73 @@ class NodeManager {
       newCards.push(cloned);
     });
 
+    // 4. Remap connections
     const sourceCardIds = new Set(cardsToClone.map(c => c.id));
+    const sourceGroupIds = new Set(groupsToClone.map(g => g.id));
+    const relevantSourceIds = new Set([...sourceCardIds, ...sourceGroupIds]);
+
+    const candidateConnections = (connectionsToClone !== null)
+      ? connectionsToClone
+      : store.state.connections.filter(conn => {
+          const o1 = store.findCardIdByPin(conn.fromPinId);
+          const o2 = store.findCardIdByPin(conn.toPinId);
+          return o1 && o2 && relevantSourceIds.has(o1) && relevantSourceIds.has(o2);
+        });
+
     const newConnections = [];
-    store.state.connections.forEach(conn => {
-      const fromCardId = store.findCardIdByPin(conn.fromPinId);
-      const toCardId = store.findCardIdByPin(conn.toPinId);
-      if (fromCardId && toCardId && sourceCardIds.has(fromCardId) && sourceCardIds.has(toCardId)) {
-        const remappedFrom = pinIdMap.get(conn.fromPinId);
-        const remappedTo = pinIdMap.get(conn.toPinId);
-        if (remappedFrom && remappedTo) {
-          newConnections.push({
-            id: `conn-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-            fromPinId: remappedFrom,
-            toPinId: remappedTo,
-            color: conn.color
-          });
-        }
+    candidateConnections.forEach(conn => {
+      const remappedFrom = pinIdMap.get(conn.fromPinId);
+      const remappedTo = pinIdMap.get(conn.toPinId);
+      if (remappedFrom && remappedTo) {
+        newConnections.push({
+          id: `conn-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`,
+          fromPinId: remappedFrom,
+          toPinId: remappedTo,
+          color: conn.color
+        });
       }
     });
 
-    return { newCards, newConnections, cardIdMap, pinIdMap };
+    return { newCards, newGroups, newConnections, cardIdMap, groupIdMap, pinIdMap };
+  }
+
+  cloneCards(cardsToClone) {
+    return this.cloneCardsAndGroups(cardsToClone);
   }
 
   copySelectedCards() {
     if (this.selectedCardIds.size === 0) return false;
+
+    // Sync contentHtml from DOM for any card with active edits
+    this.selectedCardIds.forEach(id => {
+      const card = store.state.cards.find(c => c.id === id);
+      const cardEl = document.getElementById(`card-dom-${id}`);
+      const body = cardEl?.querySelector('.note-body');
+      if (card && body) {
+        card.contentHtml = body.innerHTML;
+      }
+    });
+
     const cardsToCopy = store.state.cards.filter(c => this.selectedCardIds.has(c.id));
     if (cardsToCopy.length === 0) return false;
 
+    // Identify any groups whose member cards are all selected
+    const groupsToCopy = (store.state.groups || []).filter(g =>
+      g.cardIds && g.cardIds.length > 0 && g.cardIds.every(id => this.selectedCardIds.has(id))
+    );
+    const groupIdsToCopy = new Set(groupsToCopy.map(g => g.id));
+
+    const relevantEntityIds = new Set([...this.selectedCardIds, ...groupIdsToCopy]);
+    const internalConnections = store.state.connections.filter(conn => {
+      const owner1 = store.findCardIdByPin(conn.fromPinId);
+      const owner2 = store.findCardIdByPin(conn.toPinId);
+      return owner1 && owner2 && relevantEntityIds.has(owner1) && relevantEntityIds.has(owner2);
+    }).map(c => JSON.parse(JSON.stringify(c)));
+
     this.clipboard = {
       cards: JSON.parse(JSON.stringify(cardsToCopy)),
-      sourceCardIds: [...this.selectedCardIds],
-      internalConnections: store.state.connections.filter(conn => {
-        const c1 = store.findCardIdByPin(conn.fromPinId);
-        const c2 = store.findCardIdByPin(conn.toPinId);
-        return c1 && c2 && this.selectedCardIds.has(c1) && this.selectedCardIds.has(c2);
-      }).map(c => JSON.parse(JSON.stringify(c)))
+      groups: JSON.parse(JSON.stringify(groupsToCopy)),
+      internalConnections
     };
     this.pasteCount = 0;
     return true;
@@ -1108,7 +1203,11 @@ class NodeManager {
     this.pasteCount++;
     const offset = 32 * this.pasteCount;
 
-    const { newCards, newConnections } = this.cloneCards(this.clipboard.cards);
+    const { newCards, newGroups, newConnections } = this.cloneCardsAndGroups(
+      this.clipboard.cards,
+      this.clipboard.groups || [],
+      this.clipboard.internalConnections || []
+    );
 
     newCards.forEach(c => {
       c.x = Math.round(c.x + offset);
@@ -1121,6 +1220,11 @@ class NodeManager {
       store.state.cards.push(c);
     });
 
+    if (newGroups && newGroups.length > 0) {
+      if (!store.state.groups) store.state.groups = [];
+      newGroups.forEach(g => store.state.groups.push(g));
+    }
+
     newConnections.forEach(conn => {
       store.state.connections.push(conn);
     });
@@ -1128,6 +1232,7 @@ class NodeManager {
     this.selectedCardIds = new Set(newCards.map(c => c.id));
     store.commit();
     this.render();
+    this.renderGroups();
     wires.render();
     store.scheduleAutoSave();
     this.updateAlignmentBar();
@@ -1201,7 +1306,7 @@ class NodeManager {
         groupEl.style.backgroundColor = hexToRgba(group.headerColor, 0.035);
         groupEl.style.setProperty('--group-theme', group.headerColor);
       } else {
-        groupEl.style.setProperty('--group-theme', '#0a84ff');
+        groupEl.style.removeProperty('--group-theme');
       }
 
       const memberCount = group.cardIds.filter(id => store.state.cards.some(c => c.id === id)).length;
@@ -1301,12 +1406,19 @@ class NodeManager {
         window.getSelection()?.removeAllRanges();
         this.hideSelectionPopover();
 
+        // Select all cards in the group
+        this.selectedCardIds = new Set(group.cardIds);
+        this.updateSelectionVisuals();
+        this.updateAlignmentBar();
+
         const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
         this.activeDrag = {
           type: 'MOVE_GROUP',
           groupId: group.id,
           startX: e.clientX,
           startY: e.clientY,
+          isAlt: e.altKey,
+          cloned: false,
           initialPositions: new Map(memberCards.map(c => [c.id, { x: c.x, y: c.y }]))
         };
         groupEl.classList.add('active');
@@ -1382,7 +1494,7 @@ class NodeManager {
     this.targetGroup = { group, headerEl };
 
     this.renderPopoverPalette();
-    const currentColor = group.headerColor || '#0a84ff';
+    const currentColor = group.headerColor || null;
     this.setSelectedColor(currentColor);
     this.updatePopoverPosition();
   }
@@ -1520,13 +1632,13 @@ class NodeManager {
     store.scheduleAutoSave();
   }
 
-  calcSnap(leadCard, candidateX, candidateY) {
+  calcSnap(leadCard, candidateX, candidateY, excludedCardIds = this.selectedCardIds) {
     const leadEl = document.getElementById(`card-dom-${leadCard.id}`);
     const leadW = leadEl?.offsetWidth || leadCard.width || 310;
     const leadH = leadEl?.offsetHeight || 140;
 
     const threshold = 8;
-    const otherCards = store.state.cards.filter(c => !this.selectedCardIds.has(c.id));
+    const otherCards = store.state.cards.filter(c => !excludedCardIds.has(c.id));
 
     let bestX = { dist: threshold + 1, delta: 0, guide: null };
     let bestY = { dist: threshold + 1, delta: 0, guide: null };
@@ -1665,8 +1777,12 @@ class NodeManager {
             const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
             if (dist > 3) {
               const cardsToClone = store.state.cards.filter(c => this.selectedCardIds.has(c.id));
-              const { newCards, newConnections, cardIdMap } = this.cloneCards(cardsToClone);
+              const groupsToClone = (store.state.groups || []).filter(g =>
+                g.cardIds && g.cardIds.length > 0 && g.cardIds.every(id => this.selectedCardIds.has(id))
+              );
+              const { newCards, newGroups, newConnections, cardIdMap } = this.cloneCardsAndGroups(cardsToClone, groupsToClone);
               newCards.forEach(c => store.state.cards.push(c));
+              newGroups.forEach(g => store.state.groups.push(g));
               newConnections.forEach(conn => store.state.connections.push(conn));
 
               const newPositions = new Map();
@@ -1679,6 +1795,7 @@ class NodeManager {
               this.activeDrag.leadCardId = newLeadId;
               this.activeDrag.initialPositions = newPositions;
               this.render();
+              this.renderGroups();
               this.selectedCardIds.forEach(id => {
                 document.getElementById(`card-dom-${id}`)?.classList.add('active');
               });
@@ -1770,8 +1887,66 @@ class NodeManager {
 
           wires.render();
         } else if (this.activeDrag.type === 'MOVE_GROUP') {
-          const dx = (e.clientX - this.activeDrag.startX) / zoom;
-          const dy = (e.clientY - this.activeDrag.startY) / zoom;
+          // Alt+Drag: Clone group, member cards and connections
+          if ((this.activeDrag.isAlt || e.altKey) && !this.activeDrag.cloned) {
+            const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
+            if (dist > 3) {
+              const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
+              if (group) {
+                const cardsToClone = store.state.cards.filter(c => group.cardIds.includes(c.id));
+                const { newCards, newGroups, newConnections, groupIdMap } = this.cloneCardsAndGroups(cardsToClone, [group]);
+                newCards.forEach(c => store.state.cards.push(c));
+                newGroups.forEach(g => store.state.groups.push(g));
+                newConnections.forEach(conn => store.state.connections.push(conn));
+
+                const newGroupId = groupIdMap.get(group.id);
+                const newMemberCards = store.state.cards.filter(c => newCards.some(nc => nc.id === c.id));
+                this.activeDrag.cloned = true;
+                this.activeDrag.groupId = newGroupId;
+                this.activeDrag.initialPositions = new Map(newMemberCards.map(c => [c.id, { x: c.x, y: c.y }]));
+                this.selectedCardIds = new Set(newCards.map(c => c.id));
+                this.render();
+                this.renderGroups();
+                document.getElementById(`group-dom-${newGroupId}`)?.classList.add('active');
+              }
+            }
+          }
+
+          let dx = (e.clientX - this.activeDrag.startX) / zoom;
+          let dy = (e.clientY - this.activeDrag.startY) / zoom;
+
+          const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
+          const leadCardId = this.activeDrag.initialPositions.keys().next().value;
+          const leadCard = store.state.cards.find(c => c.id === leadCardId);
+          const leadInitPos = this.activeDrag.initialPositions.get(leadCardId);
+
+          if (leadCard && leadInitPos) {
+            let candX = leadInitPos.x + dx;
+            let candY = leadInitPos.y + dy;
+
+            const alignMode = !!store.state.settings?.alignMode;
+            const gridSnapMode = !!store.state.settings?.gridSnapMode;
+            const shouldAlign = alignMode ? !e.ctrlKey : e.ctrlKey;
+
+            if (gridSnapMode) {
+              const GRID_SIZE = 24;
+              candX = Math.round(candX / GRID_SIZE) * GRID_SIZE;
+              candY = Math.round(candY / GRID_SIZE) * GRID_SIZE;
+            }
+
+            if (shouldAlign) {
+              const excluded = new Set(group?.cardIds || [leadCardId]);
+              const snap = this.calcSnap(leadCard, candX, candY, excluded);
+              candX = snap.snappedX;
+              candY = snap.snappedY;
+              wires.showGuideLines(snap.guideLines);
+            } else {
+              wires.clearGuideLines();
+            }
+
+            dx = candX - leadInitPos.x;
+            dy = candY - leadInitPos.y;
+          }
 
           this.activeDrag.initialPositions.forEach((pos, cardId) => {
             const card = store.state.cards.find(c => c.id === cardId);
