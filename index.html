@@ -179,91 +179,143 @@
         </button>
       </div>
 
-      <div class="settings-content">
-        <!-- 常用配色方案 -->
-        <section class="settings-section">
-          <div class="settings-section-header">
-            <div>
-              <h3 class="settings-section-title">常用配色与槽位</h3>
-              <p class="settings-section-desc">自定义节点头部及划选胶囊的预设颜色与槽位数量（2 ~ 10 个）</p>
-            </div>
-            <!-- 槽位数量步进器 -->
-            <div class="palette-slot-stepper">
-              <span class="stepper-label">槽位数</span>
-              <button class="stepper-btn" id="btn-slot-dec" title="减少一个配色槽位">−</button>
-              <span class="stepper-count" id="slot-count-val">5</span>
-              <button class="stepper-btn" id="btn-slot-inc" title="增加一个配色槽位">+</button>
-            </div>
-          </div>
-
-          <!-- 配色槽位容器 -->
-          <div class="palette-slots-container" id="palette-slots-container">
-            <!-- 动态生成各个槽位 -->
-          </div>
-
-          <div class="palette-actions-row">
-            <button class="settings-action-btn" id="btn-add-slot">
-              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-              <span>添加槽位</span>
+      <div class="settings-body">
+        <!-- 左侧分类导航 -->
+        <aside class="settings-sidebar">
+          <nav class="settings-nav">
+            <button class="settings-nav-item is-active" data-tab="palette">
+              <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"></circle>
+                <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"></circle>
+                <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"></circle>
+                <circle cx="6.5" cy="12.5" r=".5" fill="currentColor"></circle>
+                <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"></path>
+              </svg>
+              <span>常用配色</span>
             </button>
-            <button class="settings-action-btn secondary" id="btn-reset-palette">
-              <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
-              <span>恢复默认配色</span>
+            <button class="settings-nav-item" data-tab="canvas">
+              <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                <path d="M3 9h18M9 21V9"></path>
+              </svg>
+              <span>画板辅助</span>
             </button>
-          </div>
+            <button class="settings-nav-item" data-tab="shortcuts">
+              <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+                <path d="M6 8h.001M10 8h.001M14 8h.001M18 8h.001M6 12h.001M10 12h.001M14 12h.001M18 12h.001M7 16h10"></path>
+              </svg>
+              <span>快捷键速查</span>
+            </button>
+          </nav>
+        </aside>
 
-          <!-- 实时效果预览 -->
-          <div class="palette-preview-box">
-            <span class="preview-label">效果预览</span>
-            <div class="preview-card-mockup" id="preview-card-mockup">
-              <div class="preview-header-mockup" id="preview-header-mockup">
-                <span class="preview-dot"></span>
-                <span>核心节点 (Slot 1)</span>
+        <!-- 右侧具体内容 -->
+        <main class="settings-main">
+          <!-- 常用配色方案 -->
+          <div class="settings-tab-panel is-active" id="tab-panel-palette">
+            <div class="settings-section-header">
+              <div>
+                <h3 class="settings-section-title">常用配色与槽位</h3>
+                <p class="settings-section-desc">自定义节点头部及划选胶囊的预设颜色与槽位数量（2 ~ 10 个）</p>
               </div>
-              <div class="preview-body-mockup">
-                包含划选词汇 <span class="preview-capsule-mockup" id="preview-capsule-mockup"><i class="capsule-pin"></i>衍生概念 (Slot 2)</span> 的效果。
+              <!-- 槽位数量步进器 -->
+              <div class="palette-slot-stepper">
+                <span class="stepper-label">槽位数</span>
+                <button class="stepper-btn" id="btn-slot-dec" title="减少一个配色槽位">−</button>
+                <span class="stepper-count" id="slot-count-val">5</span>
+                <button class="stepper-btn" id="btn-slot-inc" title="增加一个配色槽位">+</button>
+              </div>
+            </div>
+
+            <!-- 配色槽位容器 -->
+            <div class="palette-slots-container" id="palette-slots-container">
+              <!-- 动态生成各个槽位 -->
+            </div>
+
+            <div class="palette-actions-row">
+              <button class="settings-action-btn" id="btn-add-slot">
+                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                <span>添加槽位</span>
+              </button>
+              <button class="settings-action-btn secondary" id="btn-reset-palette">
+                <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+                <span>恢复默认配色</span>
+              </button>
+            </div>
+
+            <!-- 实时效果预览 -->
+            <div class="palette-preview-box">
+              <span class="preview-label">效果预览</span>
+              <div class="preview-card-mockup" id="preview-card-mockup">
+                <div class="preview-header-mockup" id="preview-header-mockup">
+                  <span class="preview-dot"></span>
+                  <span>核心节点 (Slot 1)</span>
+                </div>
+                <div class="preview-body-mockup">
+                  包含划选词汇 <span class="preview-capsule-mockup" id="preview-capsule-mockup"><i class="capsule-pin"></i>衍生概念 (Slot 2)</span> 的效果。
+                </div>
               </div>
             </div>
           </div>
-        </section>
 
-        <!-- 画板辅助开关 -->
-        <section class="settings-section">
-          <h3 class="settings-section-title">画板辅助</h3>
-          <div class="settings-row">
-            <div class="settings-row-info">
-              <span class="settings-row-label">对齐模式</span>
-              <span class="settings-row-sub">拖动节点时默认磁吸对齐其他节点；按住 Ctrl 键临时取消对齐</span>
+          <!-- 画板辅助开关 -->
+          <div class="settings-tab-panel" id="tab-panel-canvas">
+            <div class="settings-section-header">
+              <div>
+                <h3 class="settings-section-title">画板辅助与交互</h3>
+                <p class="settings-section-desc">配置拖拽、磁吸对齐以及背景网格吸附行为</p>
+              </div>
             </div>
-            <div class="toggle-pill" id="settings-toggle-align">
-              <div class="toggle-knob"></div>
-            </div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-row-info">
-              <span class="settings-row-label">吸附模式</span>
-              <span class="settings-row-sub">拖动节点与新建节点时，自动吸附到 24px 背景网格点</span>
-            </div>
-            <div class="toggle-pill" id="settings-toggle-gridsnap">
-              <div class="toggle-knob"></div>
-            </div>
-          </div>
-        </section>
 
-        <!-- 快捷键指南 -->
-        <section class="settings-section">
-          <h3 class="settings-section-title">快捷键速查</h3>
-          <div class="shortcuts-grid">
-            <div class="shortcut-item"><kbd>Ctrl + ,</kbd><span>偏好设置</span></div>
-            <div class="shortcut-item"><kbd>F2</kbd><span>重命名当前/选中节点</span></div>
-            <div class="shortcut-item"><kbd>Ctrl + A</kbd><span>全选所有节点</span></div>
-            <div class="shortcut-item"><kbd>双击画布</kbd><span>快速新建节点</span></div>
-            <div class="shortcut-item"><kbd>Ctrl + 拖拽</kbd><span>反转对齐磁吸</span></div>
-            <div class="shortcut-item"><kbd>Delete</kbd><span>删除选中节点/胶囊</span></div>
-            <div class="shortcut-item"><kbd>Ctrl + Z / Y</kbd><span>撤销 / 重做</span></div>
-            <div class="shortcut-item"><kbd>Ctrl + S</kbd><span>保存图谱文件</span></div>
+            <div class="settings-card-group">
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <span class="settings-row-label">对齐模式</span>
+                  <span class="settings-row-sub">拖动节点时默认磁吸对齐其他节点；按住 Ctrl 键临时取消对齐</span>
+                </div>
+                <div class="toggle-pill" id="settings-toggle-align">
+                  <div class="toggle-knob"></div>
+                </div>
+              </div>
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <span class="settings-row-label">吸附模式</span>
+                  <span class="settings-row-sub">拖动节点与新建节点时，自动吸附到 24px 背景网格点</span>
+                </div>
+                <div class="toggle-pill" id="settings-toggle-gridsnap">
+                  <div class="toggle-knob"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-tip-box">
+              <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+              <span>在画布任意空白区域点击鼠标右键，可快速呼出菜单切换对齐模式与吸附模式。</span>
+            </div>
           </div>
-        </section>
+
+          <!-- 快捷键指南 -->
+          <div class="settings-tab-panel" id="tab-panel-shortcuts">
+            <div class="settings-section-header">
+              <div>
+                <h3 class="settings-section-title">快捷键速查</h3>
+                <p class="settings-section-desc">键盘与鼠标快捷操作指南，助你高效整理思路</p>
+              </div>
+            </div>
+
+            <div class="shortcuts-grid">
+              <div class="shortcut-item"><kbd>Ctrl + ,</kbd><span>偏好设置</span></div>
+              <div class="shortcut-item"><kbd>F2</kbd><span>重命名当前/选中节点</span></div>
+              <div class="shortcut-item"><kbd>Ctrl + A</kbd><span>全选所有节点</span></div>
+              <div class="shortcut-item"><kbd>双击画布</kbd><span>快速新建节点</span></div>
+              <div class="shortcut-item"><kbd>Ctrl + 拖拽</kbd><span>反转对齐磁吸</span></div>
+              <div class="shortcut-item"><kbd>Delete</kbd><span>删除选中节点/胶囊</span></div>
+              <div class="shortcut-item"><kbd>Ctrl + Z / Y</kbd><span>撤销 / 重做</span></div>
+              <div class="shortcut-item"><kbd>Ctrl + S</kbd><span>保存图谱文件</span></div>
+            </div>
+          </div>
+        </main>
       </div>
     </div>
   </div>

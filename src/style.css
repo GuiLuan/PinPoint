@@ -1081,13 +1081,16 @@ body.is-wire-dragging .note-body {
 }
 
 .settings-modal {
-  width: 520px;
+  width: 720px;
+  height: 540px;
   max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 56px);
+  max-height: calc(100vh - 48px);
   background: rgba(28, 28, 30, 0.95);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 16px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.05);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1104,7 +1107,7 @@ body.is-wire-dragging .note-body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px 14px 20px;
+  padding: 15px 20px 13px 20px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
 }
@@ -1167,26 +1170,146 @@ body.is-wire-dragging .note-body {
   stroke-width: 2;
 }
 
-.settings-content {
-  padding: 16px 20px 22px 20px;
-  overflow-y: auto;
-  overflow-x: hidden;
+/* Two-column split layout: Left sidebar + Right main */
+.settings-body {
   display: flex;
-  flex-direction: column;
-  gap: 20px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.settings-content::-webkit-scrollbar {
+.settings-sidebar {
+  width: 175px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.02);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: all 0.15s ease;
+}
+
+.settings-nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.settings-nav-item.is-active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.settings-nav-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  transition: stroke 0.15s ease;
+}
+
+.settings-nav-item.is-active .settings-nav-icon {
+  stroke: var(--accent-blue);
+}
+
+.settings-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 20px 24px 24px 24px;
+}
+
+.settings-main::-webkit-scrollbar {
   width: 6px;
 }
 
-.settings-content::-webkit-scrollbar-track {
+.settings-main::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.settings-content::-webkit-scrollbar-thumb {
+.settings-main::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
   border-radius: 3px;
+}
+
+.settings-tab-panel {
+  display: none;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-tab-panel.is-active {
+  display: flex;
+  animation: tab-panel-fade 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes tab-panel-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.settings-card-group {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-card-group .settings-row {
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.settings-card-group .settings-row:last-child {
+  border-bottom: none;
+}
+
+.settings-tip-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 8px;
+  background: rgba(10, 132, 255, 0.08);
+  border: 1px solid rgba(10, 132, 255, 0.2);
+  color: #70b4ff;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-tip-box svg {
+  flex-shrink: 0;
+  stroke: var(--accent-blue);
 }
 
 .settings-section {

@@ -79,8 +79,37 @@ class SettingsManager {
       this.syncAssistanceToggles();
     });
 
+    // Nav tabs switching
+    this.overlayEl.querySelectorAll('.settings-nav-item').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const tabId = btn.getAttribute('data-tab');
+        if (tabId) this.switchTab(tabId);
+      });
+    });
+
+    this.currentTab = 'palette';
     this.renderPaletteSlots();
     this.syncAssistanceToggles();
+  }
+
+  switchTab(tabId) {
+    if (!this.overlayEl) return;
+    this.currentTab = tabId;
+
+    this.overlayEl.querySelectorAll('.settings-nav-item').forEach(btn => {
+      const match = btn.getAttribute('data-tab') === tabId;
+      btn.classList.toggle('is-active', match);
+    });
+
+    this.overlayEl.querySelectorAll('.settings-tab-panel').forEach(panel => {
+      const match = panel.id === `tab-panel-${tabId}`;
+      panel.classList.toggle('is-active', match);
+    });
+
+    if (tabId === 'palette') {
+      this.updatePreviewMockup();
+    }
   }
 
   isOpen() {
@@ -89,6 +118,7 @@ class SettingsManager {
 
   open() {
     if (!this.overlayEl) return;
+    this.switchTab(this.currentTab || 'palette');
     this.renderPaletteSlots();
     this.syncAssistanceToggles();
     this.overlayEl.classList.add('is-open');
