@@ -146,7 +146,7 @@ function initApp() {
       settings.syncUI();
       nodes.renderPopoverPalette();
       nodes.updateContextMenuToggles();
-    } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED') {
+    } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED' || event.type?.startsWith('GROUP_')) {
       nodes.render();
       wires.render();
     }

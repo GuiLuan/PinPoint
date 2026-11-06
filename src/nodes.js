@@ -17,6 +17,7 @@ export function hexToRgba(hex, alpha = 1) {
 class NodeManager {
   constructor() {
     this.containerEl = null;
+    this.groupsContainerEl = null;
     this.selectionPopoverEl = null;
     this.capsuleActionBarEl = null;
     this.canvasContextMenuEl = null;
@@ -27,20 +28,34 @@ class NodeManager {
     this.targetCapsule = null;
     this.selectedCapsule = null;
     this.targetHeaderCard = null;
+    this.targetGroup = null;
     this.selectedColor = '#30d158';
     this.selectedCardIds = new Set();
     this.activeMarquee = null;
     this.activeDrag = null;
+    this.clipboard = null;
+    this.pasteCount = 0;
+    this.mouseBoardPos = { x: 0, y: 0 };
   }
 
   init(containerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl) {
     this.containerEl = containerEl;
+    this.groupsContainerEl = document.getElementById('groups-container');
     this.selectionPopoverEl = selectionPopoverEl;
     this.capsuleActionBarEl = capsuleActionBarEl || document.getElementById('capsule-action-bar');
     this.canvasContextMenuEl = canvasContextMenuEl || document.getElementById('canvas-context-menu');
     this.marqueeBoxEl = marqueeBoxEl;
     this.alignmentBarEl = alignmentBarEl;
     this.viewportEl = viewportEl;
+
+    window.addEventListener('mousemove', (e) => {
+      const { x, y, zoom } = store.state.viewport;
+      this.mouseBoardPos = {
+        x: (e.clientX - x) / zoom,
+        y: (e.clientY - y) / zoom
+      };
+    });
+
     this.renderPopoverPalette();
     this.bindCapsuleActionEvents();
     this.bindCanvasContextMenuEvents();
@@ -236,6 +251,8 @@ class NodeManager {
           leadCardId: card.id,
           startX: e.clientX,
           startY: e.clientY,
+          isAlt: e.altKey,
+          cloned: false,
           initialPositions: new Map(
             [...this.selectedCardIds].map(id => {
               const c = store.state.cards.find(x => x.id === id);
@@ -324,6 +341,7 @@ class NodeManager {
     });
 
     this.bindCapsuleEvents();
+    this.renderGroups();
   }
 
   bindPinEvents(pinEl, pinId) {
@@ -714,6 +732,8 @@ class NodeManager {
     let rect = null;
     if (this.targetHeaderCard) {
       rect = this.targetHeaderCard.headerEl.getBoundingClientRect();
+    } else if (this.targetGroup) {
+      rect = this.targetGroup.headerEl.getBoundingClientRect();
     } else if (this.targetCapsule) {
       const rects = this.targetCapsule.getClientRects();
       rect = rects.length > 0 ? rects[0] : this.targetCapsule.getBoundingClientRect();
@@ -744,6 +764,7 @@ class NodeManager {
     this.currentRange = null;
     this.targetCapsule = null;
     this.targetHeaderCard = null;
+    this.targetGroup = null;
   }
 
   bindSelectionEvents() {
@@ -755,25 +776,26 @@ class NodeManager {
 
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-        if (!this.targetCapsule && !this.targetHeaderCard) this.hideSelectionPopover();
+        if (!this.targetCapsule && !this.targetHeaderCard && !this.targetGroup) this.hideSelectionPopover();
         return;
       }
 
       const text = selection.toString().trim();
       if (!text) {
-        if (!this.targetCapsule && !this.targetHeaderCard) this.hideSelectionPopover();
+        if (!this.targetCapsule && !this.targetHeaderCard && !this.targetGroup) this.hideSelectionPopover();
         return;
       }
 
       const anchor = selection.anchorNode;
       const bodyEl = anchor?.nodeType === 3 ? anchor.parentElement.closest('.note-body') : anchor?.closest('.note-body');
       if (!bodyEl) {
-        if (!this.targetCapsule && !this.targetHeaderCard) this.hideSelectionPopover();
+        if (!this.targetCapsule && !this.targetHeaderCard && !this.targetGroup) this.hideSelectionPopover();
         return;
       }
 
       this.targetCapsule = null;
       this.targetHeaderCard = null;
+      this.targetGroup = null;
       this.currentRange = selection.getRangeAt(0).cloneRange();
       this.renderPopoverPalette();
       this.setSelectedColor(this.selectedColor || store.getPalette()[0] || '#30d158');
@@ -804,7 +826,7 @@ class NodeManager {
       }
 
       if (this.selectionPopoverEl && this.selectionPopoverEl.contains(e.target)) return;
-      if (e.target.closest('.text-capsule, .note-header')) return;
+      if (e.target.closest('.text-capsule, .note-header, .group-header')) return;
       this.hideSelectionPopover();
     });
 
@@ -823,6 +845,8 @@ class NodeManager {
   applyColor() {
     if (this.targetHeaderCard) {
       this.applyHeaderColor(this.targetHeaderCard.card, this.selectedColor);
+    } else if (this.targetGroup) {
+      this.applyGroupColor(this.targetGroup.group, this.selectedColor);
     } else if (this.targetCapsule) {
       this.recolorCapsule(this.targetCapsule, this.selectedColor);
     } else if (this.currentRange) {
@@ -973,6 +997,7 @@ class NodeManager {
       this.alignmentBarEl.style.display = 'flex';
       const distributeH = this.alignmentBarEl.querySelector('#btn-distribute-h');
       const distributeV = this.alignmentBarEl.querySelector('#btn-distribute-v');
+      const btnCreateGroup = this.alignmentBarEl.querySelector('#btn-create-group');
       if (distributeH) {
         distributeH.style.opacity = count >= 3 ? '1' : '0.35';
         distributeH.style.pointerEvents = count >= 3 ? 'auto' : 'none';
@@ -980,6 +1005,9 @@ class NodeManager {
       if (distributeV) {
         distributeV.style.opacity = count >= 3 ? '1' : '0.35';
         distributeV.style.pointerEvents = count >= 3 ? 'auto' : 'none';
+      }
+      if (btnCreateGroup) {
+        btnCreateGroup.style.display = 'flex';
       }
     } else {
       this.alignmentBarEl.style.display = 'none';
@@ -991,6 +1019,391 @@ class NodeManager {
     const toDelete = [...this.selectedCardIds];
     store.removeCards(toDelete);
     this.clearSelection();
+    this.render();
+    wires.render();
+    store.scheduleAutoSave();
+  }
+
+  cloneCards(cardsToClone) {
+    const cardIdMap = new Map();
+    const pinIdMap = new Map();
+    const newCards = [];
+
+    cardsToClone.forEach(c => {
+      const newCardId = `card-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`;
+      cardIdMap.set(c.id, newCardId);
+      pinIdMap.set(`pin-head-left-${c.id}`, `pin-head-left-${newCardId}`);
+      pinIdMap.set(`pin-head-right-${c.id}`, `pin-head-right-${newCardId}`);
+      pinIdMap.set(`pin-head-${c.id}`, `pin-head-left-${newCardId}`);
+    });
+
+    cardsToClone.forEach(c => {
+      const newCardId = cardIdMap.get(c.id);
+      const cloned = JSON.parse(JSON.stringify(c));
+      cloned.id = newCardId;
+
+      if (cloned.contentHtml) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = cloned.contentHtml;
+        tempDiv.querySelectorAll('.text-capsule').forEach(capsule => {
+          const oldPinId = capsule.getAttribute('data-pin-id');
+          const newPinId = `pin-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+          capsule.setAttribute('data-pin-id', newPinId);
+          if (oldPinId) pinIdMap.set(oldPinId, newPinId);
+        });
+        cloned.contentHtml = tempDiv.innerHTML;
+      }
+      newCards.push(cloned);
+    });
+
+    const sourceCardIds = new Set(cardsToClone.map(c => c.id));
+    const newConnections = [];
+    store.state.connections.forEach(conn => {
+      const fromCardId = store.findCardIdByPin(conn.fromPinId);
+      const toCardId = store.findCardIdByPin(conn.toPinId);
+      if (fromCardId && toCardId && sourceCardIds.has(fromCardId) && sourceCardIds.has(toCardId)) {
+        const remappedFrom = pinIdMap.get(conn.fromPinId);
+        const remappedTo = pinIdMap.get(conn.toPinId);
+        if (remappedFrom && remappedTo) {
+          newConnections.push({
+            id: `conn-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+            fromPinId: remappedFrom,
+            toPinId: remappedTo,
+            color: conn.color
+          });
+        }
+      }
+    });
+
+    return { newCards, newConnections, cardIdMap, pinIdMap };
+  }
+
+  copySelectedCards() {
+    if (this.selectedCardIds.size === 0) return false;
+    const cardsToCopy = store.state.cards.filter(c => this.selectedCardIds.has(c.id));
+    if (cardsToCopy.length === 0) return false;
+
+    this.clipboard = {
+      cards: JSON.parse(JSON.stringify(cardsToCopy)),
+      sourceCardIds: [...this.selectedCardIds],
+      internalConnections: store.state.connections.filter(conn => {
+        const c1 = store.findCardIdByPin(conn.fromPinId);
+        const c2 = store.findCardIdByPin(conn.toPinId);
+        return c1 && c2 && this.selectedCardIds.has(c1) && this.selectedCardIds.has(c2);
+      }).map(c => JSON.parse(JSON.stringify(c)))
+    };
+    this.pasteCount = 0;
+    return true;
+  }
+
+  cutSelectedCards() {
+    if (this.selectedCardIds.size === 0) return false;
+    this.copySelectedCards();
+    this.deleteSelectedCards();
+    return true;
+  }
+
+  pasteCards() {
+    if (!this.clipboard || !this.clipboard.cards || this.clipboard.cards.length === 0) return false;
+    this.pasteCount++;
+    const offset = 32 * this.pasteCount;
+
+    const { newCards, newConnections } = this.cloneCards(this.clipboard.cards);
+
+    newCards.forEach(c => {
+      c.x = Math.round(c.x + offset);
+      c.y = Math.round(c.y + offset);
+      if (store.state.settings?.gridSnapMode) {
+        const GRID_SIZE = 24;
+        c.x = Math.round(c.x / GRID_SIZE) * GRID_SIZE;
+        c.y = Math.round(c.y / GRID_SIZE) * GRID_SIZE;
+      }
+      store.state.cards.push(c);
+    });
+
+    newConnections.forEach(conn => {
+      store.state.connections.push(conn);
+    });
+
+    this.selectedCardIds = new Set(newCards.map(c => c.id));
+    store.commit();
+    this.render();
+    wires.render();
+    store.scheduleAutoSave();
+    this.updateAlignmentBar();
+    return true;
+  }
+
+  calcGroupBounds(group) {
+    if (!group || !Array.isArray(group.cardIds) || group.cardIds.length === 0) return null;
+    const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
+    if (memberCards.length === 0) return null;
+
+    const PADDING_X = 24;
+    const PADDING_TOP = 48;
+    const PADDING_BOTTOM = 24;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    memberCards.forEach(c => {
+      const el = document.getElementById(`card-dom-${c.id}`);
+      const w = el?.offsetWidth || c.width || 310;
+      const h = el?.offsetHeight || 140;
+      if (c.x < minX) minX = c.x;
+      if (c.x + w > maxX) maxX = c.x + w;
+      if (c.y < minY) minY = c.y;
+      if (c.y + h > maxY) maxY = c.y + h;
+    });
+
+    const x = minX - PADDING_X;
+    const y = minY - PADDING_TOP;
+    const width = Math.max(340, (maxX - minX) + PADDING_X * 2);
+    const height = (maxY - minY) + PADDING_TOP + PADDING_BOTTOM;
+
+    return { x, y, width, height };
+  }
+
+  renderGroups() {
+    if (!this.groupsContainerEl) {
+      this.groupsContainerEl = document.getElementById('groups-container');
+      if (!this.groupsContainerEl) return;
+    }
+    this.groupsContainerEl.innerHTML = '';
+
+    const groups = store.state.groups || [];
+    groups.forEach(group => {
+      const bounds = this.calcGroupBounds(group);
+      if (!bounds) return;
+
+      const groupEl = document.createElement('div');
+      groupEl.className = 'node-group';
+      groupEl.id = `group-dom-${group.id}`;
+      groupEl.style.left = `${bounds.x}px`;
+      groupEl.style.top = `${bounds.y}px`;
+      groupEl.style.width = `${bounds.width}px`;
+      groupEl.style.height = `${bounds.height}px`;
+
+      const leftPinId = `pin-group-left-${group.id}`;
+      const rightPinId = `pin-group-right-${group.id}`;
+      const leftConn = store.state.connections.find(c => c.toPinId === leftPinId || c.fromPinId === leftPinId);
+      const rightConn = store.state.connections.find(c => c.toPinId === rightPinId || c.fromPinId === rightPinId);
+
+      const leftConnected = !!leftConn;
+      const rightConnected = !!rightConn;
+      const leftColor = group.headerColor || leftConn?.color || '#98989d';
+      const rightColor = group.headerColor || rightConn?.color || '#98989d';
+
+      if (group.headerColor) {
+        groupEl.style.borderColor = hexToRgba(group.headerColor, 0.4);
+        groupEl.style.backgroundColor = hexToRgba(group.headerColor, 0.035);
+      }
+
+      const memberCount = group.cardIds.filter(id => store.state.cards.some(c => c.id === id)).length;
+
+      groupEl.innerHTML = `
+        <div class="group-header">
+          <div class="header-port-slot header-port-slot-left" title="组连接端口 (左)">
+            <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}" 
+               data-header-pin-id="${leftPinId}" 
+               style="background-color: ${leftColor}; color: ${leftColor};"></i>
+          </div>
+
+          <div class="group-title-container">
+            <svg class="group-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>
+            <span class="group-title" title="双击重命名组">${group.title || '节点组'}</span>
+            <input class="group-title-input" value="${group.title || ''}" placeholder="节点组" style="display: none;" />
+            <span class="group-card-count">${memberCount} 个节点</span>
+          </div>
+
+          <div class="group-actions">
+            <button class="group-ungroup-btn" title="解散组 (Ctrl+Shift+G)">
+              <svg viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1"></path><rect x="9" y="3" width="12" height="12" rx="2"></rect></svg>
+              解散
+            </button>
+          </div>
+
+          <div class="header-port-slot header-port-slot-right" title="组连接端口 (右)">
+            <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}" 
+               data-header-pin-id="${rightPinId}" 
+               style="background-color: ${rightColor}; color: ${rightColor};"></i>
+          </div>
+        </div>
+      `;
+
+      // Title editing
+      const titleSpan = groupEl.querySelector('.group-title');
+      const titleInput = groupEl.querySelector('.group-title-input');
+      const startRename = () => {
+        titleSpan.style.display = 'none';
+        titleInput.style.display = 'block';
+        titleInput.value = group.title || '';
+        titleInput.focus();
+        titleInput.select();
+      };
+      const finishRename = () => {
+        if (titleInput.style.display === 'none') return;
+        const newTitle = titleInput.value.trim() || '节点组';
+        group.title = newTitle;
+        titleSpan.textContent = newTitle;
+        titleInput.style.display = 'none';
+        titleSpan.style.display = '';
+        store.commit();
+        store.scheduleAutoSave();
+      };
+      titleSpan.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startRename();
+      });
+      titleInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          finishRename();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          titleInput.value = group.title || '';
+          finishRename();
+        }
+      });
+      titleInput.addEventListener('blur', finishRename);
+      titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
+
+      // Ungroup button
+      const ungroupBtn = groupEl.querySelector('.group-ungroup-btn');
+      ungroupBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.ungroup(group.id);
+      });
+
+      // Right-click group header to recolor
+      const headerEl = groupEl.querySelector('.group-header');
+      headerEl.addEventListener('contextmenu', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot, .group-ungroup-btn')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.openPopoverForGroup(group, headerEl);
+      });
+
+      // Drag group by header
+      headerEl.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot, .group-ungroup-btn') || e.target === titleInput) return;
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        wires.clearFocus();
+        wires.dismissDropMenu(true);
+        this.clearCapsuleSelection();
+        window.getSelection()?.removeAllRanges();
+        this.hideSelectionPopover();
+
+        const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
+        this.activeDrag = {
+          type: 'MOVE_GROUP',
+          groupId: group.id,
+          startX: e.clientX,
+          startY: e.clientY,
+          initialPositions: new Map(memberCards.map(c => [c.id, { x: c.x, y: c.y }])),
+          initGroupBounds: { ...bounds }
+        };
+        groupEl.classList.add('active');
+      });
+
+      // Group pins
+      const pinLeft = groupEl.querySelector('.header-pin-left');
+      const pinRight = groupEl.querySelector('.header-pin-right');
+      this.bindPinEvents(pinLeft, leftPinId);
+      this.bindPinEvents(pinRight, rightPinId);
+
+      this.groupsContainerEl.appendChild(groupEl);
+    });
+  }
+
+  updateGroupDOMBounds(groupId) {
+    const group = store.state.groups?.find(g => g.id === groupId);
+    if (!group) return;
+    const bounds = this.calcGroupBounds(group);
+    const groupEl = document.getElementById(`group-dom-${groupId}`);
+    if (groupEl && bounds) {
+      groupEl.style.left = `${bounds.x}px`;
+      groupEl.style.top = `${bounds.y}px`;
+      groupEl.style.width = `${bounds.width}px`;
+      groupEl.style.height = `${bounds.height}px`;
+      const countBadge = groupEl.querySelector('.group-card-count');
+      if (countBadge) countBadge.textContent = `${group.cardIds.length} 个节点`;
+    }
+  }
+
+  createGroupFromSelected() {
+    if (this.selectedCardIds.size < 2) return null;
+    const existingGroupCount = store.state.groups?.length || 0;
+    const group = {
+      id: `group-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      title: `组 ${existingGroupCount + 1}`,
+      cardIds: [...this.selectedCardIds],
+      headerColor: '#0a84ff'
+    };
+    store.addGroup(group);
+    this.render();
+    wires.render();
+    store.scheduleAutoSave();
+    return group;
+  }
+
+  ungroup(groupId) {
+    store.removeGroup(groupId);
+    this.render();
+    wires.render();
+    store.scheduleAutoSave();
+  }
+
+  ungroupSelected() {
+    if (!store.state.groups || store.state.groups.length === 0) return;
+    const groupsToRemove = store.state.groups.filter(g =>
+      g.cardIds.some(id => this.selectedCardIds.has(id))
+    );
+    if (groupsToRemove.length > 0) {
+      groupsToRemove.forEach(g => store.removeGroup(g.id));
+      this.render();
+      wires.render();
+      store.scheduleAutoSave();
+    }
+  }
+
+  openPopoverForGroup(group, headerEl) {
+    this.clearCapsuleSelection();
+    window.getSelection()?.removeAllRanges();
+    this.currentRange = null;
+    this.targetCapsule = null;
+    this.targetHeaderCard = null;
+    this.targetGroup = { group, headerEl };
+
+    this.renderPopoverPalette();
+    const currentColor = group.headerColor || '#0a84ff';
+    this.setSelectedColor(currentColor);
+    this.updatePopoverPosition();
+  }
+
+  applyGroupColor(group, newColor) {
+    group.headerColor = newColor;
+    const leftPinId = `pin-group-left-${group.id}`;
+    const rightPinId = `pin-group-right-${group.id}`;
+    const groupPins = new Set([leftPinId, rightPinId]);
+
+    store.state.connections.forEach(conn => {
+      if (groupPins.has(conn.fromPinId)) {
+        conn.color = newColor;
+      } else if (groupPins.has(conn.toPinId)) {
+        const otherId = store.findCardIdByPin(conn.fromPinId);
+        const otherCard = store.state.cards.find(c => c.id === otherId);
+        if (!otherCard?.headerColor) {
+          conn.color = newColor;
+        }
+      }
+    });
+
+    store.commit();
     this.render();
     wires.render();
     store.scheduleAutoSave();
@@ -1014,6 +1427,12 @@ class NodeManager {
         e.stopPropagation();
         this.align(type);
       });
+    });
+
+    const btnCreateGroup = this.alignmentBarEl.querySelector('#btn-create-group');
+    btnCreateGroup?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.createGroupFromSelected();
     });
   }
 
@@ -1239,6 +1658,31 @@ class NodeManager {
         const { zoom } = store.state.viewport;
 
         if (this.activeDrag.type === 'MOVE_CARDS') {
+          // Alt+Drag: Clone cards and transfer drag to clones
+          if ((this.activeDrag.isAlt || e.altKey) && !this.activeDrag.cloned) {
+            const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
+            if (dist > 3) {
+              const cardsToClone = store.state.cards.filter(c => this.selectedCardIds.has(c.id));
+              const { newCards, newConnections, cardIdMap } = this.cloneCards(cardsToClone);
+              newCards.forEach(c => store.state.cards.push(c));
+              newConnections.forEach(conn => store.state.connections.push(conn));
+
+              const newPositions = new Map();
+              newCards.forEach(c => {
+                newPositions.set(c.id, { x: c.x, y: c.y, width: c.width || 310 });
+              });
+              const newLeadId = cardIdMap.get(this.activeDrag.leadCardId) || newCards[0].id;
+              this.selectedCardIds = new Set(newCards.map(c => c.id));
+              this.activeDrag.cloned = true;
+              this.activeDrag.leadCardId = newLeadId;
+              this.activeDrag.initialPositions = newPositions;
+              this.render();
+              this.selectedCardIds.forEach(id => {
+                document.getElementById(`card-dom-${id}`)?.classList.add('active');
+              });
+            }
+          }
+
           let dx = (e.clientX - this.activeDrag.startX) / zoom;
           let dy = (e.clientY - this.activeDrag.startY) / zoom;
 
@@ -1285,6 +1729,66 @@ class NodeManager {
             }
           });
 
+          // Check hover over existing groups to add member cards
+          let hoveredGroupId = null;
+          if (store.state.groups && store.state.groups.length > 0) {
+            const leadCard = store.state.cards.find(c => c.id === this.activeDrag.leadCardId);
+            if (leadCard) {
+              const cardCenterX = leadCard.x + (leadCard.width || 310) / 2;
+              const cardCenterY = leadCard.y + 70;
+              for (const group of store.state.groups) {
+                const bounds = this.calcGroupBounds(group);
+                if (bounds) {
+                  if (cardCenterX >= bounds.x && cardCenterX <= bounds.x + bounds.width &&
+                      cardCenterY >= bounds.y && cardCenterY <= bounds.y + bounds.height) {
+                    const notInGroup = [...this.selectedCardIds].some(id => !group.cardIds.includes(id));
+                    if (notInGroup) {
+                      hoveredGroupId = group.id;
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          this.activeDrag.hoverGroupId = hoveredGroupId;
+          document.querySelectorAll('.node-group').forEach(el => {
+            const gId = el.id.replace('group-dom-', '');
+            el.classList.toggle('group-drop-target', gId === hoveredGroupId);
+          });
+
+          // Update bounds for any groups containing moved cards
+          if (store.state.groups) {
+            store.state.groups.forEach(g => {
+              if (g.cardIds.some(id => this.selectedCardIds.has(id))) {
+                this.updateGroupDOMBounds(g.id);
+              }
+            });
+          }
+
+          wires.render();
+        } else if (this.activeDrag.type === 'MOVE_GROUP') {
+          const dx = (e.clientX - this.activeDrag.startX) / zoom;
+          const dy = (e.clientY - this.activeDrag.startY) / zoom;
+
+          this.activeDrag.initialPositions.forEach((pos, cardId) => {
+            const card = store.state.cards.find(c => c.id === cardId);
+            if (card) {
+              card.x = Math.round(pos.x + dx);
+              card.y = Math.round(pos.y + dy);
+              const cardEl = document.getElementById(`card-dom-${card.id}`);
+              if (cardEl) {
+                cardEl.style.left = `${card.x}px`;
+                cardEl.style.top = `${card.y}px`;
+              }
+            }
+          });
+
+          const groupEl = document.getElementById(`group-dom-${this.activeDrag.groupId}`);
+          if (groupEl && this.activeDrag.initGroupBounds) {
+            groupEl.style.left = `${Math.round(this.activeDrag.initGroupBounds.x + dx)}px`;
+            groupEl.style.top = `${Math.round(this.activeDrag.initGroupBounds.y + dy)}px`;
+          }
           wires.render();
         } else if (this.activeDrag.type === 'RESIZE_CARD') {
           const dx = (e.clientX - this.activeDrag.startX) / zoom;
@@ -1349,14 +1853,49 @@ class NodeManager {
 
       if (this.activeDrag) {
         wires.clearGuideLines();
+        document.querySelectorAll('.group-drop-target').forEach(el => el.classList.remove('group-drop-target'));
+
         if (this.activeDrag.type === 'MOVE_CARDS') {
           const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
-          if (dist < 4 && !e.shiftKey && this.selectedCardIds.size > 1) {
+          if (dist < 4 && !e.shiftKey && this.selectedCardIds.size > 1 && !this.activeDrag.cloned) {
             this.selectCard(this.activeDrag.leadCardId, false);
           }
           this.activeDrag.initialPositions.forEach((_, id) => {
             document.getElementById(`card-dom-${id}`)?.classList.remove('active');
           });
+
+          if (this.activeDrag.hoverGroupId) {
+            this.selectedCardIds.forEach(id => {
+              store.addCardToGroup(this.activeDrag.hoverGroupId, id);
+            });
+            this.renderGroups();
+          } else {
+            if (store.state.groups && store.state.groups.length > 0) {
+              store.state.groups.forEach(group => {
+                const remainingCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
+                if (remainingCards.length > 1) {
+                  const toRemove = [];
+                  group.cardIds.forEach(cardId => {
+                    if (this.selectedCardIds.has(cardId)) {
+                      const card = store.state.cards.find(c => c.id === cardId);
+                      if (card) {
+                        const others = remainingCards.filter(c => c.id !== cardId);
+                        const minDist = Math.min(...others.map(oc => Math.hypot(card.x - oc.x, card.y - oc.y)));
+                        if (minDist > 550) {
+                          toRemove.push(cardId);
+                        }
+                      }
+                    }
+                  });
+                  toRemove.forEach(id => store.removeCardFromGroup(group.id, id));
+                }
+              });
+              this.renderGroups();
+            }
+          }
+        } else if (this.activeDrag.type === 'MOVE_GROUP') {
+          document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
+          this.updateGroupDOMBounds(this.activeDrag.groupId);
         } else if (this.activeDrag.type === 'RESIZE_CARD') {
           document.querySelectorAll('.card-resize-handle.active').forEach(h => h.classList.remove('active'));
         }
@@ -1409,6 +1948,51 @@ class NodeManager {
         if (!isEditingText) {
           e.preventDefault();
           this.selectAllCards();
+          return;
+        }
+      }
+
+      // Copy: Ctrl+C
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && !isEditingText) {
+        if (this.selectedCardIds.size > 0) {
+          e.preventDefault();
+          this.copySelectedCards();
+          return;
+        }
+      }
+
+      // Cut: Ctrl+X
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x' && !isEditingText) {
+        if (this.selectedCardIds.size > 0) {
+          e.preventDefault();
+          this.cutSelectedCards();
+          return;
+        }
+      }
+
+      // Paste: Ctrl+V
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && !isEditingText) {
+        if (this.clipboard && this.clipboard.cards?.length > 0) {
+          e.preventDefault();
+          this.pasteCards();
+          return;
+        }
+      }
+
+      // Group: Ctrl+G
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g' && !e.shiftKey && !isEditingText) {
+        if (this.selectedCardIds.size >= 2) {
+          e.preventDefault();
+          this.createGroupFromSelected();
+          return;
+        }
+      }
+
+      // Ungroup: Ctrl+Shift+G
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g' && e.shiftKey && !isEditingText) {
+        if (this.selectedCardIds.size > 0) {
+          e.preventDefault();
+          this.ungroupSelected();
           return;
         }
       }

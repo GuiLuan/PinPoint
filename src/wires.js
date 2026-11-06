@@ -98,6 +98,11 @@ class WireManager {
       const card = store.state.cards.find(c => c.id === cardId);
       return card?.headerColor || null;
     }
+    if (pinId.startsWith('pin-group-')) {
+      const groupId = store.findCardIdByPin(pinId);
+      const group = store.state.groups?.find(g => g.id === groupId);
+      return group?.headerColor || null;
+    }
     const capsuleEl = document.querySelector(`[data-pin-id="${pinId}"]`);
     if (capsuleEl) {
       const col = capsuleEl.style.getPropertyValue('--capsule-pin').trim() ||
@@ -233,12 +238,12 @@ class WireManager {
     [conn.fromPinId, conn.toPinId].forEach(pinId => {
       const capsule = document.querySelector(`[data-pin-id="${pinId}"]`);
       if (capsule) {
-        capsule.closest('.note-card')?.classList.add('focus-card');
+        capsule.closest('.note-card, .node-group')?.classList.add('focus-card');
         capsule.classList.add('target-highlight');
       }
       const headPin = document.querySelector(`[data-header-pin-id="${pinId}"]`);
       if (headPin) {
-        headPin.closest('.note-card')?.classList.add('focus-card');
+        headPin.closest('.note-card, .node-group')?.classList.add('focus-card');
         headPin.classList.add('pin-active');
       }
     });
@@ -260,12 +265,12 @@ class WireManager {
     pinIds.forEach(pId => {
       const capsule = document.querySelector(`[data-pin-id="${pId}"]`);
       if (capsule) {
-        capsule.closest('.note-card')?.classList.add('focus-card');
+        capsule.closest('.note-card, .node-group')?.classList.add('focus-card');
         if (pId !== pinId) capsule.classList.add('target-highlight');
       }
       const headPin = document.querySelector(`[data-header-pin-id="${pId}"]`);
       if (headPin) {
-        headPin.closest('.note-card')?.classList.add('focus-card');
+        headPin.closest('.note-card, .node-group')?.classList.add('focus-card');
         headPin.classList.add('pin-active');
       }
     });
@@ -442,7 +447,7 @@ class WireManager {
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
       document.querySelectorAll('.pin-ghost').forEach(el => {
         el.classList.remove('pin-ghost');
-        const cardEl = el.closest('.note-card');
+        const cardEl = el.closest('.note-card, .node-group');
         const cardId = cardEl?.id.replace('card-dom-', '');
         const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
         if (!card?.headerColor && !el.classList.contains('pin-connected')) {
@@ -456,7 +461,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetCard = hitEl?.closest ? hitEl.closest('.note-card') : null;
+      const targetCard = hitEl?.closest ? hitEl.closest('.note-card, .node-group') : null;
 
       let targetId = null;
       let activePinEl = null;
@@ -496,7 +501,7 @@ class WireManager {
               activePinEl.classList.add('pin-active');
             } else {
               activePinEl.classList.add('pin-ghost');
-              const cardEl = activePinEl.closest('.note-card');
+              const cardEl = activePinEl.closest('.note-card, .node-group');
               const cardId = cardEl?.id.replace('card-dom-', '');
               const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
               if (!card?.headerColor && this.activeDrag.wireColor && this.activeDrag.wireColor !== '#98989d') {
@@ -522,7 +527,7 @@ class WireManager {
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
       document.querySelectorAll('.pin-ghost').forEach(el => {
         el.classList.remove('pin-ghost');
-        const cardEl = el.closest('.note-card');
+        const cardEl = el.closest('.note-card, .node-group');
         const cardId = cardEl?.id.replace('card-dom-', '');
         const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
         if (!card?.headerColor && !el.classList.contains('pin-connected')) {
@@ -536,7 +541,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetCard = hitEl?.closest ? hitEl.closest('.note-card') : null;
+      const targetCard = hitEl?.closest ? hitEl.closest('.note-card, .node-group') : null;
       let targetPinId = null;
 
       if (targetSlot) {
@@ -604,7 +609,7 @@ class WireManager {
           this.tempWireEl.style.display = 'none';
           document.querySelectorAll('.pin-ghost').forEach(el => {
             el.classList.remove('pin-ghost');
-            const cardEl = el.closest('.note-card');
+            const cardEl = el.closest('.note-card, .node-group');
             const cardId = cardEl?.id.replace('card-dom-', '');
             const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
             if (!card?.headerColor && !el.classList.contains('pin-connected')) {

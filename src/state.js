@@ -33,7 +33,8 @@ const DEFAULT_STATE = {
   ],
   connections: [
     { id: 'conn-1', fromPinId: 'pin-1', toPinId: 'pin-2', color: '#30d158' }
-  ]
+  ],
+  groups: []
 };
 
 class StateManager {
@@ -50,7 +51,8 @@ class StateManager {
   snapshot() {
     return JSON.stringify({
       cards: this.state.cards,
-      connections: this.state.connections
+      connections: this.state.connections,
+      groups: this.state.groups || []
     });
   }
 
@@ -81,6 +83,7 @@ class StateManager {
     const data = JSON.parse(prevSnap);
     this.state.cards = JSON.parse(JSON.stringify(data.cards));
     this.state.connections = JSON.parse(JSON.stringify(data.connections));
+    this.state.groups = JSON.parse(JSON.stringify(data.groups || []));
     this.scheduleAutoSave();
     this.notify({ type: 'STATE_RESTORED' });
     return true;
@@ -93,6 +96,7 @@ class StateManager {
     const data = JSON.parse(nextSnap);
     this.state.cards = JSON.parse(JSON.stringify(data.cards));
     this.state.connections = JSON.parse(JSON.stringify(data.connections));
+    this.state.groups = JSON.parse(JSON.stringify(data.groups || []));
     this.scheduleAutoSave();
     this.notify({ type: 'STATE_RESTORED' });
     return true;
@@ -104,6 +108,8 @@ class StateManager {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.cards && parsed.connections) {
+          const cards = parsed.cards;
+          const groups = parsed.groups || [];
           return {
             viewport: parsed.viewport || { x: 0, y: 0, zoom: 1.0 },
             settings: {
@@ -113,8 +119,9 @@ class StateManager {
                 ? parsed.settings.palette
                 : [...DEFAULT_PALETTE]
             },
-            cards: parsed.cards,
-            connections: parsed.connections.filter(c => this.validateConnection(c, parsed.cards))
+            cards,
+            connections: parsed.connections.filter(c => this.validateConnection(c, cards, groups)),
+            groups
           };
         }
       }
@@ -124,15 +131,18 @@ class StateManager {
     return JSON.parse(JSON.stringify(DEFAULT_STATE));
   }
 
-  validateConnection(conn, cards) {
+  validateConnection(conn, cards, groups = this.state.groups || []) {
     if (!conn.fromPinId || !conn.toPinId || conn.fromPinId === conn.toPinId) return false;
-    const c1 = this.findCardIdByPin(conn.fromPinId, cards);
-    const c2 = this.findCardIdByPin(conn.toPinId, cards);
+    const c1 = this.findCardIdByPin(conn.fromPinId, cards, groups);
+    const c2 = this.findCardIdByPin(conn.toPinId, cards, groups);
     return c1 && c2 && c1 !== c2;
   }
 
-  findCardIdByPin(pinId, cards = this.state.cards) {
+  findCardIdByPin(pinId, cards = this.state.cards, groups = this.state?.groups || []) {
     if (!pinId) return null;
+    if (pinId.startsWith('pin-group-left-')) return pinId.replace('pin-group-left-', '');
+    if (pinId.startsWith('pin-group-right-')) return pinId.replace('pin-group-right-', '');
+    if (pinId.startsWith('pin-group-')) return pinId.replace('pin-group-', '');
     if (pinId.startsWith('pin-head-left-')) return pinId.replace('pin-head-left-', '');
     if (pinId.startsWith('pin-head-right-')) return pinId.replace('pin-head-right-', '');
     if (pinId.startsWith('pin-head-')) return pinId.replace('pin-head-', '');
@@ -142,9 +152,9 @@ class StateManager {
 
   canConnect(fromPinId, toPinId) {
     if (!fromPinId || !toPinId || fromPinId === toPinId) return false;
-    const card1 = this.findCardIdByPin(fromPinId);
-    const card2 = this.findCardIdByPin(toPinId);
-    return card1 && card2 && card1 !== card2;
+    const owner1 = this.findCardIdByPin(fromPinId);
+    const owner2 = this.findCardIdByPin(toPinId);
+    return owner1 && owner2 && owner1 !== owner2;
   }
 
   subscribe(listener) {
@@ -165,7 +175,8 @@ class StateManager {
           viewport: this.state.viewport,
           settings: this.state.settings,
           cards: this.state.cards,
-          connections: this.state.connections
+          connections: this.state.connections,
+          groups: this.state.groups || []
         }));
       } catch (e) {}
     }, 400);
@@ -264,10 +275,26 @@ class StateManager {
   removeCards(cardIds) {
     const idSet = new Set(cardIds);
     this.state.cards = this.state.cards.filter(c => !idSet.has(c.id));
+    if (this.state.groups) {
+      this.state.groups.forEach(g => {
+        g.cardIds = g.cardIds.filter(id => !idSet.has(id));
+      });
+      // Remove groups with fewer than 2 cards
+      const emptyGroups = this.state.groups.filter(g => g.cardIds.length < 2);
+      emptyGroups.forEach(g => {
+        const leftPinId = `pin-group-left-${g.id}`;
+        const rightPinId = `pin-group-right-${g.id}`;
+        this.state.connections = this.state.connections.filter(c =>
+          c.fromPinId !== leftPinId && c.toPinId !== leftPinId &&
+          c.fromPinId !== rightPinId && c.toPinId !== rightPinId
+        );
+      });
+      this.state.groups = this.state.groups.filter(g => g.cardIds.length >= 2);
+    }
     this.state.connections = this.state.connections.filter(c => {
       const c1 = this.findCardIdByPin(c.fromPinId);
       const c2 = this.findCardIdByPin(c.toPinId);
-      return !idSet.has(c1) && !idSet.has(c2);
+      return (!c1 || !idSet.has(c1)) && (!c2 || !idSet.has(c2));
     });
     this.commit();
     this.notify({ type: 'CARD_REMOVED', cardIds });
@@ -282,6 +309,56 @@ class StateManager {
     if (!card) return;
     Object.assign(card, patch);
     this.notify({ type: 'CARD_UPDATED', cardId });
+  }
+
+  addGroup(group) {
+    if (!this.state.groups) this.state.groups = [];
+    this.state.groups.push(group);
+    this.commit();
+    this.notify({ type: 'GROUP_ADDED', group });
+    return group;
+  }
+
+  removeGroup(groupId) {
+    if (!this.state.groups) return;
+    this.state.groups = this.state.groups.filter(g => g.id !== groupId);
+    const leftPinId = `pin-group-left-${groupId}`;
+    const rightPinId = `pin-group-right-${groupId}`;
+    this.state.connections = this.state.connections.filter(c =>
+      c.fromPinId !== leftPinId && c.toPinId !== leftPinId &&
+      c.fromPinId !== rightPinId && c.toPinId !== rightPinId
+    );
+    this.commit();
+    this.notify({ type: 'GROUP_REMOVED', groupId });
+  }
+
+  updateGroup(groupId, patch) {
+    const group = this.state.groups?.find(g => g.id === groupId);
+    if (!group) return;
+    Object.assign(group, patch);
+    this.notify({ type: 'GROUP_UPDATED', groupId });
+  }
+
+  addCardToGroup(groupId, cardId) {
+    const group = this.state.groups?.find(g => g.id === groupId);
+    if (!group) return;
+    if (!group.cardIds.includes(cardId)) {
+      group.cardIds.push(cardId);
+      this.commit();
+      this.notify({ type: 'GROUP_UPDATED', groupId });
+    }
+  }
+
+  removeCardFromGroup(groupId, cardId) {
+    const group = this.state.groups?.find(g => g.id === groupId);
+    if (!group) return;
+    group.cardIds = group.cardIds.filter(id => id !== cardId);
+    if (group.cardIds.length < 2) {
+      this.removeGroup(groupId);
+    } else {
+      this.commit();
+      this.notify({ type: 'GROUP_UPDATED', groupId });
+    }
   }
 
   addConnection(fromPinId, toPinId, color) {
@@ -338,7 +415,8 @@ class StateManager {
       viewport: this.state.viewport,
       settings: this.state.settings,
       cards: this.state.cards,
-      connections: this.state.connections
+      connections: this.state.connections,
+      groups: this.state.groups || []
     };
     const jsonStr = JSON.stringify(exportData, null, 2);
 
@@ -401,7 +479,8 @@ class StateManager {
                 : [...DEFAULT_PALETTE]
             },
             cards: data.cards,
-            connections: data.connections.filter(c => this.validateConnection(c, data.cards))
+            connections: data.connections.filter(c => this.validateConnection(c, data.cards, data.groups || [])),
+            groups: data.groups || []
           };
           this.undoStack = [this.snapshot()];
           this.redoStack = [];
@@ -436,7 +515,8 @@ class StateManager {
                   : [...DEFAULT_PALETTE]
               },
               cards: data.cards,
-              connections: data.connections.filter(c => this.validateConnection(c, data.cards))
+              connections: data.connections.filter(c => this.validateConnection(c, data.cards, data.groups || [])),
+              groups: data.groups || []
             };
             this.undoStack = [this.snapshot()];
             this.redoStack = [];

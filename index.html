@@ -71,11 +71,16 @@
     <button class="hud-btn" id="btn-distribute-v" data-tooltip="垂直均分">
       <svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="5" rx="1.5"></rect><rect x="5" y="16" width="14" height="5" rx="1.5"></rect><line x1="4" y1="12" x2="20" y2="12" stroke-dasharray="2 2"></line></svg>
     </button>
+    <div class="hud-divider"></div>
+    <button class="hud-btn" id="btn-create-group" data-tooltip="创建组 (Ctrl+G)">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>
+    </button>
   </div>
 
   <!-- 无限画布视口 -->
   <main id="viewport">
     <div id="board">
+      <div id="groups-container"></div>
       <svg id="wire-svg"></svg>
       <div id="cards-container"></div>
     </div>
@@ -172,7 +177,6 @@
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
           <span class="settings-title" id="settings-title">偏好设置</span>
-          <span class="settings-shortcut-badge">Ctrl + ,</span>
         </div>
         <button class="settings-close-btn" id="btn-close-settings" title="关闭 (Esc)">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -307,6 +311,10 @@
             <div class="shortcuts-grid">
               <div class="shortcut-item"><kbd>Ctrl + ,</kbd><span>偏好设置</span></div>
               <div class="shortcut-item"><kbd>F2</kbd><span>重命名当前/选中节点</span></div>
+              <div class="shortcut-item"><kbd>Ctrl + C / V / X</kbd><span>复制 / 粘贴 / 剪切节点</span></div>
+              <div class="shortcut-item"><kbd>Alt + 拖拽</kbd><span>快速克隆并拖动节点</span></div>
+              <div class="shortcut-item"><kbd>Ctrl + G</kbd><span>将选中节点创建为组</span></div>
+              <div class="shortcut-item"><kbd>Ctrl + Shift + G</kbd><span>解散当前选中组</span></div>
               <div class="shortcut-item"><kbd>Ctrl + A</kbd><span>全选所有节点</span></div>
               <div class="shortcut-item"><kbd>双击画布</kbd><span>快速新建节点</span></div>
               <div class="shortcut-item"><kbd>Ctrl + 拖拽</kbd><span>反转对齐磁吸</span></div>
