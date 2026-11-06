@@ -2,6 +2,7 @@ import { store } from './state.js';
 import { canvas } from './canvas.js';
 import { nodes } from './nodes.js';
 import { wires } from './wires.js';
+import { settings } from './settings.js';
 
 function initApp() {
   const viewportEl = document.getElementById('viewport');
@@ -15,13 +16,16 @@ function initApp() {
   const capsuleActionBarEl = document.getElementById('capsule-action-bar');
   const wireDropMenuEl = document.getElementById('wire-drop-menu');
   const canvasContextMenuEl = document.getElementById('canvas-context-menu');
+  const settingsOverlayEl = document.getElementById('settings-overlay');
 
   canvas.init(viewportEl, boardEl);
   wires.init(wireSvgEl, (pos, skipCommit) => nodes.spawnNode(pos, '未命名节点', skipCommit), wireDropMenuEl);
   nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl);
+  settings.init(settingsOverlayEl);
   window.__store = store;
   window.__nodes = nodes;
   window.__wires = wires;
+  window.__settings = settings;
   canvas.onTransform = () => {
     nodes.updatePopoverPosition();
     nodes.updateAlignmentBar();
@@ -104,6 +108,19 @@ function initApp() {
     }
   });
 
+  // HUD Button: Settings (Ctrl+,)
+  document.getElementById('btn-settings')?.addEventListener('click', () => {
+    settings.toggle();
+  });
+
+  // Canvas context menu button: Settings
+  document.getElementById('menu-open-settings')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    nodes.hideCanvasContextMenu();
+    settings.open();
+  });
+
   store.subscribe((event) => {
     updateUndoRedoButtons();
     if (event.type === 'FILE_OPENED') {
@@ -125,7 +142,11 @@ function initApp() {
       nodes.render();
       wires.render();
       nodes.updateAlignmentBar();
-    } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED') {
+    } else if (event.type === 'SETTINGS_CHANGED') {
+      settings.syncUI();
+      nodes.renderPopoverPalette();
+      nodes.updateContextMenuToggles();
+    } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED') {
       nodes.render();
       wires.render();
     }

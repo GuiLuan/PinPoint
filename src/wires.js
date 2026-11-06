@@ -91,6 +91,27 @@ class WireManager {
     return { x, y };
   }
 
+  resolvePinColor(pinId) {
+    if (!pinId) return null;
+    if (pinId.startsWith('pin-head-')) {
+      const cardId = store.findCardIdByPin(pinId);
+      const card = store.state.cards.find(c => c.id === cardId);
+      return card?.headerColor || null;
+    }
+    const capsuleEl = document.querySelector(`[data-pin-id="${pinId}"]`);
+    if (capsuleEl) {
+      const col = capsuleEl.style.getPropertyValue('--capsule-pin').trim() ||
+                  window.getComputedStyle(capsuleEl).getPropertyValue('--capsule-pin').trim();
+      if (col && col !== '#98989d') return col;
+    }
+    const card = store.state.cards.find(c => c.contentHtml && c.contentHtml.includes(pinId));
+    if (card) {
+      const match = card.contentHtml.match(new RegExp(`data-pin-id="${pinId}"[^>]*--capsule-pin:\\s*([^;"]+)`));
+      if (match && match[1]) return match[1].trim();
+    }
+    return null;
+  }
+
   render() {
     this.connectionsGroupEl.innerHTML = '';
 
@@ -419,7 +440,16 @@ class WireManager {
       let toDir = boardPos.x < this.activeDrag.startPos.x ? 'right' : 'left';
 
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
-      document.querySelectorAll('.pin-ghost').forEach(el => el.classList.remove('pin-ghost'));
+      document.querySelectorAll('.pin-ghost').forEach(el => {
+        el.classList.remove('pin-ghost');
+        const cardEl = el.closest('.note-card');
+        const cardId = cardEl?.id.replace('card-dom-', '');
+        const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
+        if (!card?.headerColor && !el.classList.contains('pin-connected')) {
+          el.style.backgroundColor = '';
+          el.style.color = '';
+        }
+      });
       document.querySelectorAll('.target-highlight').forEach(el => el.classList.remove('target-highlight'));
 
       const hitEl = (e.clientX !== undefined && e.clientY !== undefined ? document.elementFromPoint(e.clientX, e.clientY) : null) || e.target;
@@ -466,6 +496,13 @@ class WireManager {
               activePinEl.classList.add('pin-active');
             } else {
               activePinEl.classList.add('pin-ghost');
+              const cardEl = activePinEl.closest('.note-card');
+              const cardId = cardEl?.id.replace('card-dom-', '');
+              const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
+              if (!card?.headerColor && this.activeDrag.wireColor && this.activeDrag.wireColor !== '#98989d') {
+                activePinEl.style.backgroundColor = this.activeDrag.wireColor;
+                activePinEl.style.color = this.activeDrag.wireColor;
+              }
             }
           }
           if (targetCapsule) targetCapsule.classList.add('target-highlight');
@@ -483,7 +520,16 @@ class WireManager {
       document.body.style.cursor = '';
       this.tempWireEl.style.display = 'none';
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
-      document.querySelectorAll('.pin-ghost').forEach(el => el.classList.remove('pin-ghost'));
+      document.querySelectorAll('.pin-ghost').forEach(el => {
+        el.classList.remove('pin-ghost');
+        const cardEl = el.closest('.note-card');
+        const cardId = cardEl?.id.replace('card-dom-', '');
+        const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
+        if (!card?.headerColor && !el.classList.contains('pin-connected')) {
+          el.style.backgroundColor = '';
+          el.style.color = '';
+        }
+      });
       document.querySelectorAll('.target-highlight').forEach(el => el.classList.remove('target-highlight'));
 
       const hitEl = (e.clientX !== undefined && e.clientY !== undefined ? document.elementFromPoint(e.clientX, e.clientY) : null) || e.target;
@@ -511,12 +557,23 @@ class WireManager {
       const { type, connId, fromPinId, wireColor, moved } = this.activeDrag;
 
       if (targetPinId && store.canConnect(fromPinId, targetPinId)) {
+        this.activeDrag = null;
+        let finalColor = wireColor;
+        if (!finalColor || finalColor === '#98989d') {
+          const targetColor = this.resolvePinColor(targetPinId);
+          if (targetColor) {
+            finalColor = targetColor;
+          }
+        }
         if (type === 'RECONNECT') {
           store.reconnect(connId, targetPinId);
+          if (finalColor && finalColor !== '#98989d') {
+            const conn = store.state.connections.find(c => c.id === connId);
+            if (conn && conn.color === '#98989d') conn.color = finalColor;
+          }
         } else {
-          store.addConnection(fromPinId, targetPinId, wireColor);
+          store.addConnection(fromPinId, targetPinId, finalColor);
         }
-        this.activeDrag = null;
         this.render();
       } else {
         if (type === 'RECONNECT' && !moved) {
@@ -545,6 +602,16 @@ class WireManager {
           document.body.classList.remove('is-wire-dragging');
           document.body.style.cursor = '';
           this.tempWireEl.style.display = 'none';
+          document.querySelectorAll('.pin-ghost').forEach(el => {
+            el.classList.remove('pin-ghost');
+            const cardEl = el.closest('.note-card');
+            const cardId = cardEl?.id.replace('card-dom-', '');
+            const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
+            if (!card?.headerColor && !el.classList.contains('pin-connected')) {
+              el.style.backgroundColor = '';
+              el.style.color = '';
+            }
+          });
           this.activeDrag = null;
           this.render();
           window.getSelection()?.removeAllRanges();

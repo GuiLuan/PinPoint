@@ -1,10 +1,17 @@
 const STORAGE_KEY = 'pinpoint_workspace_data';
 
+export const DEFAULT_PALETTE = ['#30d158', '#0a84ff', '#bf5af2', '#ffd60a', '#ff9f0a'];
+export const PRESET_POOL = [
+  '#30d158', '#0a84ff', '#bf5af2', '#ffd60a', '#ff9f0a',
+  '#ff453a', '#64d2ff', '#ac8e68', '#ff375f', '#5e5ce6'
+];
+
 const DEFAULT_STATE = {
   viewport: { x: 0, y: 0, zoom: 1.0 },
   settings: {
     alignMode: false,
-    gridSnapMode: false
+    gridSnapMode: false,
+    palette: [...DEFAULT_PALETTE]
   },
   cards: [
     {
@@ -99,7 +106,13 @@ class StateManager {
         if (parsed.cards && parsed.connections) {
           return {
             viewport: parsed.viewport || { x: 0, y: 0, zoom: 1.0 },
-            settings: parsed.settings || { alignMode: false, gridSnapMode: false },
+            settings: {
+              alignMode: parsed.settings?.alignMode ?? false,
+              gridSnapMode: parsed.settings?.gridSnapMode ?? false,
+              palette: Array.isArray(parsed.settings?.palette) && parsed.settings.palette.length >= 2
+                ? parsed.settings.palette
+                : [...DEFAULT_PALETTE]
+            },
             cards: parsed.cards,
             connections: parsed.connections.filter(c => this.validateConnection(c, parsed.cards))
           };
@@ -167,11 +180,78 @@ class StateManager {
   }
 
   toggleGridSnapMode() {
-    if (!this.state.settings) this.state.settings = { alignMode: false, gridSnapMode: false };
+    if (!this.state.settings) this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE] };
     this.state.settings.gridSnapMode = !this.state.settings.gridSnapMode;
     this.scheduleAutoSave();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
     return this.state.settings.gridSnapMode;
+  }
+
+  getPalette() {
+    if (!this.state.settings) {
+      this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE] };
+    }
+    if (!Array.isArray(this.state.settings.palette) || this.state.settings.palette.length < 2) {
+      this.state.settings.palette = [...DEFAULT_PALETTE];
+    }
+    return this.state.settings.palette;
+  }
+
+  setPalette(palette) {
+    if (!this.state.settings) {
+      this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE] };
+    }
+    this.state.settings.palette = [...palette];
+    this.scheduleAutoSave();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+  }
+
+  updatePaletteColor(index, color) {
+    const palette = [...this.getPalette()];
+    if (index >= 0 && index < palette.length) {
+      palette[index] = color;
+      this.setPalette(palette);
+    }
+  }
+
+  setPaletteSlotCount(count) {
+    const targetCount = Math.max(2, Math.min(10, count));
+    const current = [...this.getPalette()];
+    if (targetCount === current.length) return;
+
+    if (targetCount < current.length) {
+      const next = current.slice(0, targetCount);
+      this.setPalette(next);
+    } else {
+      const next = [...current];
+      while (next.length < targetCount) {
+        const unused = PRESET_POOL.find(c => !next.some(x => x.toLowerCase() === c.toLowerCase()));
+        next.push(unused || `#${Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0')}`);
+      }
+      this.setPalette(next);
+    }
+  }
+
+  addPaletteSlot() {
+    const current = this.getPalette();
+    if (current.length >= 10) return false;
+    this.setPaletteSlotCount(current.length + 1);
+    return true;
+  }
+
+  removePaletteSlot(index) {
+    const current = [...this.getPalette()];
+    if (current.length <= 2) return false;
+    if (index >= 0 && index < current.length) {
+      current.splice(index, 1);
+      this.setPalette(current);
+      return true;
+    }
+    return false;
+  }
+
+  resetPalette() {
+    this.setPalette([...DEFAULT_PALETTE]);
   }
 
   addCard(card) {
@@ -313,7 +393,13 @@ class StateManager {
           this.fileName = handle.name;
           this.state = {
             viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
-            settings: data.settings || { alignMode: false, gridSnapMode: false },
+            settings: {
+              alignMode: data.settings?.alignMode ?? false,
+              gridSnapMode: data.settings?.gridSnapMode ?? false,
+              palette: Array.isArray(data.settings?.palette) && data.settings.palette.length >= 2
+                ? data.settings.palette
+                : [...DEFAULT_PALETTE]
+            },
             cards: data.cards,
             connections: data.connections.filter(c => this.validateConnection(c, data.cards))
           };
@@ -342,7 +428,13 @@ class StateManager {
             this.fileName = file.name;
             this.state = {
               viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
-              settings: data.settings || { alignMode: false, gridSnapMode: false },
+              settings: {
+                alignMode: data.settings?.alignMode ?? false,
+                gridSnapMode: data.settings?.gridSnapMode ?? false,
+                palette: Array.isArray(data.settings?.palette) && data.settings.palette.length >= 2
+                  ? data.settings.palette
+                  : [...DEFAULT_PALETTE]
+              },
               cards: data.cards,
               connections: data.connections.filter(c => this.validateConnection(c, data.cards))
             };
