@@ -1140,7 +1140,7 @@ class NodeManager {
     if (memberCards.length === 0) return null;
 
     const PADDING_X = 24;
-    const PADDING_TOP = 48;
+    const PADDING_TOP = 52;
     const PADDING_BOTTOM = 24;
 
     let minX = Infinity;
@@ -1197,8 +1197,11 @@ class NodeManager {
       const rightColor = group.headerColor || rightConn?.color || '#98989d';
 
       if (group.headerColor) {
-        groupEl.style.borderColor = hexToRgba(group.headerColor, 0.4);
+        groupEl.style.borderColor = hexToRgba(group.headerColor, 0.45);
         groupEl.style.backgroundColor = hexToRgba(group.headerColor, 0.035);
+        groupEl.style.setProperty('--group-theme', group.headerColor);
+      } else {
+        groupEl.style.setProperty('--group-theme', '#0a84ff');
       }
 
       const memberCount = group.cardIds.filter(id => store.state.cards.some(c => c.id === id)).length;
@@ -1304,8 +1307,7 @@ class NodeManager {
           groupId: group.id,
           startX: e.clientX,
           startY: e.clientY,
-          initialPositions: new Map(memberCards.map(c => [c.id, { x: c.x, y: c.y }])),
-          initGroupBounds: { ...bounds }
+          initialPositions: new Map(memberCards.map(c => [c.id, { x: c.x, y: c.y }]))
         };
         groupEl.classList.add('active');
       });
@@ -1784,11 +1786,7 @@ class NodeManager {
             }
           });
 
-          const groupEl = document.getElementById(`group-dom-${this.activeDrag.groupId}`);
-          if (groupEl && this.activeDrag.initGroupBounds) {
-            groupEl.style.left = `${Math.round(this.activeDrag.initGroupBounds.x + dx)}px`;
-            groupEl.style.top = `${Math.round(this.activeDrag.initGroupBounds.y + dy)}px`;
-          }
+          this.updateGroupDOMBounds(this.activeDrag.groupId);
           wires.render();
         } else if (this.activeDrag.type === 'RESIZE_CARD') {
           const dx = (e.clientX - this.activeDrag.startX) / zoom;
