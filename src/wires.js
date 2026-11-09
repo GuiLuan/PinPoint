@@ -366,14 +366,25 @@ class WireManager {
     if (!this.pendingDrop) return;
     const { type, connId, fromPinId, wireColor, startPos, dropBoardPos } = this.pendingDrop;
 
-    const newNode = this.spawnNodeCallback(dropBoardPos, true);
+    let title = '未命名节点';
+    let headerColor = null;
+    const capsuleEl = document.querySelector(`[data-pin-id="${fromPinId}"]`);
+    if (capsuleEl) {
+      const targetCapsule = capsuleEl.closest('.text-capsule') || capsuleEl;
+      title = (targetCapsule.innerText || targetCapsule.textContent || '').trim() || '未命名节点';
+      headerColor = targetCapsule.style.getPropertyValue('--capsule-pin').trim() ||
+                    window.getComputedStyle(targetCapsule).getPropertyValue('--capsule-pin').trim() ||
+                    wireColor;
+    }
+
+    const newNode = this.spawnNodeCallback(dropBoardPos, true, title, headerColor);
     const isLeft = startPos.x < dropBoardPos.x;
     const newHeadPinId = isLeft ? `pin-head-left-${newNode.id}` : `pin-head-right-${newNode.id}`;
 
     if (type === 'RECONNECT') {
       store.reconnect(connId, newHeadPinId);
     } else {
-      store.addConnection(fromPinId, newHeadPinId, wireColor);
+      store.addConnection(fromPinId, newHeadPinId, headerColor || wireColor);
     }
 
     this.dismissDropMenu(false);

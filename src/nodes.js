@@ -66,7 +66,7 @@ class NodeManager {
     this.bindGlobalGestures();
   }
 
-  spawnNode(pos, title = '未命名节点', skipCommit = false) {
+  spawnNode(pos, title = '未命名节点', skipCommit = false, headerColor = null) {
     let x = Math.round(pos.x - 20);
     let y = Math.round(pos.y - 20);
     if (store.state.settings?.gridSnapMode) {
@@ -82,6 +82,9 @@ class NodeManager {
       width: 310,
       contentHtml: ''
     };
+    if (headerColor) {
+      card.headerColor = headerColor;
+    }
     store.addCard(card, skipCommit);
     this.render();
     return card;

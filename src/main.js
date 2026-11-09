@@ -19,7 +19,7 @@ function initApp() {
   const settingsOverlayEl = document.getElementById('settings-overlay');
 
   canvas.init(viewportEl, boardEl);
-  wires.init(wireSvgEl, (pos, skipCommit) => nodes.spawnNode(pos, '未命名节点', skipCommit), wireDropMenuEl);
+  wires.init(wireSvgEl, (pos, skipCommit, title, headerColor) => nodes.spawnNode(pos, title, skipCommit, headerColor), wireDropMenuEl);
   nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl);
   settings.init(settingsOverlayEl);
   window.__store = store;
