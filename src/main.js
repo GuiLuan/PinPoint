@@ -4,7 +4,7 @@ import { nodes } from './nodes.js';
 import { wires } from './wires.js';
 import { settings } from './settings.js';
 
-function initApp() {
+async function initApp() {
   const viewportEl = document.getElementById('viewport');
   const boardEl = document.getElementById('board');
   const wireSvgEl = document.getElementById('wire-svg');
@@ -79,6 +79,13 @@ function initApp() {
 
   // HUD Button: Open File
   document.getElementById('btn-open')?.addEventListener('click', async () => {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
+    if (store.hasUnsavedChanges()) {
+      const confirmed = confirm('当前图谱尚未保存到文件或有未保存的更改，打开新文件将覆盖当前内容。\n\n确定要继续打开吗？');
+      if (!confirmed) return;
+    }
     const res = await store.openFromFile();
     if (res?.success) {
       updateStatus(res.fileName);
@@ -129,7 +136,7 @@ function initApp() {
       nodes.render();
       wires.render();
       canvas.applyTransform();
-    } else if (event.type === 'FILE_SAVED') {
+    } else if (event.type === 'FILE_SAVED' || event.type === 'HANDLE_RESTORED') {
       updateStatus(store.fileName);
     } else if (event.type === 'STATE_RESET') {
       updateStatus('');
@@ -156,7 +163,39 @@ function initApp() {
   nodes.render();
   wires.render();
   updateUndoRedoButtons();
+  await store.restoreFileHandle();
   if (store.fileName) updateStatus(store.fileName);
+
+  let isBypassingUnloadCheck = false;
+
+  // Intercept Ctrl+R and F5 reload
+  window.addEventListener('keydown', (e) => {
+    const isReload = e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r');
+    if (isReload) {
+      if (document.activeElement && typeof document.activeElement.blur === 'function') {
+        document.activeElement.blur();
+      }
+      if (store.hasUnsavedChanges()) {
+        e.preventDefault();
+        if (confirm('当前图谱尚未保存到文件或有未保存的更改，重新加载将丢失未保存的内容。\n\n确定要重新加载吗？')) {
+          isBypassingUnloadCheck = true;
+          window.location.reload();
+        }
+      }
+    }
+  });
+
+  // Warn before closing or navigating away if there are unsaved changes
+  window.addEventListener('beforeunload', (e) => {
+    if (isBypassingUnloadCheck) return;
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
+    if (store.hasUnsavedChanges()) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
 }
 
 window.addEventListener('DOMContentLoaded', initApp);

@@ -160,14 +160,6 @@ html, body {
   overflow: hidden;
 }
 
-.group-icon {
-  width: 14px;
-  height: 14px;
-  stroke: var(--text-muted);
-  stroke-width: 2;
-  fill: none;
-  flex-shrink: 0;
-}
 
 .group-title {
   font-size: 13px;

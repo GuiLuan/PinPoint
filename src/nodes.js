@@ -1323,7 +1323,6 @@ class NodeManager {
           </div>
 
           <div class="group-title-container">
-            <svg class="group-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>
             <span class="group-title" title="双击重命名组">${group.title || '节点组'}</span>
             <input class="group-title-input" value="${group.title || ''}" placeholder="节点组" style="display: none;" />
             <span class="group-card-count">${memberCount} 个节点</span>

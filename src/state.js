@@ -1,4 +1,46 @@
 const STORAGE_KEY = 'pinpoint_workspace_data';
+const FILE_NAME_KEY = 'pinpoint_file_name';
+const FILE_SNAPSHOT_KEY = 'pinpoint_file_snapshot';
+const IDB_NAME = 'pinpoint_fs';
+const IDB_STORE = 'handles';
+
+function openIDB() {
+  return new Promise(resolve => {
+    if (typeof indexedDB === 'undefined') return resolve(null);
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  });
+}
+
+async function persistHandle(handle) {
+  try {
+    const db = await openIDB();
+    if (!db) return;
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    if (handle) {
+      tx.objectStore(IDB_STORE).put(handle, 'active_handle');
+    } else {
+      tx.objectStore(IDB_STORE).delete('active_handle');
+    }
+  } catch (e) {}
+}
+
+async function retrieveHandle() {
+  try {
+    const db = await openIDB();
+    if (!db) return null;
+    return await new Promise(resolve => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get('active_handle');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (e) {
+    return null;
+  }
+}
 
 export const DEFAULT_PALETTE = ['#30d158', '#0a84ff', '#bf5af2', '#ffd60a', '#ff9f0a'];
 export const PRESET_POOL = [
@@ -46,6 +88,7 @@ class StateManager {
     this.saveTimeout = null;
     this.undoStack = [this.snapshot()];
     this.redoStack = [];
+    this.fileSavedSnapshot = null;
   }
 
   snapshot() {
@@ -54,6 +97,12 @@ class StateManager {
       connections: this.state.connections,
       groups: this.state.groups || []
     });
+  }
+
+  hasUnsavedChanges() {
+    if (!this.state.cards || this.state.cards.length === 0) return false;
+    if (!this.fileSavedSnapshot) return true;
+    return this.snapshot() !== this.fileSavedSnapshot;
   }
 
   commit() {
@@ -65,6 +114,30 @@ class StateManager {
     if (this.undoStack.length > 60) this.undoStack.shift();
     this.redoStack = [];
     this.notify({ type: 'HISTORY_CHANGED' });
+  }
+
+  async restoreFileHandle() {
+    try {
+      const fileName = localStorage.getItem(FILE_NAME_KEY);
+      if (!fileName) {
+        this.fileHandle = null;
+        this.fileName = '';
+        this.fileSavedSnapshot = null;
+        persistHandle(null);
+        return;
+      }
+      const handle = await retrieveHandle();
+      if (handle) {
+        this.fileHandle = handle;
+        this.fileName = handle.name || fileName;
+      } else {
+        this.fileName = fileName;
+      }
+      this.fileSavedSnapshot = localStorage.getItem(FILE_SNAPSHOT_KEY) || null;
+      if (this.fileName) {
+        this.notify({ type: 'HANDLE_RESTORED', fileName: this.fileName });
+      }
+    } catch (e) {}
   }
 
   canUndo() {
@@ -402,7 +475,11 @@ class StateManager {
     this.state = JSON.parse(JSON.stringify(DEFAULT_STATE));
     this.fileHandle = null;
     this.fileName = '';
+    this.fileSavedSnapshot = null;
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(FILE_NAME_KEY);
+    localStorage.removeItem(FILE_SNAPSHOT_KEY);
+    persistHandle(null);
     this.undoStack = [this.snapshot()];
     this.redoStack = [];
     this.notify({ type: 'STATE_RESET' });
@@ -422,6 +499,15 @@ class StateManager {
 
     if (window.showSaveFilePicker) {
       try {
+        if (this.fileHandle && this.fileHandle.queryPermission) {
+          let status = await this.fileHandle.queryPermission({ mode: 'readwrite' });
+          if (status !== 'granted') {
+            status = await this.fileHandle.requestPermission({ mode: 'readwrite' });
+          }
+          if (status !== 'granted') {
+            this.fileHandle = null;
+          }
+        }
         if (!this.fileHandle) {
           this.fileHandle = await window.showSaveFilePicker({
             suggestedName: this.fileName || 'graph.pinpoint',
@@ -435,10 +521,17 @@ class StateManager {
         const writable = await this.fileHandle.createWritable();
         await writable.write(jsonStr);
         await writable.close();
+        persistHandle(this.fileHandle);
+        localStorage.setItem(FILE_NAME_KEY, this.fileName);
+        this.fileSavedSnapshot = this.snapshot();
+        localStorage.setItem(FILE_SNAPSHOT_KEY, this.fileSavedSnapshot);
         this.notify({ type: 'FILE_SAVED', fileName: this.fileName });
         return { success: true, fileName: this.fileName };
       } catch (err) {
         if (err.name === 'AbortError') return { aborted: true };
+        console.warn('Save with handle failed:', err);
+        this.fileHandle = null;
+        persistHandle(null);
       }
     }
 
@@ -449,6 +542,9 @@ class StateManager {
     a.download = this.fileName || 'graph.pinpoint';
     a.click();
     URL.revokeObjectURL(url);
+    this.fileSavedSnapshot = this.snapshot();
+    localStorage.setItem(FILE_NAME_KEY, a.download);
+    localStorage.setItem(FILE_SNAPSHOT_KEY, this.fileSavedSnapshot);
     this.notify({ type: 'FILE_SAVED', fileName: a.download });
     return { success: true, fileName: a.download };
   }
@@ -469,6 +565,8 @@ class StateManager {
         if (data.cards && data.connections) {
           this.fileHandle = handle;
           this.fileName = handle.name;
+          persistHandle(this.fileHandle);
+          localStorage.setItem(FILE_NAME_KEY, this.fileName);
           this.state = {
             viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
             settings: {
@@ -484,6 +582,8 @@ class StateManager {
           };
           this.undoStack = [this.snapshot()];
           this.redoStack = [];
+          this.fileSavedSnapshot = this.snapshot();
+          localStorage.setItem(FILE_SNAPSHOT_KEY, this.fileSavedSnapshot);
           this.notify({ type: 'FILE_OPENED', fileName: this.fileName });
           return { success: true, fileName: this.fileName };
         }
@@ -505,6 +605,8 @@ class StateManager {
           if (data.cards && data.connections) {
             this.fileHandle = null;
             this.fileName = file.name;
+            persistHandle(null);
+            localStorage.setItem(FILE_NAME_KEY, this.fileName);
             this.state = {
               viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
               settings: {
@@ -520,6 +622,8 @@ class StateManager {
             };
             this.undoStack = [this.snapshot()];
             this.redoStack = [];
+            this.fileSavedSnapshot = this.snapshot();
+            localStorage.setItem(FILE_SNAPSHOT_KEY, this.fileSavedSnapshot);
             this.notify({ type: 'FILE_OPENED', fileName: this.fileName });
             resolve({ success: true, fileName: file.name });
           }
