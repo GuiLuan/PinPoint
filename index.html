@@ -161,6 +161,19 @@
         <div class="toggle-knob"></div>
       </div>
     </button>
+    <button class="context-menu-item" id="menu-toggle-minimap" title="开启或关闭画板全局小地图">
+      <div class="context-menu-label">
+        <svg class="context-menu-icon" viewBox="0 0 24 24">
+          <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon>
+          <line x1="8" y1="2" x2="8" y2="18"></line>
+          <line x1="16" y1="6" x2="16" y2="22"></line>
+        </svg>
+        <span>小地图</span>
+      </div>
+      <div class="toggle-pill" id="toggle-minimap-pill">
+        <div class="toggle-knob"></div>
+      </div>
+    </button>
     <div class="context-menu-divider"></div>
     <button class="context-menu-item" id="menu-open-settings" title="偏好设置 (Ctrl+,)">
       <div class="context-menu-label">
@@ -207,6 +220,14 @@
                 <path d="M3 9h18M9 21V9"></path>
               </svg>
               <span>画板辅助</span>
+            </button>
+            <button class="settings-nav-item" data-tab="minimap">
+              <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon>
+                <line x1="8" y1="2" x2="8" y2="18"></line>
+                <line x1="16" y1="6" x2="16" y2="22"></line>
+              </svg>
+              <span>小地图</span>
             </button>
             <button class="settings-nav-item" data-tab="shortcuts">
               <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
@@ -303,6 +324,83 @@
             </div>
           </div>
 
+          <!-- 全局小地图配置 -->
+          <div class="settings-tab-panel" id="tab-panel-minimap">
+            <div class="settings-section-header">
+              <div>
+                <h3 class="settings-section-title">全局小地图</h3>
+                <p class="settings-section-desc">配置画板缩略概览小地图，随时掌握图谱整体分布与视口导航</p>
+              </div>
+            </div>
+
+            <!-- 开启/关闭 开关 -->
+            <div class="settings-card-group">
+              <div class="settings-row" id="row-toggle-minimap" style="cursor: pointer;">
+                <div class="settings-row-info">
+                  <span class="settings-row-label">启用小地图</span>
+                  <span class="settings-row-sub">在画布角落浮动显示全局小地图；支持拖动视口方框与单击快速定位</span>
+                </div>
+                <div class="toggle-pill" id="settings-toggle-minimap">
+                  <div class="toggle-knob"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 位置选择 (4个角落) -->
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <div>
+                  <h4 class="settings-section-title" style="font-size: 12px;">停靠位置</h4>
+                  <p class="settings-section-desc">选择小地图固定停靠在画布视口的哪个角落</p>
+                </div>
+              </div>
+              <div class="minimap-pos-grid">
+                <button class="minimap-pos-card" data-pos="top-left" type="button">
+                  <div class="minimap-pos-mockup top-left"><span class="mockup-dot"></span></div>
+                  <span>左上角</span>
+                </button>
+                <button class="minimap-pos-card" data-pos="top-right" type="button">
+                  <div class="minimap-pos-mockup top-right"><span class="mockup-dot"></span></div>
+                  <span>右上角</span>
+                </button>
+                <button class="minimap-pos-card" data-pos="bottom-left" type="button">
+                  <div class="minimap-pos-mockup bottom-left"><span class="mockup-dot"></span></div>
+                  <span>左下角</span>
+                </button>
+                <button class="minimap-pos-card is-active" data-pos="bottom-right" type="button">
+                  <div class="minimap-pos-mockup bottom-right"><span class="mockup-dot"></span></div>
+                  <span>右下角 (默认)</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 尺寸定义 -->
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <div>
+                  <h4 class="settings-section-title" style="font-size: 12px;">尺寸大小</h4>
+                  <p class="settings-section-desc">自定义小地图宽度（140px ~ 320px），高度自适应黄金视野比例</p>
+                </div>
+              </div>
+              <div class="minimap-size-controls">
+                <div class="minimap-size-presets">
+                  <button class="settings-size-btn" data-size="160" type="button">小 (160px)</button>
+                  <button class="settings-size-btn is-active" data-size="220" type="button">中 (220px)</button>
+                  <button class="settings-size-btn" data-size="280" type="button">大 (280px)</button>
+                </div>
+                <div class="minimap-slider-row">
+                  <input type="range" class="settings-slider" id="minimap-size-slider" min="140" max="320" step="10" value="220">
+                  <span class="settings-slider-val" id="minimap-size-val">220px</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-tip-box">
+              <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+              <span>在画布任意空白区域点击鼠标右键，也可快速呼出菜单随时开启或关闭小地图。</span>
+            </div>
+          </div>
+
           <!-- 快捷键指南 -->
           <div class="settings-tab-panel" id="tab-panel-shortcuts">
             <div class="settings-section-header">
@@ -331,6 +429,32 @@
       </div>
     </div>
   </div>
+
+  <!-- 全局小地图浮动窗口 -->
+  <aside id="minimap-widget" class="minimap-widget pos-bottom-right" aria-label="画板小地图">
+    <div class="minimap-header" id="minimap-header">
+      <div class="minimap-title-row">
+        <svg class="minimap-header-icon" viewBox="0 0 24 24">
+          <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon>
+          <line x1="8" y1="2" x2="8" y2="18"></line>
+          <line x1="16" y1="6" x2="16" y2="22"></line>
+        </svg>
+        <span>小地图</span>
+      </div>
+      <div class="minimap-actions">
+        <button class="minimap-action-btn" id="btn-minimap-fit" data-tooltip="适应画布">
+          <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+        </button>
+        <button class="minimap-action-btn" id="btn-minimap-close" data-tooltip="关闭">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+    </div>
+    <div class="minimap-body" id="minimap-canvas-container">
+      <canvas id="minimap-canvas" class="minimap-canvas"></canvas>
+      <div id="minimap-viewport-indicator" class="minimap-viewport-indicator" title="拖拽平移视口"></div>
+    </div>
+  </aside>
 
   <!-- 原生 ES 模块启动 -->
   <script type="module" src="src/main.js"></script>

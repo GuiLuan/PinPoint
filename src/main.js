@@ -3,6 +3,7 @@ import { canvas } from './canvas.js';
 import { nodes } from './nodes.js';
 import { wires } from './wires.js';
 import { settings } from './settings.js';
+import { minimap } from './minimap.js';
 
 async function initApp() {
   const viewportEl = document.getElementById('viewport');
@@ -17,20 +18,34 @@ async function initApp() {
   const wireDropMenuEl = document.getElementById('wire-drop-menu');
   const canvasContextMenuEl = document.getElementById('canvas-context-menu');
   const settingsOverlayEl = document.getElementById('settings-overlay');
+  const minimapWidgetEl = document.getElementById('minimap-widget');
 
   canvas.init(viewportEl, boardEl);
   wires.init(wireSvgEl, (pos, skipCommit, title, headerColor) => nodes.spawnNode(pos, title, skipCommit, headerColor), wireDropMenuEl);
   nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl);
   settings.init(settingsOverlayEl);
+  minimap.init(minimapWidgetEl);
+
   window.__store = store;
   window.__nodes = nodes;
   window.__wires = wires;
   window.__settings = settings;
+  window.__minimap = minimap;
+
   canvas.onTransform = () => {
     nodes.updatePopoverPosition();
     nodes.updateAlignmentBar();
     nodes.updateCapsuleActionPosition();
     wires.updateDropMenuPosition();
+    minimap.render();
+  };
+
+  wires.onRender = () => {
+    minimap.requestRender();
+  };
+
+  nodes.onSelectionChange = () => {
+    minimap.requestRender();
   };
 
   function updateStatus(text) {
@@ -136,7 +151,10 @@ async function initApp() {
       nodes.render();
       wires.render();
       canvas.applyTransform();
-    } else if (event.type === 'FILE_SAVED' || event.type === 'HANDLE_RESTORED') {
+    } else if (event.type === 'FILE_SAVED') {
+      updateStatus(`已保存: ${store.fileName}`);
+      setTimeout(() => updateStatus(store.fileName || ''), 2500);
+    } else if (event.type === 'HANDLE_RESTORED') {
       updateStatus(store.fileName);
     } else if (event.type === 'STATE_RESET') {
       updateStatus('');
@@ -153,9 +171,11 @@ async function initApp() {
       settings.syncUI();
       nodes.renderPopoverPalette();
       nodes.updateContextMenuToggles();
-    } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED' || event.type?.startsWith('GROUP_')) {
+      minimap.applySettings();
+    } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED' || event.type?.startsWith('GROUP_') || event.type?.startsWith('CARD_')) {
       nodes.render();
       wires.render();
+      minimap.requestRender();
     }
   });
 

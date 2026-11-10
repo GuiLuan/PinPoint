@@ -53,7 +53,12 @@ const DEFAULT_STATE = {
   settings: {
     alignMode: false,
     gridSnapMode: false,
-    palette: [...DEFAULT_PALETTE]
+    palette: [...DEFAULT_PALETTE],
+    minimap: {
+      enabled: true,
+      position: 'bottom-right',
+      size: 220
+    }
   },
   cards: [
     {
@@ -190,7 +195,12 @@ class StateManager {
               gridSnapMode: parsed.settings?.gridSnapMode ?? false,
               palette: Array.isArray(parsed.settings?.palette) && parsed.settings.palette.length >= 2
                 ? parsed.settings.palette
-                : [...DEFAULT_PALETTE]
+                : [...DEFAULT_PALETTE],
+              minimap: {
+                enabled: parsed.settings?.minimap?.enabled ?? true,
+                position: parsed.settings?.minimap?.position || 'bottom-right',
+                size: typeof parsed.settings?.minimap?.size === 'number' ? parsed.settings.minimap.size : 220
+              }
             },
             cards,
             connections: parsed.connections.filter(c => this.validateConnection(c, cards, groups)),
@@ -264,11 +274,36 @@ class StateManager {
   }
 
   toggleGridSnapMode() {
-    if (!this.state.settings) this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE] };
+    if (!this.state.settings) this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE], minimap: { enabled: true, position: 'bottom-right', size: 220 } };
     this.state.settings.gridSnapMode = !this.state.settings.gridSnapMode;
     this.scheduleAutoSave();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
     return this.state.settings.gridSnapMode;
+  }
+
+  getMinimapSettings() {
+    if (!this.state.settings) {
+      this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE], minimap: { enabled: true, position: 'bottom-right', size: 220 } };
+    }
+    if (!this.state.settings.minimap) {
+      this.state.settings.minimap = { enabled: true, position: 'bottom-right', size: 220 };
+    }
+    return this.state.settings.minimap;
+  }
+
+  toggleMinimap() {
+    const mm = this.getMinimapSettings();
+    mm.enabled = !mm.enabled;
+    this.scheduleAutoSave();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+    return mm.enabled;
+  }
+
+  setMinimapSettings(patch) {
+    const mm = this.getMinimapSettings();
+    Object.assign(mm, patch);
+    this.scheduleAutoSave();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
   }
 
   getPalette() {
@@ -574,7 +609,12 @@ class StateManager {
               gridSnapMode: data.settings?.gridSnapMode ?? false,
               palette: Array.isArray(data.settings?.palette) && data.settings.palette.length >= 2
                 ? data.settings.palette
-                : [...DEFAULT_PALETTE]
+                : [...DEFAULT_PALETTE],
+              minimap: {
+                enabled: data.settings?.minimap?.enabled ?? true,
+                position: data.settings?.minimap?.position || 'bottom-right',
+                size: typeof data.settings?.minimap?.size === 'number' ? data.settings.minimap.size : 220
+              }
             },
             cards: data.cards,
             connections: data.connections.filter(c => this.validateConnection(c, data.cards, data.groups || [])),
@@ -614,7 +654,12 @@ class StateManager {
                 gridSnapMode: data.settings?.gridSnapMode ?? false,
                 palette: Array.isArray(data.settings?.palette) && data.settings.palette.length >= 2
                   ? data.settings.palette
-                  : [...DEFAULT_PALETTE]
+                  : [...DEFAULT_PALETTE],
+                minimap: {
+                  enabled: data.settings?.minimap?.enabled ?? true,
+                  position: data.settings?.minimap?.position || 'bottom-right',
+                  size: typeof data.settings?.minimap?.size === 'number' ? data.settings.minimap.size : 220
+                }
               },
               cards: data.cards,
               connections: data.connections.filter(c => this.validateConnection(c, data.cards, data.groups || [])),

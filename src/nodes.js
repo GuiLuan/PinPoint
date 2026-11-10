@@ -537,6 +537,14 @@ class NodeManager {
       store.toggleGridSnapMode();
       this.updateContextMenuToggles();
     });
+
+    const btnMinimap = this.canvasContextMenuEl.querySelector('#menu-toggle-minimap');
+    btnMinimap?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      store.toggleMinimap();
+      this.updateContextMenuToggles();
+    });
   }
 
   bindCanvasShortcuts() {
@@ -547,7 +555,7 @@ class NodeManager {
       const isBg = (e.target === this.viewportEl ||
                     e.target === document.getElementById('board') ||
                     e.target.id === 'wire-svg') &&
-                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu, #canvas-context-menu');
+                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu, #canvas-context-menu, #minimap-widget');
       if (!isBg || e.button !== 0) return;
 
       this.hideAllMenus();
@@ -569,7 +577,7 @@ class NodeManager {
       const isBg = (e.target === this.viewportEl ||
                     e.target === document.getElementById('board') ||
                     e.target.id === 'wire-svg') &&
-                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu');
+                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu, #minimap-widget');
       if (!isBg) return;
 
       e.preventDefault();
@@ -587,7 +595,7 @@ class NodeManager {
     menu.style.display = 'flex';
 
     const menuWidth = 185;
-    const menuHeight = 110;
+    const menuHeight = 155;
     let left = screenX + 2;
     let top = screenY + 2;
 
@@ -613,10 +621,13 @@ class NodeManager {
   updateContextMenuToggles() {
     const alignActive = !!store.state.settings?.alignMode;
     const gridActive = !!store.state.settings?.gridSnapMode;
+    const minimapActive = !!store.state.settings?.minimap?.enabled;
     const alignPill = document.getElementById('toggle-align-pill');
     const gridPill = document.getElementById('toggle-gridsnap-pill');
+    const minimapPill = document.getElementById('toggle-minimap-pill');
     if (alignPill) alignPill.classList.toggle('is-active', alignActive);
     if (gridPill) gridPill.classList.toggle('is-active', gridActive);
+    if (minimapPill) minimapPill.classList.toggle('is-active', minimapActive);
   }
 
   hideAllMenus() {
@@ -1036,6 +1047,7 @@ class NodeManager {
       const cardId = cardEl.id.replace('card-dom-', '');
       cardEl.classList.toggle('selected', this.selectedCardIds.has(cardId));
     });
+    if (this.onSelectionChange) this.onSelectionChange();
   }
 
   updateAlignmentBar() {

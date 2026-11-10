@@ -79,6 +79,9 @@ class SettingsManager {
       this.syncAssistanceToggles();
     });
 
+    // Minimap settings listeners
+    this.bindMinimapListeners();
+
     // Nav tabs switching
     this.overlayEl.querySelectorAll('.settings-nav-item').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -91,6 +94,7 @@ class SettingsManager {
     this.currentTab = 'palette';
     this.renderPaletteSlots();
     this.syncAssistanceToggles();
+    this.syncMinimapSettings();
   }
 
   switchTab(tabId) {
@@ -109,6 +113,8 @@ class SettingsManager {
 
     if (tabId === 'palette') {
       this.updatePreviewMockup();
+    } else if (tabId === 'minimap') {
+      this.syncMinimapSettings();
     }
   }
 
@@ -121,6 +127,7 @@ class SettingsManager {
     this.switchTab(this.currentTab || 'palette');
     this.renderPaletteSlots();
     this.syncAssistanceToggles();
+    this.syncMinimapSettings();
     this.overlayEl.classList.add('is-open');
   }
 
@@ -141,7 +148,124 @@ class SettingsManager {
     if (this.isOpen()) {
       this.renderPaletteSlots();
       this.syncAssistanceToggles();
+      this.syncMinimapSettings();
     }
+  }
+
+  bindMinimapListeners() {
+    if (!this.overlayEl) return;
+    const panel = this.overlayEl.querySelector('#tab-panel-minimap');
+    if (!panel) return;
+
+    // Toggle switch row and pill
+    const toggleRow = panel.querySelector('#row-toggle-minimap');
+    const togglePill = panel.querySelector('#settings-toggle-minimap');
+
+    const handleToggle = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      store.toggleMinimap();
+      this.syncMinimapSettings();
+    };
+
+    toggleRow?.addEventListener('click', handleToggle);
+    togglePill?.addEventListener('click', handleToggle);
+
+    // Position cards
+    panel.querySelectorAll('.minimap-pos-card').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const pos = btn.getAttribute('data-pos');
+        if (pos) {
+          store.setMinimapSettings({ position: pos });
+          this.syncMinimapSettings();
+        }
+      });
+    });
+
+    // Size preset buttons
+    panel.querySelectorAll('.settings-size-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const size = parseInt(btn.getAttribute('data-size'), 10);
+        if (size) {
+          store.setMinimapSettings({ size });
+          this.syncMinimapSettings();
+        }
+      });
+    });
+
+    // Size slider
+    const sizeSlider = panel.querySelector('#minimap-size-slider');
+    sizeSlider?.addEventListener('input', (e) => {
+      const size = parseInt(e.target.value, 10);
+      if (size) {
+        store.setMinimapSettings({ size });
+        this.syncMinimapSettings();
+      }
+    });
+
+    // Delegated click handler on the whole panel for extra robustness
+    panel.addEventListener('click', (e) => {
+      const posCard = e.target.closest('.minimap-pos-card');
+      if (posCard) {
+        e.preventDefault();
+        const pos = posCard.getAttribute('data-pos');
+        if (pos) {
+          store.setMinimapSettings({ position: pos });
+          this.syncMinimapSettings();
+        }
+        return;
+      }
+
+      const sizeBtn = e.target.closest('.settings-size-btn');
+      if (sizeBtn) {
+        e.preventDefault();
+        const size = parseInt(sizeBtn.getAttribute('data-size'), 10);
+        if (size) {
+          store.setMinimapSettings({ size });
+          this.syncMinimapSettings();
+        }
+        return;
+      }
+
+      const row = e.target.closest('#row-toggle-minimap, #settings-toggle-minimap');
+      if (row) {
+        e.preventDefault();
+        store.toggleMinimap();
+        this.syncMinimapSettings();
+        return;
+      }
+    });
+  }
+
+  syncMinimapSettings() {
+    if (!this.overlayEl) return;
+    const mm = store.getMinimapSettings();
+
+    // Toggle pill
+    const pill = this.overlayEl.querySelector('#settings-toggle-minimap');
+    if (pill) pill.classList.toggle('is-active', !!mm.enabled);
+
+    // Position cards
+    this.overlayEl.querySelectorAll('.minimap-pos-card').forEach(card => {
+      const pos = card.getAttribute('data-pos');
+      card.classList.toggle('is-active', pos === mm.position);
+    });
+
+    // Size preset buttons
+    this.overlayEl.querySelectorAll('.settings-size-btn').forEach(btn => {
+      const s = parseInt(btn.getAttribute('data-size'), 10);
+      btn.classList.toggle('is-active', s === mm.size);
+    });
+
+    // Slider and value
+    const slider = this.overlayEl.querySelector('#minimap-size-slider');
+    const valDisplay = this.overlayEl.querySelector('#minimap-size-val');
+    if (slider) slider.value = mm.size;
+    if (valDisplay) valDisplay.textContent = `${mm.size}px`;
   }
 
   syncAssistanceToggles() {

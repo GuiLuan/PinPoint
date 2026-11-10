@@ -218,6 +218,7 @@ class WireManager {
     });
 
     this.updateCapsuleBadges();
+    if (this.onRender) this.onRender();
   }
 
   updateCapsuleBadges() {
