@@ -1,6 +1,6 @@
 # PinPoint
 
-> 极简、纯粹的无限画布思维图谱工具（v1.7）。
+> 极简、纯粹的无限画布思维图谱工具。
 
 ![PinPoint 核心特性展示](assets/preview.png)
 
@@ -10,22 +10,65 @@
 
 - **自由连接**：划选卡片内任意文本即可转化为独立胶囊，支持自定义色彩，直接引出端点与其他节点或胶囊建立拓扑连接。
 - **排版对齐**：内置 24px 网格吸附与多节点动态对齐参考线，提供多选对齐与等间距分布工具栏。
-- **纯原生零依赖**：基于原生 ES6 Modules + SVG + CSS 开发，单文件 JSON 导入导出，本地毫秒级自动持久化。
+- **AI 协同**：提供 MCP 服务，允许与 AI 实时协同编辑画布，并同步当前选区与划选文本。
+- **开箱即用**：前后端均无需安装第三方依赖，后端基于 Python 3.12 标准库，支持 `.pinpoint` 单文件导入导出与本地自动保存。
 
 ---
 
 ## 快速上手
 
-本项目为纯静态结构，无需任何构建或 npm 安装：
-
 ```bash
-# 方式一：直接用浏览器打开
+# 仅使用纯前端静态画布
 open index.html
 
-# 方式二：使用内置脚本启动本地服务
+# 启动完整服务，支持网页画布与 AI 实时协同
 python server.py
-# 浏览器访问 http://localhost:5173
+# 启动后访问 http://localhost:5173
 ```
+
+如需指定端口、加载特定 `.pinpoint` 文件或禁止自动打开浏览器，可附加参数：
+
+```bash
+python server.py --port 5173 --workspace path/to/file.pinpoint --no-browser
+```
+
+---
+
+## 接入 MCP
+
+要让 AI 的操作实时呈现在浏览器画布上，请先保持上方的 `python server.py` 运行，再任选一种方式在客户端中配置。
+
+### 方式一：Stdio 接入
+
+适合 Claude、Cursor 等桌面客户端，推荐优先使用。请将路径替换为本项目所在的实际目录：
+
+```json
+{
+  "mcpServers": {
+    "pinpoint": {
+      "command": "python",
+      "args": ["/path/to/PinPoint/mcp_server.py"]
+    }
+  }
+}
+```
+
+### 方式二：HTTP 接入
+
+适合支持直接填写服务地址的客户端：
+
+```json
+{
+  "mcpServers": {
+    "pinpoint": {
+      "type": "http",
+      "url": "http://localhost:5173/mcp"
+    }
+  }
+}
+```
+
+> 更多进阶启动参数、MCP 工具清单与 API 文档，请查阅 [docs/mcp.md](docs/mcp.md) 与 [docs/openapi.yaml](docs/openapi.yaml)。
 
 ---
 

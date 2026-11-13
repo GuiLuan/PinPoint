@@ -33,10 +33,14 @@ python server.py
 }
 ```
 
-如需脱离 `server.py` 独立测试协议，可附加 `--embedded` 参数（不带浏览器实时同步）：
+如需连接自定义端口的 `server.py`，或脱离 `server.py` 独立测试协议（不带浏览器实时同步），可使用以下可选参数：
 
 ```bash
-python mcp_server.py --embedded
+# 连接到自定义端口的 server.py
+python mcp_server.py --api-base http://localhost:5173/api/v1
+
+# 脱离 server.py 独立运行（可选加载指定 .pinpoint 文件）
+python mcp_server.py --embedded --workspace path/to/file.pinpoint
 ```
 
 ---
