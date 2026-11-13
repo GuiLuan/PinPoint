@@ -34,9 +34,24 @@ python server.py --port 5173 --workspace path/to/file.pinpoint --no-browser
 
 ---
 
+## Docker 部署
+
+画布改动会自动保存到当前目录的 `data/workspace.pinpoint`：
+
+```bash
+# 构建并后台启动
+docker compose up -d --build
+# 启动后访问 http://localhost:5173
+
+# 如需修改对外端口
+PINPOINT_PORT=8080 docker compose up -d --build
+```
+
+---
+
 ## 接入 MCP
 
-要让 AI 的操作实时呈现在浏览器画布上，请先保持上方的 `python server.py` 运行，再任选一种方式在客户端中配置。
+要让 AI 的操作实时呈现在浏览器画布上，请先保持本地或 Docker 中的 PinPoint 服务运行，再任选一种方式在客户端中配置。
 
 ### 方式一：Stdio 接入
 

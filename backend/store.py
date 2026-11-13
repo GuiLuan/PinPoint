@@ -143,8 +143,28 @@ class GraphStore:
             self.redo_stack.clear()
         self._publish(event_type, payload)
 
+    def _persist_workspace(self) -> None:
+        if self.workspace_file is None:
+            return
+        export_data = {
+            "version": 1,
+            "timestamp": int(time.time() * 1000),
+            "viewport": self.state["viewport"],
+            "settings": self.state["settings"],
+            "cards": self.state["cards"],
+            "connections": self.state["connections"],
+            "groups": self.state.get("groups", []),
+        }
+        self.workspace_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.workspace_file.with_name(f".{self.workspace_file.name}.tmp")
+        tmp_path.write_text(json.dumps(export_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(self.workspace_file)
+        self.has_workspace_file = True
+
     def _publish(self, event_type: str, payload: dict[str, Any] | None = None) -> None:
         self.revision += 1
+        if event_type not in ("FILE_SAVED", "SELECTION_CHANGED"):
+            self._persist_workspace()
         client_id = getattr(self._local, "client_id", None)
         event = {
             "type": event_type,
@@ -380,8 +400,10 @@ class GraphStore:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(export_data, indent=2, ensure_ascii=False), encoding="utf-8")
             self.workspace_file = target
+            self.has_workspace_file = True
             self._publish("FILE_SAVED", {"fileName": target.name})
-            return {"fileName": target.name, "path": str(target.relative_to(self._base_dir))}
+            rel = str(target.relative_to(self._base_dir)) if target.is_relative_to(self._base_dir) else str(target)
+            return {"fileName": target.name, "path": rel}
 
     # ------------------------------------------------------------------
     # Cards

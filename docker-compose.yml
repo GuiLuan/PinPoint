@@ -1,0 +1,15 @@
+services:
+  pinpoint:
+    build: .
+    image: pinpoint:latest
+    container_name: pinpoint
+    restart: unless-stopped
+    ports:
+      - "${PINPOINT_PORT:-5173}:5173"
+    environment:
+      PINPOINT_HOST: "0.0.0.0"
+      PINPOINT_PORT: "5173"
+      PINPOINT_NO_BROWSER: "1"
+      PINPOINT_WORKSPACE: "/app/data/workspace.pinpoint"
+    volumes:
+      - ./data:/app/data

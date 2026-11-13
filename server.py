@@ -5,7 +5,9 @@ import functools
 import http.server
 import json
 import os
+import signal
 import socketserver
+import threading
 import webbrowser
 from pathlib import Path
 
@@ -155,12 +157,20 @@ def create_server(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PinPoint Static + RESTful API Server")
+    parser.add_argument("--host", type=str, default=os.environ.get("PINPOINT_HOST", ""))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PINPOINT_PORT", DEFAULT_PORT)))
     parser.add_argument("--workspace", type=str, default=os.environ.get("PINPOINT_WORKSPACE"))
     parser.add_argument("--no-browser", action="store_true", help="Do not automatically open browser")
     args = parser.parse_args()
 
-    httpd, _store, _router = create_server(port=args.port, workspace_file=args.workspace)
+    httpd, _store, _router = create_server(host=args.host, port=args.port, workspace_file=args.workspace)
+
+    def _handle_sigterm(_signum, _frame):
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+
     with httpd:
         actual_port = httpd.server_address[1]
         url = f"http://localhost:{actual_port}/index.html"
@@ -170,6 +180,8 @@ def main() -> None:
         print(f"PinPoint 服务正在运行: {url}")
         print(f"OpenAPI 规范地址:     {api_url}")
         print(f"MCP HTTP 端点:        {mcp_url}")
+        if args.workspace:
+            print(f"工作区持久化文件:     {args.workspace}")
         print("按 Ctrl+C 可停止服务")
         print("==================================================")
         if not args.no_browser and os.environ.get("PINPOINT_NO_BROWSER") != "1":

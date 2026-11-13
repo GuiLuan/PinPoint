@@ -1,0 +1,11 @@
+.git
+.gitignore
+.claude
+.vscode
+.idea
+__pycache__
+*.pyc
+*.pyo
+tests
+data
+*.pinpoint

@@ -337,6 +337,21 @@ class PinPointApiTestCase(unittest.TestCase):
         _, summary_after = self._request("GET", "/graph/summary")
         self.assertEqual(summary_after["data"]["connectionCount"], 0)
 
+    def test_workspace_auto_persistence_across_restarts(self) -> None:
+        from backend import GraphStore
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
+            ws_path = Path(tmpdir) / "nested" / "workspace.pinpoint"
+            store1 = GraphStore(workspace_file=ws_path, base_dir=Path.cwd())
+            created = store1.create_card({"title": "Persisted Card", "contentText": "Survives restart"})
+            self.assertTrue(ws_path.exists())
+
+            # Simulate container restart by reloading from the same workspace file
+            store2 = GraphStore(workspace_file=ws_path, base_dir=Path.cwd())
+            titles = [c["title"] for c in store2.list_cards()]
+            self.assertIn("Persisted Card", titles)
+            self.assertEqual(store2.get_card(created["id"])["contentText"], "Survives restart")
+
 
 if __name__ == "__main__":
     unittest.main()
