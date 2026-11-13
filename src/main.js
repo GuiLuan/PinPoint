@@ -4,6 +4,7 @@ import { nodes } from './nodes.js';
 import { wires } from './wires.js';
 import { settings } from './settings.js';
 import { minimap } from './minimap.js';
+import { sync } from './sync.js';
 
 async function initApp() {
   const viewportEl = document.getElementById('viewport');
@@ -31,6 +32,7 @@ async function initApp() {
   window.__wires = wires;
   window.__settings = settings;
   window.__minimap = minimap;
+  window.__sync = sync;
 
   canvas.onTransform = () => {
     nodes.updatePopoverPosition();
@@ -38,6 +40,7 @@ async function initApp() {
     nodes.updateCapsuleActionPosition();
     wires.updateDropMenuPosition();
     minimap.render();
+    sync.notifyViewportChanged();
   };
 
   wires.onRender = () => {
@@ -46,6 +49,7 @@ async function initApp() {
 
   nodes.onSelectionChange = () => {
     minimap.requestRender();
+    sync.notifySelectionChanged();
   };
 
   function updateStatus(text) {
@@ -172,6 +176,26 @@ async function initApp() {
       nodes.renderPopoverPalette();
       nodes.updateContextMenuToggles();
       minimap.applySettings();
+    } else if (event.type === 'REMOTE_SYNCED') {
+      if (event.sourceEvent === 'VIEWPORT_CHANGED') {
+        canvas.applyTransform();
+      } else if (event.sourceEvent === 'SETTINGS_CHANGED') {
+        settings.syncUI();
+        nodes.renderPopoverPalette();
+        nodes.updateContextMenuToggles();
+        minimap.applySettings();
+      } else {
+        nodes.filterSelectionAfterRestore();
+        nodes.render();
+        wires.render();
+        nodes.updateAlignmentBar();
+        canvas.applyTransform();
+        settings.syncUI();
+        nodes.renderPopoverPalette();
+        nodes.updateContextMenuToggles();
+        minimap.applySettings();
+        minimap.requestRender();
+      }
     } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED' || event.type?.startsWith('GROUP_') || event.type?.startsWith('CARD_')) {
       nodes.render();
       wires.render();
@@ -183,6 +207,7 @@ async function initApp() {
   nodes.render();
   wires.render();
   updateUndoRedoButtons();
+  sync.init();
   await store.restoreFileHandle();
   if (store.fileName) updateStatus(store.fileName);
 

@@ -180,6 +180,66 @@ class StateManager {
     return true;
   }
 
+  hasLocalSavedState() {
+    try {
+      return !!localStorage.getItem(STORAGE_KEY);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  applyRemoteState(remoteState, sourceEvent = 'REMOTE_SYNCED') {
+    if (!remoteState || !Array.isArray(remoteState.cards) || !Array.isArray(remoteState.connections)) {
+      return false;
+    }
+
+    const cards = JSON.parse(JSON.stringify(remoteState.cards));
+    const groups = JSON.parse(JSON.stringify(remoteState.groups || []));
+    const connections = JSON.parse(JSON.stringify(remoteState.connections))
+      .filter(c => this.validateConnection(c, cards, groups));
+
+    if (remoteState.viewport) {
+      this.state.viewport = {
+        x: Number(remoteState.viewport.x ?? this.state.viewport.x ?? 0),
+        y: Number(remoteState.viewport.y ?? this.state.viewport.y ?? 0),
+        zoom: Number(remoteState.viewport.zoom ?? this.state.viewport.zoom ?? 1.0)
+      };
+    }
+
+    if (remoteState.settings) {
+      this.state.settings = {
+        alignMode: remoteState.settings.alignMode ?? false,
+        gridSnapMode: remoteState.settings.gridSnapMode ?? false,
+        palette: Array.isArray(remoteState.settings.palette) && remoteState.settings.palette.length >= 2
+          ? [...remoteState.settings.palette]
+          : [...DEFAULT_PALETTE],
+        minimap: {
+          enabled: remoteState.settings.minimap?.enabled ?? true,
+          position: remoteState.settings.minimap?.position || 'bottom-right',
+          size: typeof remoteState.settings.minimap?.size === 'number' ? remoteState.settings.minimap.size : 220
+        }
+      };
+    }
+
+    const prevSnap = this.snapshot();
+    this.state.cards = cards;
+    this.state.connections = connections;
+    this.state.groups = groups;
+    const nextSnap = this.snapshot();
+
+    if (sourceEvent === 'GRAPH_REPLACED' || sourceEvent === 'STATE_RESET') {
+      this.undoStack = [nextSnap];
+      this.redoStack = [];
+    } else if (nextSnap !== prevSnap) {
+      this.undoStack.push(nextSnap);
+      if (this.undoStack.length > 60) this.undoStack.shift();
+      this.redoStack = [];
+    }
+
+    this.notify({ type: 'REMOTE_SYNCED', sourceEvent });
+    return true;
+  }
+
   loadInitialState() {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);

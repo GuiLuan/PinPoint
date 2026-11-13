@@ -266,6 +266,17 @@ html, body {
   border-radius: 50%;
   background: var(--accent-green);
   box-shadow: 0 0 8px var(--accent-green);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hud-title-dot.sync-reconnecting {
+  background: var(--accent-orange);
+  box-shadow: 0 0 8px var(--accent-orange);
+}
+
+.hud-title-dot.sync-offline {
+  background: var(--text-secondary);
+  box-shadow: none;
 }
 
 .hud-divider {

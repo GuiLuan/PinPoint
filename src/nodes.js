@@ -456,20 +456,25 @@ class NodeManager {
   selectCapsule(capsule) {
     if (!capsule) return;
     this.hideSelectionPopover();
-    this.clearCapsuleSelection();
+    this.clearCapsuleSelection({ silent: true });
 
     this.selectedCapsule = capsule;
     capsule.classList.add('capsule-selected');
     this.updateCapsuleActionPosition();
+    if (this.onSelectionChange) this.onSelectionChange();
   }
 
-  clearCapsuleSelection() {
+  clearCapsuleSelection(opts = {}) {
+    const hadCapsule = !!this.selectedCapsule;
     if (this.selectedCapsule) {
       this.selectedCapsule.classList.remove('capsule-selected');
       this.selectedCapsule = null;
     }
     if (this.capsuleActionBarEl) {
       this.capsuleActionBarEl.style.display = 'none';
+    }
+    if (hadCapsule && !opts.silent && this.onSelectionChange) {
+      this.onSelectionChange();
     }
   }
 
@@ -810,6 +815,7 @@ class NodeManager {
   }
 
   hideSelectionPopover() {
+    const hadRange = !!this.currentRange;
     if (this.selectionPopoverEl) {
       this.selectionPopoverEl.style.display = 'none';
     }
@@ -817,6 +823,9 @@ class NodeManager {
     this.targetCapsule = null;
     this.targetHeaderCard = null;
     this.targetGroup = null;
+    if (hadRange && this.onSelectionChange) {
+      this.onSelectionChange();
+    }
   }
 
   bindSelectionEvents() {
@@ -852,6 +861,7 @@ class NodeManager {
       this.renderPopoverPalette();
       this.setSelectedColor(this.selectedColor || store.getPalette()[0] || '#30d158');
       this.updatePopoverPosition();
+      if (this.onSelectionChange) this.onSelectionChange();
     });
 
     this.selectionPopoverEl.addEventListener('mousedown', (e) => {
@@ -1042,12 +1052,49 @@ class NodeManager {
     );
   }
 
-  updateSelectionVisuals() {
+  updateSelectionVisuals(silent = false) {
     document.querySelectorAll('.note-card').forEach(cardEl => {
       const cardId = cardEl.id.replace('card-dom-', '');
       cardEl.classList.toggle('selected', this.selectedCardIds.has(cardId));
     });
-    if (this.onSelectionChange) this.onSelectionChange();
+    if (!silent && this.onSelectionChange) this.onSelectionChange();
+  }
+
+  getSelectionState() {
+    let textSelection = null;
+    if (this.currentRange) {
+      const txt = this.currentRange.toString().trim();
+      const container = this.currentRange.commonAncestorContainer;
+      const bodyEl = container?.nodeType === 3 ? container.parentElement?.closest('.note-body') : container?.closest?.('.note-body');
+      const cardEl = bodyEl?.closest('.note-card');
+      const cardId = cardEl ? cardEl.id.replace('card-dom-', '') : null;
+      if (cardId && txt) {
+        textSelection = { cardId, text: txt };
+      }
+    }
+    return {
+      cardIds: [...this.selectedCardIds],
+      capsulePinId: this.selectedCapsule?.getAttribute('data-pin-id') || null,
+      textSelection
+    };
+  }
+
+  applyRemoteSelection(sel) {
+    if (!sel || typeof sel !== 'object') return;
+    const validIds = new Set(store.state.cards.map(c => c.id));
+    this.selectedCardIds = new Set((sel.cardIds || []).filter(id => validIds.has(id)));
+    this.updateSelectionVisuals(true);
+    this.updateAlignmentBar();
+
+    this.clearCapsuleSelection({ silent: true });
+    if (sel.capsulePinId) {
+      const capEl = document.querySelector(`.text-capsule[data-pin-id="${CSS.escape(sel.capsulePinId)}"]`);
+      if (capEl) {
+        this.selectedCapsule = capEl;
+        capEl.classList.add('capsule-selected');
+        this.updateCapsuleActionPosition();
+      }
+    }
   }
 
   updateAlignmentBar() {
@@ -1251,6 +1298,7 @@ class NodeManager {
     wires.render();
     store.scheduleAutoSave();
     this.updateAlignmentBar();
+    if (this.onSelectionChange) this.onSelectionChange();
     return true;
   }
 

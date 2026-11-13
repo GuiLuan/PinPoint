@@ -1,0 +1,1355 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "PinPoint RESTful API",
+    "version": "1.0.0",
+    "description": "RESTful API for PinPoint infinite-canvas knowledge graph, serving as the foundational layer for external automation and MCP tool wrappers.",
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5173/api/v1",
+      "description": "Local PinPoint development server"
+    }
+  ],
+  "tags": [
+    { "name": "System", "description": "Health check, OpenAPI schema, and SSE live-sync stream" },
+    { "name": "Graph", "description": "Workspace-level graph read, summary, import, save, and reset" },
+    { "name": "Cards", "description": "Node card CRUD, search, batch mutations, and cloning" },
+    { "name": "Capsules", "description": "Inline text-capsule creation, recoloring, and unwrapping" },
+    { "name": "Connections", "description": "Topological wire connections between card headers, capsules, and groups" },
+    { "name": "Groups", "description": "Card group management and membership" },
+    { "name": "Layout", "description": "Alignment, equal distribution, and automatic graph layout" },
+    { "name": "History", "description": "Undo and redo history stack" },
+    { "name": "Viewport", "description": "Canvas pan, zoom, fit-to-content, and focus" },
+    { "name": "Settings", "description": "Workspace assistance toggles, palette, and minimap preferences" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["System"],
+        "operationId": "getHealth",
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": ["System"],
+        "operationId": "getOpenApiSpec",
+        "summary": "Get OpenAPI 3.1 JSON specification",
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON document",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "tags": ["System"],
+        "operationId": "subscribeEvents",
+        "summary": "Subscribe to real-time graph state events (SSE)",
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events stream",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/graph": {
+      "get": {
+        "tags": ["Graph"],
+        "operationId": "getGraph",
+        "summary": "Get full graph state",
+        "parameters": [
+          {
+            "name": "include",
+            "in": "query",
+            "description": "Comma-separated optional sections to include (e.g. viewport,settings)",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full graph state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/OkResponse" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/GraphState" } } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Graph"],
+        "operationId": "replaceGraph",
+        "summary": "Import or sync entire graph state",
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "description": "replace (default, resets undo history) or sync (commits onto undo history for live browser sync)",
+            "schema": { "type": "string", "enum": ["replace", "sync"], "default": "replace" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GraphImportInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Graph replaced",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/graph/summary": {
+      "get": {
+        "tags": ["Graph"],
+        "operationId": "getGraphSummary",
+        "summary": "Get compact AI-friendly graph topology summary",
+        "responses": {
+          "200": {
+            "description": "Compact graph summary without verbose HTML styles",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/graph/reset": {
+      "post": {
+        "tags": ["Graph"],
+        "operationId": "resetGraph",
+        "summary": "Reset graph to default workspace state",
+        "responses": {
+          "200": {
+            "description": "Graph reset",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/graph/save": {
+      "post": {
+        "tags": ["Graph"],
+        "operationId": "saveGraph",
+        "summary": "Persist graph snapshot to workspace JSON/.pinpoint file",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": { "type": "string", "description": "Optional target file path inside workspace" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Graph saved",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/cards": {
+      "get": {
+        "tags": ["Cards"],
+        "operationId": "listCards",
+        "summary": "List or search cards",
+        "parameters": [
+          { "name": "q", "in": "query", "description": "Search keyword in title or text", "schema": { "type": "string" } },
+          { "name": "groupId", "in": "query", "description": "Filter by group ID", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of cards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/OkResponse" },
+                    { "type": "object", "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/CardView" } } } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Cards"],
+        "operationId": "createCard",
+        "summary": "Create a new card",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CardCreateInput" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Card created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/OkResponse" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/CardView" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/cards/batch": {
+      "post": {
+        "tags": ["Cards"],
+        "operationId": "batchMutateCards",
+        "summary": "Batch create, update, or delete cards",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CardBatchInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch operation result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/cards/{cardId}": {
+      "parameters": [
+        { "name": "cardId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "get": {
+        "tags": ["Cards"],
+        "operationId": "getCard",
+        "summary": "Get a single card with parsed capsules and related connections",
+        "responses": {
+          "200": {
+            "description": "Card detail",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Cards"],
+        "operationId": "updateCard",
+        "summary": "Partially update a card",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CardUpdateInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Card updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Cards"],
+        "operationId": "deleteCard",
+        "summary": "Delete a card and cascade-clean its connections and group memberships",
+        "responses": {
+          "200": {
+            "description": "Card deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/cards/{cardId}/clone": {
+      "parameters": [
+        { "name": "cardId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "post": {
+        "tags": ["Cards"],
+        "operationId": "cloneCard",
+        "summary": "Clone a card and remap its capsule pins",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "offsetX": { "type": "number", "default": 32 },
+                  "offsetY": { "type": "number", "default": 32 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Card cloned",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/cards/{cardId}/capsules": {
+      "parameters": [
+        { "name": "cardId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "get": {
+        "tags": ["Capsules"],
+        "operationId": "listCardCapsules",
+        "summary": "List text capsules inside a card",
+        "responses": {
+          "200": {
+            "description": "List of capsules",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["Capsules"],
+        "operationId": "createCapsule",
+        "summary": "Convert matched text or append a new text capsule inside a card",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CapsuleCreateInput" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Capsule created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/capsules/{pinId}": {
+      "parameters": [
+        { "name": "pinId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "patch": {
+        "tags": ["Capsules"],
+        "operationId": "updateCapsule",
+        "summary": "Recolor or rename a text capsule and propagate wire color",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CapsuleUpdateInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Capsule updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Capsules"],
+        "operationId": "deleteCapsule",
+        "summary": "Unwrap capsule back to plain text and remove attached connections",
+        "responses": {
+          "200": {
+            "description": "Capsule deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/connections": {
+      "get": {
+        "tags": ["Connections"],
+        "operationId": "listConnections",
+        "summary": "List connections with optional entity/pin filters",
+        "parameters": [
+          { "name": "cardId", "in": "query", "schema": { "type": "string" } },
+          { "name": "groupId", "in": "query", "schema": { "type": "string" } },
+          { "name": "pinId", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of connections",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Connections"],
+        "operationId": "createConnection",
+        "summary": "Create a wire connection via exact pin IDs or semantic card endpoints",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ConnectionCreateInput" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Connection created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/connections/{connId}": {
+      "parameters": [
+        { "name": "connId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "patch": {
+        "tags": ["Connections"],
+        "operationId": "updateConnection",
+        "summary": "Reconnect endpoint or change wire color",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ConnectionUpdateInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Connection updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Connections"],
+        "operationId": "deleteConnection",
+        "summary": "Delete a connection",
+        "responses": {
+          "200": {
+            "description": "Connection deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/groups": {
+      "get": {
+        "tags": ["Groups"],
+        "operationId": "listGroups",
+        "summary": "List all groups with computed bounds",
+        "responses": {
+          "200": {
+            "description": "List of groups",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Groups"],
+        "operationId": "createGroup",
+        "summary": "Create a group containing at least 2 cards",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GroupCreateInput" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Group created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/groups/{groupId}": {
+      "parameters": [
+        { "name": "groupId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "patch": {
+        "tags": ["Groups"],
+        "operationId": "updateGroup",
+        "summary": "Update group title, headerColor, or translate all member cards by delta",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GroupUpdateInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Group updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Groups"],
+        "operationId": "deleteGroup",
+        "summary": "Ungroup (dissolve group while keeping member cards)",
+        "responses": {
+          "200": {
+            "description": "Group removed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/groups/{groupId}/members": {
+      "parameters": [
+        { "name": "groupId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "post": {
+        "tags": ["Groups"],
+        "operationId": "addCardToGroup",
+        "summary": "Add a card to a group",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["cardId"],
+                "properties": {
+                  "cardId": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Member added",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/groups/{groupId}/members/{cardId}": {
+      "parameters": [
+        { "name": "groupId", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "cardId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "delete": {
+        "tags": ["Groups"],
+        "operationId": "removeCardFromGroup",
+        "summary": "Remove a card from a group (dissolves group if < 2 members remain)",
+        "responses": {
+          "200": {
+            "description": "Member removed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/layout/align": {
+      "post": {
+        "tags": ["Layout"],
+        "operationId": "alignCards",
+        "summary": "Align or evenly distribute specified cards",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LayoutAlignInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cards aligned",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/layout/auto": {
+      "post": {
+        "tags": ["Layout"],
+        "operationId": "autoLayout",
+        "summary": "Automatically arrange cards using topology-aware layered or grid layout",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AutoLayoutInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Layout updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/history": {
+      "get": {
+        "tags": ["History"],
+        "operationId": "getHistoryStatus",
+        "summary": "Get undo/redo availability",
+        "responses": {
+          "200": {
+            "description": "History status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/history/undo": {
+      "post": {
+        "tags": ["History"],
+        "operationId": "undoHistory",
+        "summary": "Undo last graph mutation",
+        "responses": {
+          "200": {
+            "description": "Undo outcome",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/history/redo": {
+      "post": {
+        "tags": ["History"],
+        "operationId": "redoHistory",
+        "summary": "Redo last undone graph mutation",
+        "responses": {
+          "200": {
+            "description": "Redo outcome",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/viewport": {
+      "get": {
+        "tags": ["Viewport"],
+        "operationId": "getViewport",
+        "summary": "Get current canvas viewport",
+        "responses": {
+          "200": {
+            "description": "Viewport state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["Viewport"],
+        "operationId": "updateViewport",
+        "summary": "Update viewport pan/zoom",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Viewport" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Viewport updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/viewport/fit": {
+      "post": {
+        "tags": ["Viewport"],
+        "operationId": "fitViewport",
+        "summary": "Fit viewport to all cards and groups",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "viewportWidth": { "type": "number", "default": 1440 },
+                  "viewportHeight": { "type": "number", "default": 900 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Viewport fitted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/viewport/focus": {
+      "post": {
+        "tags": ["Viewport"],
+        "operationId": "focusViewport",
+        "summary": "Center viewport on target cards or a group",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "cardIds": { "type": "array", "items": { "type": "string" } },
+                  "groupId": { "type": "string" },
+                  "viewportWidth": { "type": "number", "default": 1440 },
+                  "viewportHeight": { "type": "number", "default": 900 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Viewport focused",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/settings": {
+      "get": {
+        "tags": ["Settings"],
+        "operationId": "getSettings",
+        "summary": "Get workspace settings",
+        "responses": {
+          "200": {
+            "description": "Workspace settings",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["Settings"],
+        "operationId": "updateSettings",
+        "summary": "Partially update workspace settings (alignMode, gridSnapMode, palette, minimap)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SettingsPatch" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Settings updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/settings/palette/reset": {
+      "post": {
+        "tags": ["Settings"],
+        "operationId": "resetPalette",
+        "summary": "Reset color palette to default 5 colors",
+        "responses": {
+          "200": {
+            "description": "Palette reset",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/selection": {
+      "get": {
+        "tags": ["Viewport"],
+        "operationId": "getSelection",
+        "summary": "Get currently selected cards and capsule on the live canvas",
+        "responses": {
+          "200": {
+            "description": "Current live selection",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Viewport"],
+        "operationId": "setSelection",
+        "summary": "Replace live canvas selection (cards, group, or capsule)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Selection updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["Viewport"],
+        "operationId": "patchSelection",
+        "summary": "Partially update live canvas selection",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Selection updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "OkResponse": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": {
+          "ok": { "type": "boolean", "const": true },
+          "data": {}
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["ok", "error"],
+        "properties": {
+          "ok": { "type": "boolean", "const": false },
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "details": {}
+            }
+          }
+        }
+      },
+      "Viewport": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "zoom": { "type": "number", "minimum": 0.35, "maximum": 2.5 }
+        }
+      },
+      "MinimapSettings": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "position": { "type": "string", "enum": ["top-left", "top-right", "bottom-left", "bottom-right"] },
+          "size": { "type": "integer", "minimum": 140, "maximum": 320 }
+        }
+      },
+      "Settings": {
+        "type": "object",
+        "properties": {
+          "alignMode": { "type": "boolean" },
+          "gridSnapMode": { "type": "boolean" },
+          "palette": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 10,
+            "items": { "type": "string" }
+          },
+          "minimap": { "$ref": "#/components/schemas/MinimapSettings" }
+        }
+      },
+      "SettingsPatch": {
+        "type": "object",
+        "properties": {
+          "alignMode": { "type": "boolean" },
+          "gridSnapMode": { "type": "boolean" },
+          "palette": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 10,
+            "items": { "type": "string" }
+          },
+          "minimap": { "$ref": "#/components/schemas/MinimapSettings" }
+        }
+      },
+      "Capsule": {
+        "type": "object",
+        "required": ["pinId", "text"],
+        "properties": {
+          "pinId": { "type": "string" },
+          "text": { "type": "string" },
+          "color": { "type": ["string", "null"] }
+        }
+      },
+      "Card": {
+        "type": "object",
+        "required": ["id", "title", "x", "y", "width", "contentHtml"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 250 },
+          "headerColor": { "type": ["string", "null"] },
+          "contentHtml": { "type": "string" }
+        }
+      },
+      "CardView": {
+        "allOf": [
+          { "$ref": "#/components/schemas/Card" },
+          {
+            "type": "object",
+            "properties": {
+              "contentText": { "type": "string" },
+              "capsules": { "type": "array", "items": { "$ref": "#/components/schemas/Capsule" } }
+            }
+          }
+        ]
+      },
+      "CardCreateInput": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string", "default": "未命名节点" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 250, "default": 310 },
+          "headerColor": { "type": ["string", "null"] },
+          "contentText": { "type": "string" },
+          "contentHtml": { "type": "string" },
+          "capsules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["text"],
+              "properties": {
+                "text": { "type": "string" },
+                "color": { "type": ["string", "null"] },
+                "pinId": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "CardUpdateInput": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 250 },
+          "headerColor": { "type": ["string", "null"] },
+          "contentText": { "type": "string" },
+          "contentHtml": { "type": "string" }
+        }
+      },
+      "CardBatchInput": {
+        "type": "object",
+        "properties": {
+          "create": { "type": "array", "items": { "$ref": "#/components/schemas/CardCreateInput" } },
+          "update": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id"],
+              "properties": {
+                "id": { "type": "string" },
+                "title": { "type": "string" },
+                "x": { "type": "number" },
+                "y": { "type": "number" },
+                "width": { "type": "number", "minimum": 250 },
+                "headerColor": { "type": ["string", "null"] },
+                "contentText": { "type": "string" },
+                "contentHtml": { "type": "string" }
+              }
+            }
+          },
+          "deleteIds": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "CapsuleCreateInput": {
+        "type": "object",
+        "properties": {
+          "matchText": { "type": "string", "description": "Substring in plain content to turn into a capsule" },
+          "occurrence": { "type": "integer", "minimum": 1, "default": 1 },
+          "text": { "type": "string", "description": "Text to append as a new capsule when append is true or matchText omitted" },
+          "append": { "type": "boolean", "default": false },
+          "color": { "type": ["string", "null"], "default": "#30d158" }
+        }
+      },
+      "CapsuleUpdateInput": {
+        "type": "object",
+        "properties": {
+          "color": { "type": ["string", "null"] },
+          "text": { "type": "string" }
+        }
+      },
+      "Connection": {
+        "type": "object",
+        "required": ["id", "fromPinId", "toPinId", "color"],
+        "properties": {
+          "id": { "type": "string" },
+          "fromPinId": { "type": "string" },
+          "toPinId": { "type": "string" },
+          "color": { "type": "string" }
+        }
+      },
+      "ConnectionCreateInput": {
+        "type": "object",
+        "properties": {
+          "fromPinId": { "type": "string" },
+          "toPinId": { "type": "string" },
+          "fromCardId": { "type": "string" },
+          "fromSide": { "type": "string", "enum": ["left", "right"], "default": "right" },
+          "fromCapsuleText": { "type": "string" },
+          "toCardId": { "type": "string" },
+          "toSide": { "type": "string", "enum": ["left", "right"], "default": "left" },
+          "toCapsuleText": { "type": "string" },
+          "fromGroupId": { "type": "string" },
+          "toGroupId": { "type": "string" },
+          "color": { "type": ["string", "null"] }
+        }
+      },
+      "ConnectionUpdateInput": {
+        "type": "object",
+        "properties": {
+          "toPinId": { "type": "string" },
+          "color": { "type": ["string", "null"] }
+        }
+      },
+      "Group": {
+        "type": "object",
+        "required": ["id", "title", "cardIds"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "cardIds": { "type": "array", "minItems": 2, "items": { "type": "string" } },
+          "headerColor": { "type": ["string", "null"] }
+        }
+      },
+      "GroupCreateInput": {
+        "type": "object",
+        "required": ["cardIds"],
+        "properties": {
+          "title": { "type": "string" },
+          "cardIds": { "type": "array", "minItems": 2, "items": { "type": "string" } },
+          "headerColor": { "type": ["string", "null"], "default": "#0a84ff" }
+        }
+      },
+      "GroupUpdateInput": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "headerColor": { "type": ["string", "null"] },
+          "deltaX": { "type": "number" },
+          "deltaY": { "type": "number" }
+        }
+      },
+      "LayoutAlignInput": {
+        "type": "object",
+        "required": ["cardIds", "type"],
+        "properties": {
+          "cardIds": { "type": "array", "minItems": 2, "items": { "type": "string" } },
+          "type": {
+            "type": "string",
+            "enum": ["left", "center-h", "right", "top", "center-v", "bottom", "distribute-h", "distribute-v"]
+          }
+        }
+      },
+      "AutoLayoutInput": {
+        "type": "object",
+        "properties": {
+          "strategy": { "type": "string", "enum": ["layered", "grid"], "default": "layered" },
+          "cardIds": { "type": "array", "items": { "type": "string" } },
+          "spacingX": { "type": "number", "default": 96 },
+          "spacingY": { "type": "number", "default": 64 }
+        }
+      },
+      "GraphState": {
+        "type": "object",
+        "required": ["cards", "connections", "groups"],
+        "properties": {
+          "viewport": { "$ref": "#/components/schemas/Viewport" },
+          "settings": { "$ref": "#/components/schemas/Settings" },
+          "cards": { "type": "array", "items": { "$ref": "#/components/schemas/Card" } },
+          "connections": { "type": "array", "items": { "$ref": "#/components/schemas/Connection" } },
+          "groups": { "type": "array", "items": { "$ref": "#/components/schemas/Group" } }
+        }
+      },
+      "GraphImportInput": {
+        "type": "object",
+        "required": ["cards", "connections"],
+        "properties": {
+          "viewport": { "$ref": "#/components/schemas/Viewport" },
+          "settings": { "$ref": "#/components/schemas/Settings" },
+          "cards": { "type": "array", "items": { "$ref": "#/components/schemas/Card" } },
+          "connections": { "type": "array", "items": { "$ref": "#/components/schemas/Connection" } },
+          "groups": { "type": "array", "items": { "$ref": "#/components/schemas/Group" } }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request payload or domain constraint violation",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Requested resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Resource conflict (e.g. duplicate connection)",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    }
+  }
+}
