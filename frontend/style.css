@@ -2874,6 +2874,7 @@ body.focus-animating .wire-group {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
+  outline: none;
 }
 
 .library-items-list.layout-grid {
@@ -2935,10 +2936,50 @@ body.focus-animating .wire-group {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+.library-item-tile.is-selected {
+  background: rgba(10, 132, 255, 0.22);
+  border-color: rgba(10, 132, 255, 0.68);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.25);
+}
+
+.library-item-tile.is-selected:hover {
+  background: rgba(10, 132, 255, 0.28);
+  border-color: rgba(74, 163, 255, 0.85);
+}
+
+.library-item-tile.is-selected .library-item-name {
+  color: #ffffff;
+}
+
 .library-item-tile.is-dragging {
   opacity: 0.52;
   transform: scale(0.96);
   cursor: grabbing;
+}
+
+.library-marquee-box {
+  position: fixed;
+  display: none;
+  border: 1px solid rgba(10, 132, 255, 0.85);
+  background: rgba(10, 132, 255, 0.12);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 120;
+}
+
+.library-multi-drag-ghost {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.94);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .library-tile-visual {

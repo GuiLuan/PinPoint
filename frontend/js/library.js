@@ -62,12 +62,19 @@ class LibraryManager {
     this.toggleBtnEl = null;
     this.dropOverlayEl = null;
     this.resizeHandleEl = null;
+    this.marqueeBoxEl = null;
 
     this.items = this.loadLocalLibrary();
     this.searchQuery = '';
     this.pendingCapture = null;
     this.editingItemId = null;
     this.draggingItemId = null;
+    this.draggingItemIds = [];
+    this.dragGhostEl = null;
+    this.selectedItemIds = new Set();
+    this.selectionAnchorId = null;
+    this.lastFocusScope = 'canvas';
+    this.activeMarquee = null;
     this.isResizing = false;
     this.insertCascade = 0;
   }
@@ -93,6 +100,7 @@ class LibraryManager {
     this.composerPreviewEl = this.drawerEl.querySelector('#library-save-preview');
     this.dropOverlayEl = document.getElementById('library-canvas-drop-hint');
     this.resizeHandleEl = this.drawerEl.querySelector('#library-resize-handle');
+    this.marqueeBoxEl = document.getElementById('library-marquee-box');
 
     this.bindEvents();
     this.applySettings();
@@ -197,6 +205,7 @@ class LibraryManager {
     if (!this.drawerEl) return;
     this.drawerEl.classList.add('is-open');
     this.toggleBtnEl?.classList.add('is-active');
+    this.setFocusScope('library');
     this.updateSelectionState();
     this.renderList();
   }
@@ -205,6 +214,7 @@ class LibraryManager {
     if (!this.drawerEl) return;
     this.cancelSaveForm();
     this.editingItemId = null;
+    this.setFocusScope('canvas');
     this.drawerEl.classList.remove('is-open');
     this.toggleBtnEl?.classList.remove('is-active');
   }
@@ -228,8 +238,108 @@ class LibraryManager {
       this.renderList();
       return true;
     }
+    if (this.selectedItemIds.size > 0) {
+      this.clearItemSelection();
+      return true;
+    }
     this.close();
     return true;
+  }
+
+  setFocusScope(scope) {
+    this.lastFocusScope = scope === 'library' ? 'library' : 'canvas';
+  }
+
+  pruneItemSelection() {
+    const validIds = new Set(this.items.map(it => it.id));
+    for (const id of Array.from(this.selectedItemIds)) {
+      if (!validIds.has(id)) {
+        this.selectedItemIds.delete(id);
+      }
+    }
+    if (this.selectionAnchorId && !validIds.has(this.selectionAnchorId)) {
+      this.selectionAnchorId = null;
+    }
+  }
+
+  syncItemSelectionVisuals() {
+    this.pruneItemSelection();
+    if (this.countBadgeEl) {
+      const total = this.items.length;
+      const selectedCount = this.selectedItemIds.size;
+      this.countBadgeEl.textContent = selectedCount > 0 && total > 0
+        ? `已选 ${selectedCount} / ${total}`
+        : String(total);
+    }
+    if (!this.listEl) return;
+    this.listEl.querySelectorAll('.library-item-tile').forEach(tileEl => {
+      const id = tileEl.dataset.itemId;
+      tileEl.classList.toggle('is-selected', Boolean(id && this.selectedItemIds.has(id)));
+    });
+  }
+
+  clearItemSelection() {
+    this.selectedItemIds.clear();
+    this.selectionAnchorId = null;
+    this.syncItemSelectionVisuals();
+  }
+
+  selectAllItems() {
+    const filtered = this.getFilteredItems();
+    this.selectedItemIds = new Set(filtered.map(it => it.id));
+    this.selectionAnchorId = filtered[0]?.id || null;
+    this.syncItemSelectionVisuals();
+  }
+
+  handleSelectAllShortcut(e) {
+    if (!this.isOpen()) return false;
+    const inLibrary = this.drawerEl?.contains(document.activeElement) || this.lastFocusScope === 'library';
+    if (!inLibrary) return false;
+    e.preventDefault();
+    this.selectAllItems();
+    return true;
+  }
+
+  handleTileSelectClick(e, itemId, orderedIds) {
+    this.setFocusScope('library');
+    this.listEl?.focus({ preventScroll: true });
+
+    const isCtrl = !!(e.ctrlKey || e.metaKey);
+    const isShift = !!e.shiftKey;
+
+    if (isShift) {
+      const anchorValid = this.selectionAnchorId && orderedIds.includes(this.selectionAnchorId);
+      const anchorId = anchorValid ? this.selectionAnchorId : itemId;
+      if (!anchorValid) this.selectionAnchorId = anchorId;
+
+      const aIdx = orderedIds.indexOf(anchorId);
+      const bIdx = orderedIds.indexOf(itemId);
+      if (aIdx >= 0 && bIdx >= 0) {
+        const start = Math.min(aIdx, bIdx);
+        const end = Math.max(aIdx, bIdx);
+        const rangeIds = orderedIds.slice(start, end + 1);
+        if (isCtrl) {
+          rangeIds.forEach(id => this.selectedItemIds.add(id));
+        } else {
+          this.selectedItemIds = new Set(rangeIds);
+        }
+      } else {
+        this.selectedItemIds = new Set([itemId]);
+        this.selectionAnchorId = itemId;
+      }
+    } else if (isCtrl) {
+      if (this.selectedItemIds.has(itemId)) {
+        this.selectedItemIds.delete(itemId);
+      } else {
+        this.selectedItemIds.add(itemId);
+      }
+      this.selectionAnchorId = itemId;
+    } else {
+      this.selectedItemIds = new Set([itemId]);
+      this.selectionAnchorId = itemId;
+    }
+
+    this.syncItemSelectionVisuals();
   }
 
   updateSelectionState() {
@@ -452,67 +562,99 @@ class LibraryManager {
   }
 
   instantiateItem(itemId, boardPos = null) {
-    const item = this.items.find(it => it.id === itemId);
-    if (!item || !Array.isArray(item.cards) || item.cards.length === 0) return false;
+    return this.instantiateItems([itemId], boardPos);
+  }
 
-    const { newCards, newGroups, newConnections } = nodes.cloneCardsAndGroups(
-      item.cards,
-      item.groups || [],
-      item.connections || []
-    );
+  instantiateItems(itemIds, boardPos = null) {
+    const ids = Array.isArray(itemIds) ? itemIds : [itemIds];
+    const validItems = ids
+      .map(id => this.items.find(it => it.id === id))
+      .filter(item => item && Array.isArray(item.cards) && item.cards.length > 0);
 
-    if (newCards.length === 0) return false;
+    if (validItems.length === 0) return false;
 
-    const minX = Math.min(...newCards.map(c => Number(c.x) || 0));
-    const minY = Math.min(...newCards.map(c => Number(c.y) || 0));
-    const maxX = Math.max(...newCards.map(c => (Number(c.x) || 0) + (Number(c.width) || 310)));
-    const maxY = Math.max(...newCards.map(c => (Number(c.y) || 0) + 140));
-    const bboxW = maxX - minX;
-    const bboxH = maxY - minY;
+    const bundles = [];
+    for (const item of validItems) {
+      const { newCards, newGroups, newConnections } = nodes.cloneCardsAndGroups(
+        item.cards,
+        item.groups || [],
+        item.connections || []
+      );
+      if (newCards.length === 0) continue;
+      const minX = Math.min(...newCards.map(c => Number(c.x) || 0));
+      const minY = Math.min(...newCards.map(c => Number(c.y) || 0));
+      const maxX = Math.max(...newCards.map(c => (Number(c.x) || 0) + (Number(c.width) || 310)));
+      const maxY = Math.max(...newCards.map(c => (Number(c.y) || 0) + 150));
+      bundles.push({
+        item,
+        newCards,
+        newGroups,
+        newConnections,
+        minX,
+        minY,
+        bboxW: Math.max(1, maxX - minX),
+        bboxH: Math.max(1, maxY - minY)
+      });
+    }
 
-    let targetOriginX;
-    let targetOriginY;
+    if (bundles.length === 0) return false;
 
+    const n = bundles.length;
+    const GAP_X = 64;
+    const maxH = Math.max(...bundles.map(b => b.bboxH));
+    const totalW = bundles.reduce((sum, b, idx) => sum + b.bboxW + (idx < n - 1 ? GAP_X : 0), 0);
+
+    let originX;
+    let originY;
     if (boardPos && typeof boardPos.x === 'number' && typeof boardPos.y === 'number') {
-      targetOriginX = boardPos.x - bboxW / 2;
-      targetOriginY = boardPos.y - Math.min(48, bboxH / 2);
+      originX = boardPos.x - totalW / 2;
+      originY = boardPos.y - Math.min(48, maxH / 2);
     } else {
       const vp = store.state.viewport;
       const centerX = (-vp.x + window.innerWidth / 2) / vp.zoom;
       const centerY = (-vp.y + window.innerHeight / 2) / vp.zoom;
       const cascade = (this.insertCascade % 5) * 28;
       this.insertCascade += 1;
-      targetOriginX = centerX - bboxW / 2 + cascade;
-      targetOriginY = centerY - bboxH / 2 + cascade;
+      originX = centerX - totalW / 2 + cascade;
+      originY = centerY - maxH / 2 + cascade;
     }
 
-    const dx = targetOriginX - minX;
-    const dy = targetOriginY - minY;
     const gridSnap = !!store.state.settings?.gridSnapMode;
+    const allNewCards = [];
+    let cursorX = originX;
 
-    newCards.forEach(c => {
-      let nx = Math.round((Number(c.x) || 0) + dx);
-      let ny = Math.round((Number(c.y) || 0) + dy);
-      if (gridSnap) {
-        nx = Math.round(nx / 24) * 24;
-        ny = Math.round(ny / 24) * 24;
+    bundles.forEach((b) => {
+      const cellX = cursorX;
+      const cellY = originY;
+      cursorX += b.bboxW + GAP_X;
+      const dx = cellX - b.minX;
+      const dy = cellY - b.minY;
+
+      b.newCards.forEach(card => {
+        let nx = Math.round((Number(card.x) || 0) + dx);
+        let ny = Math.round((Number(card.y) || 0) + dy);
+        if (gridSnap) {
+          nx = Math.round(nx / 24) * 24;
+          ny = Math.round(ny / 24) * 24;
+        }
+        card.x = nx;
+        card.y = ny;
+        store.state.cards.push(card);
+        allNewCards.push(card);
+      });
+
+      if (b.newGroups.length > 0) {
+        if (!store.state.groups) store.state.groups = [];
+        b.newGroups.forEach(g => store.state.groups.push(g));
       }
-      c.x = nx;
-      c.y = ny;
-      store.state.cards.push(c);
-    });
 
-    if (newGroups.length > 0) {
-      if (!store.state.groups) store.state.groups = [];
-      newGroups.forEach(g => store.state.groups.push(g));
-    }
-
-    newConnections.forEach(conn => {
-      store.state.connections.push(conn);
+      b.newConnections.forEach(conn => {
+        store.state.connections.push(conn);
+      });
     });
 
     nodes.hideAllMenus();
-    nodes.selectedCardIds = new Set(newCards.map(c => c.id));
+    nodes.selectedCardIds = new Set(allNewCards.map(c => c.id));
     store.commit();
     nodes.render();
     nodes.renderGroups();
@@ -521,7 +663,11 @@ class LibraryManager {
     store.scheduleAutoSave();
     nodes.onSelectionChange?.();
 
-    store.emitToast(`已从库插入「${item.name}」（${newCards.length} 个节点）`, 'success');
+    if (bundles.length === 1) {
+      store.emitToast(`已从库插入「${bundles[0].item.name}」（${allNewCards.length} 个节点）`, 'success');
+    } else {
+      store.emitToast(`已从库一齐插入 ${bundles.length} 个项目（共 ${allNewCards.length} 个节点）`, 'success');
+    }
     return true;
   }
 
@@ -673,15 +819,14 @@ class LibraryManager {
 
   renderList() {
     if (!this.listEl) return;
-    if (this.countBadgeEl) {
-      this.countBadgeEl.textContent = String(this.items.length);
-    }
+    this.pruneItemSelection();
 
     const { layout } = store.getLibrarySettings();
     this.listEl.classList.remove('layout-grid', 'layout-list');
     this.listEl.classList.add(`layout-${layout}`);
 
     const filtered = this.getFilteredItems();
+    const orderedIds = filtered.map(it => it.id);
     if (filtered.length === 0) {
       const emptyMsg = this.items.length === 0
         ? '库中还没有保存任何节点组合。<br>选中画布上的节点后，点击左上角「＋」按钮或按 Shift+L 即可保存。'
@@ -696,6 +841,7 @@ class LibraryManager {
           <p>${emptyMsg}</p>
         </div>
       `;
+      this.syncItemSelectionVisuals();
       return;
     }
 
@@ -711,12 +857,15 @@ class LibraryManager {
 
       const tileEl = document.createElement('div');
       tileEl.className = 'library-item-tile';
+      if (this.selectedItemIds.has(item.id)) {
+        tileEl.classList.add('is-selected');
+      }
       tileEl.dataset.itemId = item.id;
       tileEl.setAttribute('draggable', 'true');
 
       const tooltipLines = [item.name, metaParts.join(' · ')];
       if (item.description) tooltipLines.push(item.description);
-      tooltipLines.push('拖拽或双击缩略图插入，点击名称重命名');
+      tooltipLines.push('拖拽或双击缩略图插入，点击名称重命名；支持 Ctrl/Shift/框选多选并一齐拖入画布');
       tileEl.title = tooltipLines.join('\n');
 
       const isEditing = this.editingItemId === item.id;
@@ -746,24 +895,66 @@ class LibraryManager {
         </div>
       `;
 
-      // Drag from library onto canvas
+      tileEl.addEventListener('click', (e) => {
+        if (isEditing || e.target?.closest?.('button, input')) return;
+        if (e.target?.closest?.('.library-item-name') && !(e.ctrlKey || e.metaKey || e.shiftKey)) return;
+        this.handleTileSelectClick(e, item.id, orderedIds);
+      });
+
+      // Drag from library onto canvas (single or multi-selected items)
       tileEl.addEventListener('dragstart', (e) => {
         if (isEditing || e.target?.closest?.('.library-tile-caption, button, input')) {
           e.preventDefault();
           return;
         }
-        this.draggingItemId = item.id;
-        tileEl.classList.add('is-dragging');
+        this.setFocusScope('library');
+        if (!this.selectedItemIds.has(item.id)) {
+          this.selectedItemIds = new Set([item.id]);
+          this.selectionAnchorId = item.id;
+          this.syncItemSelectionVisuals();
+        }
+        const orderedSet = new Set(orderedIds);
+        const dragIds = Array.from(this.selectedItemIds).filter(id => orderedSet.has(id));
+        this.draggingItemIds = dragIds.length > 0 ? dragIds : [item.id];
+        this.draggingItemId = this.draggingItemIds[0];
+
+        this.listEl.querySelectorAll('.library-item-tile').forEach(el => {
+          if (this.draggingItemIds.includes(el.dataset.itemId)) {
+            el.classList.add('is-dragging');
+          }
+        });
+
+        if (this.dropOverlayEl) {
+          this.dropOverlayEl.textContent = this.draggingItemIds.length > 1
+            ? `释放鼠标即可一齐插入 ${this.draggingItemIds.length} 个库项目`
+            : '释放鼠标即可在此位置插入节点模板';
+        }
+
         try {
-          e.dataTransfer.setData('application/x-pinpoint-library', item.id);
-          e.dataTransfer.setData('text/plain', item.id);
+          e.dataTransfer.setData('application/x-pinpoint-library', JSON.stringify(this.draggingItemIds));
+          e.dataTransfer.setData('text/plain', this.draggingItemIds.join(','));
           e.dataTransfer.effectAllowed = 'copy';
+          if (this.draggingItemIds.length > 1 && e.dataTransfer.setDragImage) {
+            const ghost = document.createElement('div');
+            ghost.className = 'library-multi-drag-ghost';
+            ghost.textContent = `一齐放置 ${this.draggingItemIds.length} 个库项目`;
+            document.body.appendChild(ghost);
+            this.dragGhostEl = ghost;
+            e.dataTransfer.setDragImage(ghost, 20, 18);
+            requestAnimationFrame(() => {
+              this.dragGhostEl?.remove();
+              this.dragGhostEl = null;
+            });
+          }
         } catch (err) {}
       });
 
       tileEl.addEventListener('dragend', () => {
         this.draggingItemId = null;
-        tileEl.classList.remove('is-dragging');
+        this.draggingItemIds = [];
+        this.dragGhostEl?.remove();
+        this.dragGhostEl = null;
+        this.listEl?.querySelectorAll('.library-item-tile.is-dragging').forEach(el => el.classList.remove('is-dragging'));
         this.dropOverlayEl?.classList.remove('is-visible');
       });
 
@@ -785,6 +976,12 @@ class LibraryManager {
       const nameSpan = tileEl.querySelector('.library-item-name');
       nameSpan?.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (e.ctrlKey || e.metaKey || e.shiftKey) {
+          this.handleTileSelectClick(e, item.id, orderedIds);
+          return;
+        }
+        this.selectedItemIds = new Set([item.id]);
+        this.selectionAnchorId = item.id;
         this.editingItemId = item.id;
         this.renderList();
         const input = this.listEl.querySelector(`[data-item-id="${CSS.escape(item.id)}"] .library-item-rename-input`);
@@ -823,11 +1020,102 @@ class LibraryManager {
 
       this.listEl.appendChild(tileEl);
     });
+
+    this.syncItemSelectionVisuals();
   }
 
   bindEvents() {
-    this.drawerEl.addEventListener('mousedown', (e) => e.stopPropagation());
+    this.drawerEl.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      this.setFocusScope('library');
+      if (!e.target?.closest?.('input, textarea, select, button')) {
+        this.listEl?.focus({ preventScroll: true });
+      }
+    });
     this.drawerEl.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
+
+    if (this.listEl) {
+      this.listEl.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target?.closest?.('.library-item-tile, button, input, textarea, select')) return;
+        e.preventDefault();
+        this.setFocusScope('library');
+        this.listEl.focus({ preventScroll: true });
+        this.activeMarquee = {
+          startX: e.clientX,
+          startY: e.clientY,
+          isShift: !!e.shiftKey,
+          isCtrl: !!(e.ctrlKey || e.metaKey),
+          initialSelection: new Set(this.selectedItemIds),
+          moved: false
+        };
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!this.activeMarquee) return;
+        const dist = Math.hypot(e.clientX - this.activeMarquee.startX, e.clientY - this.activeMarquee.startY);
+        if (dist > 4) {
+          this.activeMarquee.moved = true;
+          const listRect = this.listEl.getBoundingClientRect();
+          const x1 = Math.max(listRect.left, Math.min(listRect.right, this.activeMarquee.startX));
+          const y1 = Math.max(listRect.top, Math.min(listRect.bottom, this.activeMarquee.startY));
+          const x2 = Math.max(listRect.left, Math.min(listRect.right, e.clientX));
+          const y2 = Math.max(listRect.top, Math.min(listRect.bottom, e.clientY));
+
+          const left = Math.min(x1, x2);
+          const top = Math.min(y1, y2);
+          const right = Math.max(x1, x2);
+          const bottom = Math.max(y1, y2);
+
+          if (this.marqueeBoxEl) {
+            this.marqueeBoxEl.style.display = 'block';
+            this.marqueeBoxEl.style.left = `${left}px`;
+            this.marqueeBoxEl.style.top = `${top}px`;
+            this.marqueeBoxEl.style.width = `${right - left}px`;
+            this.marqueeBoxEl.style.height = `${bottom - top}px`;
+          }
+
+          const intersected = new Set();
+          this.listEl.querySelectorAll('.library-item-tile').forEach(tileEl => {
+            const id = tileEl.dataset.itemId;
+            if (!id) return;
+            const r = tileEl.getBoundingClientRect();
+            const overlap = !(r.right < left || r.left > right || r.bottom < top || r.top > bottom);
+            if (overlap) intersected.add(id);
+          });
+
+          if (this.activeMarquee.isCtrl) {
+            const next = new Set(this.activeMarquee.initialSelection);
+            intersected.forEach(id => {
+              if (next.has(id)) next.delete(id);
+              else next.add(id);
+            });
+            this.selectedItemIds = next;
+          } else if (this.activeMarquee.isShift) {
+            this.selectedItemIds = new Set([...this.activeMarquee.initialSelection, ...intersected]);
+          } else {
+            this.selectedItemIds = intersected;
+          }
+          this.syncItemSelectionVisuals();
+        }
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (!this.activeMarquee) return;
+        if (this.marqueeBoxEl) {
+          this.marqueeBoxEl.style.display = 'none';
+        }
+        if (!this.activeMarquee.moved && !this.activeMarquee.isShift && !this.activeMarquee.isCtrl) {
+          this.clearItemSelection();
+        } else if (this.activeMarquee.moved && this.selectedItemIds.size > 0) {
+          if (!this.selectionAnchorId || !this.selectedItemIds.has(this.selectionAnchorId)) {
+            const firstSelected = this.listEl.querySelector('.library-item-tile.is-selected');
+            this.selectionAnchorId = firstSelected?.dataset.itemId || null;
+          }
+        }
+        this.activeMarquee = null;
+      });
+    }
 
     this.drawerEl.querySelector('#btn-close-library')?.addEventListener('click', () => {
       this.close();
@@ -908,8 +1196,12 @@ class LibraryManager {
     // Canvas drop support for dragging library items directly onto canvas
     const viewportEl = document.getElementById('viewport');
     if (viewportEl) {
+      viewportEl.addEventListener('mousedown', () => {
+        this.setFocusScope('canvas');
+      });
+
       viewportEl.addEventListener('dragover', (e) => {
-        const hasType = this.draggingItemId || e.dataTransfer?.types?.includes('application/x-pinpoint-library');
+        const hasType = this.draggingItemIds.length > 0 || this.draggingItemId || e.dataTransfer?.types?.includes('application/x-pinpoint-library');
         if (!hasType) return;
         e.preventDefault();
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
@@ -922,13 +1214,33 @@ class LibraryManager {
       });
 
       viewportEl.addEventListener('drop', (e) => {
-        const itemId = e.dataTransfer?.getData('application/x-pinpoint-library') || this.draggingItemId;
+        const raw = e.dataTransfer?.getData('application/x-pinpoint-library');
+        let dropIds = [];
+        if (raw) {
+          if (raw.trim().startsWith('[')) {
+            try {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) dropIds = parsed.filter(id => typeof id === 'string');
+            } catch (err) {}
+          } else {
+            dropIds = [raw];
+          }
+        }
+        if (dropIds.length === 0) {
+          dropIds = this.draggingItemIds.length > 0
+            ? [...this.draggingItemIds]
+            : (this.draggingItemId ? [this.draggingItemId] : []);
+        }
+
         this.dropOverlayEl?.classList.remove('is-visible');
         this.draggingItemId = null;
-        if (!itemId) return;
+        this.draggingItemIds = [];
+        this.dragGhostEl?.remove();
+        this.dragGhostEl = null;
+        if (dropIds.length === 0) return;
         e.preventDefault();
         const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
-        this.instantiateItem(itemId, boardPos);
+        this.instantiateItems(dropIds, boardPos);
       });
     }
   }

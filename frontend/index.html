@@ -598,9 +598,12 @@
       </div>
     </div>
 
-    <div class="library-items-list layout-grid" id="library-items-list"></div>
+    <div class="library-items-list layout-grid" id="library-items-list" tabindex="-1"></div>
     <div class="library-resize-handle" id="library-resize-handle" title="拖拽调整宽度（双击恢复默认）" aria-label="调整库宽度"></div>
   </aside>
+
+  <!-- 库框选矩形 -->
+  <div id="library-marquee-box" class="library-marquee-box"></div>
 
   <!-- 拖拽库条目到画布的放置提示 -->
   <div id="library-canvas-drop-hint" class="library-canvas-drop-hint">释放鼠标即可在此位置插入节点模板</div>

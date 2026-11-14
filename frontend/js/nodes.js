@@ -2494,6 +2494,9 @@ class NodeManager {
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
         if (!isEditingText) {
+          if (window.__library?.handleSelectAllShortcut?.(e)) {
+            return;
+          }
           e.preventDefault();
           this.selectAllCards();
           return;
