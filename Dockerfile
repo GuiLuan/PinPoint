@@ -9,11 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY index.html server.py mcp_server.py ./
-COPY assets ./assets
-COPY src ./src
+COPY server.py mcp_server.py ./
+COPY frontend ./frontend
 COPY backend ./backend
-COPY docs ./docs
+COPY docs/openapi.json ./docs/openapi.json
 
 RUN mkdir -p /app/data
 

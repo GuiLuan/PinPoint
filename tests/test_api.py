@@ -352,6 +352,21 @@ class PinPointApiTestCase(unittest.TestCase):
             self.assertIn("Persisted Card", titles)
             self.assertEqual(store2.get_card(created["id"])["contentText"], "Survives restart")
 
+    def test_frontend_static_root_and_backend_isolation(self) -> None:
+        root_url = f"http://127.0.0.1:{self.port}"
+        with urllib.request.urlopen(f"{root_url}/index.html", timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            html = resp.read().decode("utf-8")
+            self.assertIn('<script type="module" src="js/main.js"></script>', html)
+
+        with urllib.request.urlopen(f"{root_url}/js/main.js", timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+
+        for forbidden_path in ("/server.py", "/backend/store.py", "/tests/test_api.py"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(f"{root_url}{forbidden_path}", timeout=5)
+            self.assertEqual(ctx.exception.code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

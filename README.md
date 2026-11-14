@@ -2,7 +2,7 @@
 
 > 极简、纯粹的无限画布思维图谱工具。
 
-![PinPoint 核心特性展示](assets/preview.png)
+![PinPoint 核心特性展示](docs/images/preview.png)
 
 ---
 
@@ -18,8 +18,8 @@
 ## 快速上手
 
 ```bash
-# 仅使用纯前端静态画布
-open index.html
+# 仅使用纯前端静态画布（需通过本地静态服务器或直接托管 frontend/ 目录）
+npx serve frontend
 
 # 启动完整服务，支持网页画布与 AI 实时协同
 python server.py
