@@ -151,8 +151,9 @@ def create_server(
     port: int = DEFAULT_PORT,
     workspace_file: str | Path | None = None,
     library_file: str | Path | None = None,
+    db_path: str | Path | None = None,
 ) -> tuple[ThreadingTCPServer, GraphStore, ApiRouter]:
-    store = GraphStore(workspace_file=workspace_file, base_dir=ROOT_DIR, library_file=library_file)
+    store = GraphStore(workspace_file=workspace_file, base_dir=ROOT_DIR, library_file=library_file, db_path=db_path)
     router = ApiRouter(store=store, openapi_path=OPENAPI_PATH)
     mcp = PinPointMcpServer(make_router_rest_caller(router, client_id="pinpoint-mcp-http"))
     handler_cls = functools.partial(PinPointHandler, router=router, mcp=mcp, directory=str(FRONTEND_DIR))
@@ -161,19 +162,28 @@ def create_server(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="PinPoint Static + RESTful API Server")
+    parser = argparse.ArgumentParser(description="PinPoint Static + RESTful API + SQLite Server")
     parser.add_argument("--host", type=str, default=os.environ.get("PINPOINT_HOST", ""))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PINPOINT_PORT", DEFAULT_PORT)))
+    parser.add_argument("--db", type=str, default=os.environ.get("PINPOINT_DB"))
     parser.add_argument("--workspace", type=str, default=os.environ.get("PINPOINT_WORKSPACE"))
     parser.add_argument("--library", type=str, default=os.environ.get("PINPOINT_LIBRARY"))
     parser.add_argument("--no-browser", action="store_true", help="Do not automatically open browser")
     args = parser.parse_args()
+
+    resolved_db = args.db
+    if not resolved_db:
+        if args.workspace:
+            resolved_db = str(Path(args.workspace).with_suffix(".db"))
+        else:
+            resolved_db = str(ROOT_DIR / "data" / "pinpoint.db")
 
     httpd, _store, _router = create_server(
         host=args.host,
         port=args.port,
         workspace_file=args.workspace,
         library_file=args.library,
+        db_path=resolved_db,
     )
 
     def _handle_sigterm(_signum, _frame):
@@ -189,10 +199,11 @@ def main() -> None:
         mcp_url = f"http://localhost:{actual_port}/mcp"
         print("==================================================")
         print(f"PinPoint 服务正在运行: {url}")
+        print(f"SQLite 数据库路径:    {resolved_db}")
         print(f"OpenAPI 规范地址:     {api_url}")
         print(f"MCP HTTP 端点:        {mcp_url}")
         if args.workspace:
-            print(f"工作区持久化文件:     {args.workspace}")
+            print(f"工作区导入/导出文件:  {args.workspace}")
         print("按 Ctrl+C 可停止服务")
         print("==================================================")
         if not args.no_browser and os.environ.get("PINPOINT_NO_BROWSER") != "1":

@@ -242,6 +242,60 @@ class PinPointMcpTestCase(unittest.TestCase):
         # Verify persisted in server store
         self.assertEqual(len(self.store.state["cards"]), 3)
 
+    def test_mcp_subcanvas_tools_and_resource(self) -> None:
+        _, sub_res = self._mcp_http({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tools/call",
+            "params": {"name": "create_subcanvas", "arguments": {"title": "MCP 子画布", "x": 400, "y": 240}},
+        })
+        self.assertFalse(sub_res["result"]["isError"])
+        sub_data = json.loads(sub_res["result"]["content"][0]["text"])
+        sub_id = sub_data["canvas"]["id"]
+
+        _, inner_card = self._mcp_http({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/call",
+            "params": {"name": "create_card", "arguments": {"canvasId": sub_id, "title": "子画布内节点", "contentText": "Hello Subcanvas"}},
+        })
+        self.assertFalse(inner_card["result"]["isError"])
+
+        _, canvases_res = self._mcp_http({
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {"name": "list_canvases", "arguments": {}},
+        })
+        canvases = json.loads(canvases_res["result"]["content"][0]["text"])
+        self.assertTrue(any(c["id"] == sub_id and c["cardCount"] == 1 for c in canvases))
+
+        _, export_res = self._mcp_http({
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {"name": "export_canvas", "arguments": {"canvasId": sub_id}},
+        })
+        exported = json.loads(export_res["result"]["content"][0]["text"])
+        self.assertEqual(exported["canvasId"], sub_id)
+        self.assertEqual(exported["cards"][0]["title"], "子画布内节点")
+
+        _, res_read = self._mcp_http({
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "resources/read",
+            "params": {"uri": "pinpoint://canvases"},
+        })
+        self.assertEqual(res_read["result"]["contents"][0]["uri"], "pinpoint://canvases")
+
+        _, del_res = self._mcp_http({
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "tools/call",
+            "params": {"name": "delete_subcanvas", "arguments": {"canvasId": sub_id}},
+        })
+        self.assertFalse(del_res["result"]["isError"])
+
 
 if __name__ == "__main__":
     unittest.main()

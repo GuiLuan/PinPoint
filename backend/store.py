@@ -13,21 +13,31 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
+from .db import SQLiteDatabase
 from .models import (
     DEFAULT_CARD_HEIGHT,
     DEFAULT_CARD_WIDTH,
     DEFAULT_COLOR_NEUTRAL,
     DEFAULT_PALETTE,
+    DEFAULT_SAVE_SETTINGS,
     DEFAULT_STATE,
+    DEFAULT_SUBCANVAS_HEIGHT,
+    DEFAULT_SUBCANVAS_WIDTH,
+    DEFAULT_TOAST_SETTINGS,
     GRID_SIZE,
     MAX_HISTORY_STACK,
     MAX_ZOOM,
     MIN_CARD_WIDTH,
+    MIN_SUBCANVAS_HEIGHT,
     MIN_ZOOM,
+    ROOT_CANVAS_ID,
+    ROOT_CANVAS_TITLE,
     VALID_ALIGN_TYPES,
     VALID_LIBRARY_LAYOUTS,
     VALID_LIBRARY_POSITIONS,
     VALID_MINIMAP_POSITIONS,
+    VALID_SAVE_MODES,
+    VALID_TOAST_POSITIONS,
     ApiError,
     build_capsule_html,
     parse_content,
@@ -41,34 +51,101 @@ _DATA_PIN_RE = re.compile(r'(\bdata-pin-id=)(["\'])([^"\']*)\2', re.IGNORECASE)
 
 
 class GraphStore:
-    """Thread-safe PinPoint workspace store mirroring frontend StateManager."""
+    """Thread-safe PinPoint workspace store backed by SQLite with hierarchical subcanvases."""
 
     def __init__(
         self,
         workspace_file: str | Path | None = None,
         base_dir: str | Path | None = None,
         library_file: str | Path | None = None,
+        db_path: str | Path | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._local = threading.local()
         self._subscribers: set[queue.Queue[dict[str, Any]]] = set()
         self._base_dir = Path(base_dir).resolve() if base_dir else Path.cwd().resolve()
         self.workspace_file: Path | None = Path(workspace_file).resolve() if workspace_file else None
-        self.has_workspace_file: bool = bool(self.workspace_file and self.workspace_file.exists())
         if library_file is not None:
             self.library_file: Path | None = Path(library_file).resolve()
         elif self.workspace_file is not None:
             self.library_file = self.workspace_file.with_name("library.json")
         else:
             self.library_file = None
-        self._id_counter = 0
-        self.revision = 0
 
-        self.state: dict[str, Any] = self._load_initial_state()
-        self.library: list[dict[str, Any]] = self._load_initial_library()
-        self.selection: dict[str, Any] = {"cardIds": [], "capsulePinId": None, "textSelection": None}
-        self.undo_stack: list[str] = [self._snapshot()]
-        self.redo_stack: list[str] = []
+        resolved_db: str | Path | None = db_path
+        if resolved_db is None and self.workspace_file is not None:
+            resolved_db = self.workspace_file.with_suffix(".db")
+        self.db = SQLiteDatabase(resolved_db)
+        self.has_workspace_file: bool = bool(
+            (resolved_db is not None and str(resolved_db) != ":memory:")
+            or (self.workspace_file and self.workspace_file.exists())
+        )
+        self._id_counter = 0
+
+        self._canvases: dict[str, dict[str, Any]] = {}
+        self.undo_stacks: dict[str, list[str]] = {}
+        self.redo_stacks: dict[str, list[str]] = {}
+
+        self.settings: dict[str, Any] = self._bootstrap_settings()
+        self._bootstrap_root_canvas()
+        self.library: list[dict[str, Any]] = self._bootstrap_library()
+        self.revision = self.db.get_revision()
+        self.selection: dict[str, Any] = {
+            "canvasId": ROOT_CANVAS_ID,
+            "cardIds": [],
+            "capsulePinId": None,
+            "textSelection": None,
+        }
+        self.undo_stacks[ROOT_CANVAS_ID] = [self._snapshot(ROOT_CANVAS_ID)]
+        self.redo_stacks[ROOT_CANVAS_ID] = []
+
+    def _current_canvas_id(self) -> str:
+        return getattr(self._local, "active_canvas_id", None) or ROOT_CANVAS_ID
+
+    @contextmanager
+    def _use_canvas(self, canvas_id: str | None) -> Iterator[str]:
+        cid = canvas_id or ROOT_CANVAS_ID
+        self._get_canvas_state(cid)
+        prev = getattr(self._local, "active_canvas_id", None)
+        self._local.active_canvas_id = cid
+        try:
+            yield cid
+        finally:
+            self._local.active_canvas_id = prev
+
+    @property
+    def state(self) -> dict[str, Any]:
+        cid = self._current_canvas_id()
+        return self._get_canvas_state(cid)
+
+    @state.setter
+    def state(self, value: dict[str, Any]) -> None:
+        cid = self._current_canvas_id()
+        self._canvases[cid] = value
+
+    @property
+    def undo_stack(self) -> list[str]:
+        cid = self._current_canvas_id()
+        return self.undo_stacks.setdefault(cid, [self._snapshot(cid)])
+
+    @undo_stack.setter
+    def undo_stack(self, value: list[str]) -> None:
+        cid = self._current_canvas_id()
+        self.undo_stacks[cid] = value
+
+    @property
+    def redo_stack(self) -> list[str]:
+        cid = self._current_canvas_id()
+        return self.redo_stacks.setdefault(cid, [])
+
+    @redo_stack.setter
+    def redo_stack(self, value: list[str]) -> None:
+        cid = self._current_canvas_id()
+        self.redo_stacks[cid] = value
+
+    def close(self) -> None:
+        with self._lock:
+            self.db.close()
 
     @contextmanager
     def client_context(self, client_id: str | None) -> Iterator[None]:
@@ -87,17 +164,59 @@ class GraphStore:
         self._id_counter += 1
         return f"{prefix}-{int(time.time() * 1000)}-{self._id_counter}-{random.randint(100, 999)}"
 
-    def _load_initial_state(self) -> dict[str, Any]:
+    def _bootstrap_settings(self) -> dict[str, Any]:
+        stored = self.db.load_settings()
+        if stored is not None:
+            return self._normalize_settings(stored)
+        if self.workspace_file and self.workspace_file.exists():
+            try:
+                raw = json.loads(self.workspace_file.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and isinstance(raw.get("settings"), dict):
+                    norm = self._normalize_settings(raw["settings"])
+                    self.db.save_settings(norm)
+                    return norm
+            except Exception:
+                pass
+        norm = self._normalize_settings(DEFAULT_STATE.get("settings"))
+        self.db.save_settings(norm)
+        return norm
+
+    def _bootstrap_root_canvas(self) -> dict[str, Any]:
+        loaded = self.db.load_canvas_data(ROOT_CANVAS_ID)
+        if loaded is not None:
+            norm = self._normalize_state({
+                "viewport": loaded["viewport"],
+                "settings": self.settings,
+                "cards": loaded["cards"],
+                "connections": loaded["connections"],
+                "groups": loaded["groups"],
+            })
+            self._canvases[ROOT_CANVAS_ID] = norm
+            self.has_workspace_file = True
+            return norm
+
         if self.workspace_file and self.workspace_file.exists():
             try:
                 raw = json.loads(self.workspace_file.read_text(encoding="utf-8"))
                 if isinstance(raw, dict) and isinstance(raw.get("cards"), list) and isinstance(raw.get("connections"), list):
-                    return self._normalize_state(raw)
+                    norm = self._normalize_state(raw)
+                    self.db.save_canvas_data(ROOT_CANVAS_ID, norm, parent_canvas_id=None, title=raw.get("title") or ROOT_CANVAS_TITLE)
+                    self._import_subcanvases_dict(ROOT_CANVAS_ID, raw.get("subcanvases"))
+                    self._canvases[ROOT_CANVAS_ID] = norm
+                    self.has_workspace_file = True
+                    return norm
             except Exception:
                 pass
-        return copy.deepcopy(DEFAULT_STATE)
 
-    def _load_initial_library(self) -> list[dict[str, Any]]:
+        norm = self._normalize_state(copy.deepcopy(DEFAULT_STATE))
+        self.db.save_canvas_data(ROOT_CANVAS_ID, norm, parent_canvas_id=None, title=ROOT_CANVAS_TITLE)
+        self._canvases[ROOT_CANVAS_ID] = norm
+        return norm
+
+    def _bootstrap_library(self) -> list[dict[str, Any]]:
+        db_items = self.db.load_library()
+        if db_items:
+            return db_items
         if self.library_file and self.library_file.exists():
             try:
                 raw = json.loads(self.library_file.read_text(encoding="utf-8"))
@@ -109,26 +228,19 @@ class GraphStore:
                             items.append(self._normalize_library_item(entry, preserve_id=True))
                         except ApiError:
                             continue
+                    if items:
+                        self.db.save_library(items)
                     return items
             except Exception:
                 pass
         return []
 
     def _persist_library(self) -> None:
-        if self.library_file is None:
-            return
-        export_data = {
-            "version": 1,
-            "timestamp": int(time.time() * 1000),
-            "items": self.library,
-        }
-        self.library_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.library_file.with_name(f".{self.library_file.name}.tmp")
-        tmp_path.write_text(json.dumps(export_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp_path.replace(self.library_file)
+        self.db.save_library(self.library)
 
     def _publish_library(self, sub_type: str, payload: dict[str, Any] | None = None) -> None:
         self.revision += 1
+        self.db.set_revision(self.revision)
         self._persist_library()
         client_id = getattr(self._local, "client_id", None)
         event = {
@@ -173,6 +285,24 @@ class GraphStore:
             lib_width = 348
         lib_width = int(max(260, min(800, lib_width)))
 
+        save_raw = s.get("save") if isinstance(s.get("save"), dict) else {}
+        save_mode = save_raw.get("mode", DEFAULT_SAVE_SETTINGS["mode"])
+        if save_mode not in VALID_SAVE_MODES:
+            save_mode = DEFAULT_SAVE_SETTINGS["mode"]
+        interval_sec = save_raw.get("intervalSec", DEFAULT_SAVE_SETTINGS["intervalSec"])
+        if not isinstance(interval_sec, (int, float)) or isinstance(interval_sec, bool):
+            interval_sec = DEFAULT_SAVE_SETTINGS["intervalSec"]
+        interval_sec = int(max(1, min(300, interval_sec)))
+
+        toast_raw = s.get("toast") if isinstance(s.get("toast"), dict) else {}
+        toast_pos = toast_raw.get("position", DEFAULT_TOAST_SETTINGS["position"])
+        if toast_pos not in VALID_TOAST_POSITIONS:
+            toast_pos = DEFAULT_TOAST_SETTINGS["position"]
+        toast_dur = toast_raw.get("durationSec", DEFAULT_TOAST_SETTINGS["durationSec"])
+        if not isinstance(toast_dur, (int, float)) or isinstance(toast_dur, bool):
+            toast_dur = DEFAULT_TOAST_SETTINGS["durationSec"]
+        toast_dur = int(max(2, min(30, toast_dur)))
+
         return {
             "alignMode": bool(s.get("alignMode", False)),
             "gridSnapMode": bool(s.get("gridSnapMode", False)),
@@ -187,6 +317,14 @@ class GraphStore:
                 "layout": lib_layout,
                 "width": lib_width,
             },
+            "save": {
+                "mode": save_mode,
+                "intervalSec": interval_sec,
+            },
+            "toast": {
+                "position": toast_pos,
+                "durationSec": toast_dur,
+            },
         }
 
     def _normalize_viewport(self, raw_vp: dict[str, Any] | None) -> dict[str, Any]:
@@ -197,68 +335,120 @@ class GraphStore:
         zoom = max(MIN_ZOOM, min(MAX_ZOOM, zoom))
         return {"x": x, "y": y, "zoom": zoom}
 
+    def _normalize_card_dict(self, raw: dict[str, Any]) -> dict[str, Any]:
+        card = copy.deepcopy(raw)
+        kind = card.get("kind") or "card"
+        if kind == "subcanvas":
+            card["kind"] = "subcanvas"
+            card["title"] = (str(card.get("title") or "").strip()) or "子画布"
+            w = card.get("width", DEFAULT_SUBCANVAS_WIDTH)
+            h = card.get("height", DEFAULT_SUBCANVAS_HEIGHT)
+            card["width"] = int(max(MIN_CARD_WIDTH, round(float(w))))
+            card["height"] = int(max(MIN_SUBCANVAS_HEIGHT, round(float(h))))
+            card["contentHtml"] = ""
+            if not card.get("subcanvasId"):
+                card["subcanvasId"] = self._next_id("canvas")
+            card.pop("thumbnail", None)
+        else:
+            card.pop("kind", None)
+            card.pop("subcanvasId", None)
+            card.pop("thumbnail", None)
+            card["title"] = (str(card.get("title") or "").strip()) or "未命名节点"
+            w = card.get("width", DEFAULT_CARD_WIDTH)
+            card["width"] = int(max(MIN_CARD_WIDTH, round(float(w))))
+            card["contentHtml"] = str(card.get("contentHtml") or "")
+        card["x"] = int(round(float(card.get("x", 0))))
+        card["y"] = int(round(float(card.get("y", 0))))
+        return card
+
     def _normalize_state(self, data: dict[str, Any]) -> dict[str, Any]:
-        cards = copy.deepcopy(data.get("cards", []))
+        cards = [self._normalize_card_dict(c) for c in (data.get("cards") or []) if isinstance(c, dict) and c.get("id")]
         groups = copy.deepcopy(data.get("groups", []))
         raw_conns = copy.deepcopy(data.get("connections", []))
         valid_conns = [c for c in raw_conns if self._validate_connection_dict(c, cards, groups)]
+        norm_settings = self._normalize_settings(data.get("settings") if data.get("settings") is not None else getattr(self, "settings", None))
         return {
             "viewport": self._normalize_viewport(data.get("viewport")),
-            "settings": self._normalize_settings(data.get("settings")),
+            "settings": norm_settings,
             "cards": cards,
             "connections": valid_conns,
             "groups": groups,
         }
 
-    def _snapshot(self) -> str:
+    def _get_canvas_state(self, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        cid = canvas_id or ROOT_CANVAS_ID
+        if cid in self._canvases:
+            return self._canvases[cid]
+        loaded = self.db.load_canvas_data(cid)
+        if loaded is None:
+            raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{cid}' not found.")
+        norm = self._normalize_state({
+            "viewport": loaded["viewport"],
+            "settings": self.settings,
+            "cards": loaded["cards"],
+            "connections": loaded["connections"],
+            "groups": loaded["groups"],
+        })
+        self._canvases[cid] = norm
+        self.undo_stacks.setdefault(cid, [self._snapshot(cid)])
+        self.redo_stacks.setdefault(cid, [])
+        return norm
+
+    def _snapshot(self, canvas_id: str = ROOT_CANVAS_ID) -> str:
+        st = self._canvases.get(canvas_id) or self.state
         return json.dumps(
             {
-                "cards": self.state["cards"],
-                "connections": self.state["connections"],
-                "groups": self.state.get("groups", []),
+                "cards": st["cards"],
+                "connections": st["connections"],
+                "groups": st.get("groups", []),
             },
             ensure_ascii=False,
         )
 
-    def _commit(self, event_type: str, payload: dict[str, Any] | None = None) -> None:
-        snap = self._snapshot()
-        if not self.undo_stack or self.undo_stack[-1] != snap:
-            self.undo_stack.append(snap)
-            if len(self.undo_stack) > MAX_HISTORY_STACK:
-                self.undo_stack.pop(0)
-            self.redo_stack.clear()
-        self._publish(event_type, payload)
+    def _commit(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        canvas_id: str | None = None,
+    ) -> None:
+        cid = canvas_id or self._current_canvas_id()
+        stack = self.undo_stacks.setdefault(cid, [self._snapshot(cid)])
+        rstack = self.redo_stacks.setdefault(cid, [])
+        snap = self._snapshot(cid)
+        if not stack or stack[-1] != snap:
+            stack.append(snap)
+            if len(stack) > MAX_HISTORY_STACK:
+                stack.pop(0)
+            rstack.clear()
+        self._publish(event_type, payload, canvas_id=cid)
 
-    def _persist_workspace(self) -> None:
-        if self.workspace_file is None:
-            return
-        export_data = {
-            "version": 1,
-            "timestamp": int(time.time() * 1000),
-            "viewport": self.state["viewport"],
-            "settings": self.state["settings"],
-            "cards": self.state["cards"],
-            "connections": self.state["connections"],
-            "groups": self.state.get("groups", []),
-        }
-        self.workspace_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.workspace_file.with_name(f".{self.workspace_file.name}.tmp")
-        tmp_path.write_text(json.dumps(export_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp_path.replace(self.workspace_file)
+    def _persist_workspace(self, canvas_id: str = ROOT_CANVAS_ID) -> None:
+        cid = canvas_id or ROOT_CANVAS_ID
+        st = self._get_canvas_state(cid)
+        self.db.save_canvas_data(cid, st)
+        self.db.save_settings(self.settings)
         self.has_workspace_file = True
 
-    def _publish(self, event_type: str, payload: dict[str, Any] | None = None) -> None:
+    def _publish(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        canvas_id: str | None = None,
+    ) -> None:
+        cid = canvas_id or self._current_canvas_id()
         self.revision += 1
+        self.db.set_revision(self.revision)
         if event_type not in ("FILE_SAVED", "SELECTION_CHANGED"):
-            self._persist_workspace()
+            self._persist_workspace(cid)
         client_id = getattr(self._local, "client_id", None)
         event = {
             "type": event_type,
+            "canvasId": cid,
             "revision": self.revision,
             "clientId": client_id,
             "timestamp": int(time.time() * 1000),
             "payload": payload or {},
-            "state": self.get_graph(),
+            "state": self.get_graph(canvas_id=cid),
         }
         for q in list(self._subscribers):
             try:
@@ -277,7 +467,7 @@ class GraphStore:
             self._subscribers.discard(q)
 
     def _snap_coord(self, val: float) -> int:
-        if self.state.get("settings", {}).get("gridSnapMode"):
+        if self.settings.get("gridSnapMode"):
             return int(round(val / GRID_SIZE) * GRID_SIZE)
         return int(round(val))
 
@@ -343,7 +533,16 @@ class GraphStore:
         view = copy.deepcopy(card)
         view["contentText"] = plain_text
         view["capsules"] = capsules
+        if view.get("kind") == "subcanvas" and view.get("subcanvasId"):
+            view["thumbnail"] = self.db.compute_canvas_thumbnail(view["subcanvasId"])
         return view
+
+    def _attach_thumbnails(self, cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out = copy.deepcopy(cards)
+        for c in out:
+            if c.get("kind") == "subcanvas" and c.get("subcanvasId"):
+                c["thumbnail"] = self.db.compute_canvas_thumbnail(c["subcanvasId"])
+        return out
 
     def _calc_group_bounds(self, group: dict[str, Any]) -> dict[str, float] | None:
         card_ids = set(group.get("cardIds") or [])
@@ -358,7 +557,7 @@ class GraphStore:
         max_x = max(c["x"] + (c.get("width") or DEFAULT_CARD_WIDTH) for c in members)
         min_y = min(c["y"] for c in members)
         max_y = max(c["y"] + DEFAULT_CARD_HEIGHT for c in members)
-        if (self.state.get("settings") or {}).get("gridSnapMode"):
+        if self.settings.get("gridSnapMode"):
             x = math.floor((min_x - pad_x) / GRID_SIZE) * GRID_SIZE
             y = math.floor((min_y - pad_top) / GRID_SIZE) * GRID_SIZE
             right = math.ceil((max_x + 16) / GRID_SIZE) * GRID_SIZE
@@ -377,29 +576,297 @@ class GraphStore:
         }
 
     # ------------------------------------------------------------------
-    # Graph / Workspace
+    # Canvases / Subcanvases / Graph / Workspace
     # ------------------------------------------------------------------
 
-    def get_graph(self, include: set[str] | None = None) -> dict[str, Any]:
+    def list_canvases(self) -> list[dict[str, Any]]:
         with self._lock:
+            rows = self.db.list_canvases()
+            by_id = {r["id"]: r for r in rows}
+            for r in rows:
+                path_items: list[dict[str, str]] = []
+                cur_id: str | None = r["id"]
+                seen: set[str] = set()
+                while cur_id and cur_id in by_id and cur_id not in seen:
+                    seen.add(cur_id)
+                    node = by_id[cur_id]
+                    path_items.append({"id": node["id"], "title": node["title"]})
+                    cur_id = node.get("parentCanvasId")
+                path_items.reverse()
+                r["breadcrumbs"] = path_items
+                r["depth"] = max(0, len(path_items) - 1)
+            return rows
+
+    def get_canvas(self, canvas_id: str = ROOT_CANVAS_ID, include: set[str] | None = None) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id) as cid:
+            meta = self.db.get_canvas_row(cid)
+            if meta is None:
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{cid}' not found.")
             result: dict[str, Any] = {
-                "cards": copy.deepcopy(self.state["cards"]),
+                "id": cid,
+                "canvasId": cid,
+                "parentCanvasId": meta["parentCanvasId"],
+                "title": meta["title"],
+                "breadcrumbs": self.db.get_breadcrumbs(cid),
+                "cards": self._attach_thumbnails(self.state["cards"]),
                 "connections": copy.deepcopy(self.state["connections"]),
                 "groups": copy.deepcopy(self.state.get("groups", [])),
             }
             if include is None or "viewport" in include:
                 result["viewport"] = copy.deepcopy(self.state["viewport"])
             if include is None or "settings" in include:
-                result["settings"] = copy.deepcopy(self.state["settings"])
+                result["settings"] = copy.deepcopy(self.settings)
             return result
 
-    def get_summary(self) -> dict[str, Any]:
+    def get_canvas_thumbnail(self, canvas_id: str) -> dict[str, Any]:
         with self._lock:
+            if not self.db.has_canvas(canvas_id):
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{canvas_id}' not found.")
+            return self.db.compute_canvas_thumbnail(canvas_id)
+
+    def create_subcanvas(
+        self,
+        parent_canvas_id: str = ROOT_CANVAS_ID,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body = payload if isinstance(payload, dict) else {}
+        with self._lock, self._use_canvas(parent_canvas_id) as parent_cid:
+            subcanvas_id = str(body.get("subcanvasId") or "").strip() or self._next_id("canvas")
+            if self.db.has_canvas(subcanvas_id):
+                raise ApiError(409, "DUPLICATE_CANVAS_ID", f"Canvas ID '{subcanvas_id}' already exists.")
+
+            title = (str(body.get("title") or "").strip()) or "未命名子画布"
+            width = body.get("width", DEFAULT_SUBCANVAS_WIDTH)
+            height = body.get("height", DEFAULT_SUBCANVAS_HEIGHT)
+            if not isinstance(width, (int, float)) or isinstance(width, bool) or width < MIN_CARD_WIDTH:
+                raise ApiError(400, "INVALID_CARD_WIDTH", f"Subcanvas width must be >= {MIN_CARD_WIDTH}.")
+            if not isinstance(height, (int, float)) or isinstance(height, bool) or height < MIN_SUBCANVAS_HEIGHT:
+                raise ApiError(400, "INVALID_SUBCANVAS_HEIGHT", f"Subcanvas height must be >= {MIN_SUBCANVAS_HEIGHT}.")
+
+            if "x" in body and "y" in body:
+                x = self._snap_coord(float(body["x"]))
+                y = self._snap_coord(float(body["y"]))
+            else:
+                auto_x, auto_y = self._auto_spawn_position()
+                x = self._snap_coord(float(body.get("x", auto_x)))
+                y = self._snap_coord(float(body.get("y", auto_y)))
+
+            self.db.ensure_canvas(subcanvas_id, parent_canvas_id=parent_cid, title=title)
+            sub_state = self._normalize_state({
+                "viewport": {"x": 0, "y": 0, "zoom": 1.0},
+                "settings": self.settings,
+                "cards": [],
+                "connections": [],
+                "groups": [],
+            })
+
+            pack_ids = body.get("cardIds")
+            if isinstance(pack_ids, list) and len(pack_ids) > 0:
+                pack_set = set(str(cid) for cid in pack_ids)
+                moved_cards = [copy.deepcopy(c) for c in self.state["cards"] if c["id"] in pack_set]
+                if moved_cards:
+                    min_x = min(c["x"] for c in moved_cards)
+                    min_y = min(c["y"] for c in moved_cards)
+                    for mc in moved_cards:
+                        mc["x"] = int(mc["x"] - min_x + 140)
+                        mc["y"] = int(mc["y"] - min_y + 180)
+                    moved_groups = [
+                        copy.deepcopy(g)
+                        for g in self.state.get("groups", [])
+                        if g.get("cardIds") and all(mid in pack_set for mid in g["cardIds"])
+                    ]
+                    moved_owners = pack_set | {g["id"] for g in moved_groups}
+                    moved_conns = [
+                        copy.deepcopy(cn)
+                        for cn in self.state["connections"]
+                        if self._find_owner_id_by_pin(cn["fromPinId"]) in moved_owners
+                        and self._find_owner_id_by_pin(cn["toPinId"]) in moved_owners
+                    ]
+                    sub_state["cards"] = moved_cards
+                    sub_state["groups"] = moved_groups
+                    sub_state["connections"] = moved_conns
+                    self._remove_cards_internal(list(pack_set), delete_subcanvases=False)
+                    self.db.save_canvas_data(parent_cid, self.state)
+
+            self._canvases[subcanvas_id] = sub_state
+            self.undo_stacks[subcanvas_id] = [self._snapshot(subcanvas_id)]
+            self.redo_stacks[subcanvas_id] = []
+            self.db.save_canvas_data(subcanvas_id, sub_state, parent_canvas_id=parent_cid, title=title)
+
+            card_id = body.get("cardId") or self._next_id("card")
+            card: dict[str, Any] = {
+                "id": card_id,
+                "kind": "subcanvas",
+                "subcanvasId": subcanvas_id,
+                "title": title,
+                "x": x,
+                "y": y,
+                "width": int(round(width)),
+                "height": int(round(height)),
+                "contentHtml": "",
+            }
+            if body.get("headerColor"):
+                card["headerColor"] = body["headerColor"]
+
+            self.state["cards"].append(card)
+            self._commit("CARD_ADDED", {"cardId": card["id"], "subcanvasId": subcanvas_id}, canvas_id=parent_cid)
+
+            return {
+                "canvas": self.get_canvas(subcanvas_id),
+                "card": self._card_to_view(card),
+            }
+
+    def update_canvas(self, canvas_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(patch, dict):
+            raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
+        with self._lock, self._use_canvas(canvas_id) as cid:
+            meta = self.db.get_canvas_row(cid)
+            if meta is None:
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{cid}' not found.")
+
+            new_title = None
+            if "title" in patch:
+                new_title = (str(patch["title"] or "").strip()) or (ROOT_CANVAS_TITLE if cid == ROOT_CANVAS_ID else "子画布")
+                self.db.update_canvas_meta(cid, title=new_title)
+                parent_cid = meta.get("parentCanvasId")
+                if parent_cid and parent_cid in self._canvases:
+                    for c in self._canvases[parent_cid]["cards"]:
+                        if c.get("kind") == "subcanvas" and c.get("subcanvasId") == cid:
+                            c["title"] = new_title
+
+            if "viewport" in patch and isinstance(patch["viewport"], dict):
+                self.state["viewport"] = self._normalize_viewport({**self.state["viewport"], **patch["viewport"]})
+                self.db.update_canvas_meta(cid, viewport=self.state["viewport"])
+
+            self._publish("CANVAS_UPDATED", {"canvasId": cid, "title": new_title or meta["title"]}, canvas_id=cid)
+            return self.get_canvas(cid)
+
+    def delete_canvas(self, canvas_id: str) -> dict[str, Any]:
+        if canvas_id == ROOT_CANVAS_ID:
+            raise ApiError(400, "CANNOT_DELETE_ROOT_CANVAS", "Root canvas cannot be deleted.")
+        with self._lock:
+            meta = self.db.get_canvas_row(canvas_id)
+            if meta is None:
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{canvas_id}' not found.")
+            parent_cid = meta.get("parentCanvasId")
+            deleted_ids = self.db.delete_canvas_subtree(canvas_id)
+            for did in deleted_ids:
+                self._canvases.pop(did, None)
+                self.undo_stacks.pop(did, None)
+                self.redo_stacks.pop(did, None)
+
+            if parent_cid and self.db.has_canvas(parent_cid):
+                with self._use_canvas(parent_cid):
+                    orphan_card_ids = [
+                        c["id"] for c in self.state["cards"]
+                        if c.get("kind") == "subcanvas" and c.get("subcanvasId") == canvas_id
+                    ]
+                    if orphan_card_ids:
+                        self._remove_cards_internal(orphan_card_ids, delete_subcanvases=False)
+                        self._commit("CARD_REMOVED", {"cardIds": orphan_card_ids}, canvas_id=parent_cid)
+
+            return {"deletedCanvasIds": deleted_ids}
+
+    def export_canvas(self, canvas_id: str = ROOT_CANVAS_ID, include_subcanvases: bool = True) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id) as cid:
+            meta = self.db.get_canvas_row(cid)
+            if meta is None:
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{cid}' not found.")
+
+            export_data: dict[str, Any] = {
+                "version": 1,
+                "timestamp": int(time.time() * 1000),
+                "canvasId": cid,
+                "title": meta["title"],
+                "viewport": copy.deepcopy(self.state["viewport"]),
+                "settings": copy.deepcopy(self.settings),
+                "cards": copy.deepcopy(self.state["cards"]),
+                "connections": copy.deepcopy(self.state["connections"]),
+                "groups": copy.deepcopy(self.state.get("groups", [])),
+            }
+            for c in export_data["cards"]:
+                c.pop("thumbnail", None)
+
+            if include_subcanvases:
+                descendant_ids = self.db.get_descendant_canvas_ids(cid)
+                if descendant_ids:
+                    sub_map: dict[str, Any] = {}
+                    for did in descendant_ids:
+                        d_data = self.db.load_canvas_data(did)
+                        if d_data is None:
+                            continue
+                        d_cards = copy.deepcopy(d_data["cards"])
+                        for dc in d_cards:
+                            dc.pop("thumbnail", None)
+                        sub_map[did] = {
+                            "id": d_data["id"],
+                            "parentCanvasId": d_data["parentCanvasId"],
+                            "title": d_data["title"],
+                            "viewport": d_data["viewport"],
+                            "cards": d_cards,
+                            "connections": d_data["connections"],
+                            "groups": d_data["groups"],
+                        }
+                    if sub_map:
+                        export_data["subcanvases"] = sub_map
+            return export_data
+
+    def _import_subcanvases_dict(self, root_parent_id: str, subcanvases: Any) -> None:
+        if not isinstance(subcanvases, dict):
+            return
+        pending = dict(subcanvases)
+        queue_ids = list(self.db.get_subcanvas_ids_on_canvas(root_parent_id))
+        seen: set[str] = set()
+        while queue_ids:
+            sid = queue_ids.pop(0)
+            if sid in seen:
+                continue
+            seen.add(sid)
+            raw_sub = pending.get(sid)
+            if not isinstance(raw_sub, dict):
+                continue
+            parent_id = raw_sub.get("parentCanvasId")
+            if not parent_id or not self.db.has_canvas(parent_id):
+                parent_id = root_parent_id
+            norm_sub = self._normalize_state(raw_sub)
+            title = (str(raw_sub.get("title") or "").strip()) or "子画布"
+            self.db.save_canvas_data(sid, norm_sub, parent_canvas_id=parent_id, title=title)
+            self._canvases[sid] = norm_sub
+            self.undo_stacks[sid] = [self._snapshot(sid)]
+            self.redo_stacks[sid] = []
+            for next_sid in self.db.get_subcanvas_ids_on_canvas(sid):
+                if next_sid not in seen:
+                    queue_ids.append(next_sid)
+
+    def import_canvas(self, canvas_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        return self.replace_graph(data, canvas_id=canvas_id)
+
+    def get_graph(self, include: set[str] | None = None, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id) as cid:
+            result: dict[str, Any] = {
+                "cards": self._attach_thumbnails(self.state["cards"]),
+                "connections": copy.deepcopy(self.state["connections"]),
+                "groups": copy.deepcopy(self.state.get("groups", [])),
+            }
+            if include is None or "viewport" in include:
+                result["viewport"] = copy.deepcopy(self.state["viewport"])
+            if include is None or "settings" in include:
+                result["settings"] = copy.deepcopy(self.settings)
+            if include and "meta" in include:
+                meta = self.db.get_canvas_row(cid)
+                result["canvasId"] = cid
+                result["title"] = meta["title"] if meta else ROOT_CANVAS_TITLE
+                result["breadcrumbs"] = self.db.get_breadcrumbs(cid)
+            return result
+
+    def get_summary(self, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id) as cid:
             cards_summary = []
             for card in self.state["cards"]:
                 plain_text, capsules, _ = parse_content(card.get("contentHtml", ""))
-                cards_summary.append({
+                entry: dict[str, Any] = {
                     "id": card["id"],
+                    "kind": card.get("kind", "card"),
                     "title": card.get("title", "未命名节点"),
                     "x": card["x"],
                     "y": card["y"],
@@ -411,7 +878,11 @@ class GraphStore:
                         "left": f"pin-head-left-{card['id']}",
                         "right": f"pin-head-right-{card['id']}",
                     },
-                })
+                }
+                if card.get("kind") == "subcanvas" and card.get("subcanvasId"):
+                    entry["subcanvasId"] = card["subcanvasId"]
+                    entry["thumbnail"] = self.db.compute_canvas_thumbnail(card["subcanvasId"])
+                cards_summary.append(entry)
             groups_summary = []
             for g in self.state.get("groups", []):
                 groups_summary.append({
@@ -425,6 +896,7 @@ class GraphStore:
                     },
                 })
             return {
+                "canvasId": cid,
                 "cardCount": len(cards_summary),
                 "connectionCount": len(self.state["connections"]),
                 "groupCount": len(groups_summary),
@@ -433,49 +905,127 @@ class GraphStore:
                 "groups": groups_summary,
             }
 
-    def replace_graph(self, data: dict[str, Any]) -> dict[str, Any]:
+    def replace_graph(self, data: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(data, dict) or not isinstance(data.get("cards"), list) or not isinstance(data.get("connections"), list):
             raise ApiError(400, "INVALID_GRAPH_PAYLOAD", "Graph payload must include 'cards' and 'connections' arrays.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id) as cid:
+            for old_desc in self.db.get_descendant_canvas_ids(cid):
+                self.db.delete_canvas_subtree(old_desc)
+                self._canvases.pop(old_desc, None)
+                self.undo_stacks.pop(old_desc, None)
+                self.redo_stacks.pop(old_desc, None)
+
+            if "settings" in data and isinstance(data["settings"], dict):
+                self.settings = self._normalize_settings(data["settings"])
+                self.db.save_settings(self.settings)
+
             self.state = self._normalize_state(data)
-            self.undo_stack = [self._snapshot()]
+            if "title" in data:
+                self.db.update_canvas_meta(
+                    cid,
+                    title=str(data.get("title") or "").strip() or (ROOT_CANVAS_TITLE if cid == ROOT_CANVAS_ID else "子画布"),
+                )
+            self.db.save_canvas_data(cid, self.state)
+            self._import_subcanvases_dict(cid, data.get("subcanvases"))
+            self.undo_stack = [self._snapshot(cid)]
             self.redo_stack = []
-            self._publish("GRAPH_REPLACED")
-            return self.get_graph()
+            self._publish("GRAPH_REPLACED", canvas_id=cid)
+            return self.get_graph(canvas_id=cid)
 
-    def sync_from_client(self, data: dict[str, Any]) -> dict[str, Any]:
+    def sync_from_client(self, data: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(data, dict) or not isinstance(data.get("cards"), list) or not isinstance(data.get("connections"), list):
             raise ApiError(400, "INVALID_GRAPH_PAYLOAD", "Graph payload must include 'cards' and 'connections' arrays.")
+        target_cid = canvas_id or ROOT_CANVAS_ID
         with self._lock:
-            prev_snap = self._snapshot()
-            prev_vp = copy.deepcopy(self.state["viewport"])
-            prev_settings = copy.deepcopy(self.state["settings"])
+            if target_cid != ROOT_CANVAS_ID and not self.db.has_canvas(target_cid):
+                parent_cid = data.get("parentCanvasId") or ROOT_CANVAS_ID
+                if not self.db.has_canvas(parent_cid):
+                    parent_cid = ROOT_CANVAS_ID
+                self.db.ensure_canvas(
+                    target_cid,
+                    parent_canvas_id=parent_cid,
+                    title=str(data.get("title") or "").strip() or "子画布",
+                    viewport=self._normalize_viewport(data.get("viewport")),
+                )
+            with self._use_canvas(target_cid) as cid:
+                if "title" in data:
+                    self.db.update_canvas_meta(
+                        cid,
+                        title=str(data.get("title") or "").strip() or (ROOT_CANVAS_TITLE if cid == ROOT_CANVAS_ID else "子画布"),
+                    )
+                prev_snap = self._snapshot(cid)
+                prev_vp = copy.deepcopy(self.state["viewport"])
+                prev_settings = copy.deepcopy(self.settings)
 
-            next_state = self._normalize_state({
-                "viewport": data.get("viewport", self.state["viewport"]),
-                "settings": data.get("settings", self.state["settings"]),
-                "cards": data["cards"],
-                "connections": data["connections"],
-                "groups": data.get("groups", []),
-            })
-            self.state = next_state
-            next_snap = self._snapshot()
-            if next_snap != prev_snap:
-                self._commit("GRAPH_SYNCED")
-            elif self.state["viewport"] != prev_vp or self.state["settings"] != prev_settings:
-                self._publish("GRAPH_SYNCED")
-            return self.get_graph()
+                old_sub_ids = {
+                    c.get("subcanvasId")
+                    for c in self.state["cards"]
+                    if c.get("kind") == "subcanvas" and c.get("subcanvasId")
+                }
 
-    def reset(self) -> dict[str, Any]:
-        with self._lock:
-            self.state = copy.deepcopy(DEFAULT_STATE)
-            self.selection = {"cardIds": [], "capsulePinId": None, "textSelection": None}
-            self.undo_stack = [self._snapshot()]
+                if "settings" in data and isinstance(data["settings"], dict):
+                    self.settings = self._normalize_settings(data["settings"])
+                    self.db.save_settings(self.settings)
+
+                next_state = self._normalize_state({
+                    "viewport": data.get("viewport", self.state["viewport"]),
+                    "settings": self.settings,
+                    "cards": data["cards"],
+                    "connections": data["connections"],
+                    "groups": data.get("groups", []),
+                })
+                self.state = next_state
+
+                new_sub_ids = {
+                    c.get("subcanvasId")
+                    for c in next_state["cards"]
+                    if c.get("kind") == "subcanvas" and c.get("subcanvasId")
+                }
+                removed_subs = old_sub_ids - new_sub_ids
+                for rsid in removed_subs:
+                    if rsid and rsid != ROOT_CANVAS_ID and self.db.has_canvas(rsid):
+                        deleted = self.db.delete_canvas_subtree(rsid)
+                        for did in deleted:
+                            self._canvases.pop(did, None)
+                            self.undo_stacks.pop(did, None)
+                            self.redo_stacks.pop(did, None)
+
+                next_snap = self._snapshot(cid)
+                if next_snap != prev_snap:
+                    self._commit("GRAPH_SYNCED", canvas_id=cid)
+                elif self.state["viewport"] != prev_vp or self.settings != prev_settings:
+                    self._publish("GRAPH_SYNCED", canvas_id=cid)
+                else:
+                    self._persist_workspace(cid)
+                return self.get_graph(canvas_id=cid)
+
+    def reset(self, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id) as cid:
+            for desc_id in self.db.get_descendant_canvas_ids(cid):
+                self.db.delete_canvas_subtree(desc_id)
+                self._canvases.pop(desc_id, None)
+                self.undo_stacks.pop(desc_id, None)
+                self.redo_stacks.pop(desc_id, None)
+
+            if cid == ROOT_CANVAS_ID:
+                self.settings = self._normalize_settings(DEFAULT_STATE["settings"])
+                self.db.save_settings(self.settings)
+                self.state = self._normalize_state(copy.deepcopy(DEFAULT_STATE))
+            else:
+                self.state = self._normalize_state({
+                    "viewport": {"x": 0, "y": 0, "zoom": 1.0},
+                    "settings": self.settings,
+                    "cards": [],
+                    "connections": [],
+                    "groups": [],
+                })
+            self.selection = {"canvasId": cid, "cardIds": [], "capsulePinId": None, "textSelection": None}
+            self.undo_stack = [self._snapshot(cid)]
             self.redo_stack = []
-            self._publish("STATE_RESET")
-            return self.get_graph()
+            self._publish("STATE_RESET", canvas_id=cid)
+            return self.get_graph(canvas_id=cid)
 
-    def save_to_file(self, path_str: str | None = None) -> dict[str, Any]:
+    def save_to_file(self, path_str: str | None = None, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         with self._lock:
             target = self.workspace_file
             if path_str:
@@ -486,20 +1036,12 @@ class GraphStore:
             if target is None:
                 target = self._base_dir / "graph.pinpoint"
 
-            export_data = {
-                "version": 1,
-                "timestamp": int(time.time() * 1000),
-                "viewport": self.state["viewport"],
-                "settings": self.state["settings"],
-                "cards": self.state["cards"],
-                "connections": self.state["connections"],
-                "groups": self.state.get("groups", []),
-            }
+            export_data = self.export_canvas(canvas_id=canvas_id, include_subcanvases=True)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(export_data, indent=2, ensure_ascii=False), encoding="utf-8")
             self.workspace_file = target
             self.has_workspace_file = True
-            self._publish("FILE_SAVED", {"fileName": target.name})
+            self._publish("FILE_SAVED", {"fileName": target.name}, canvas_id=canvas_id)
             rel = str(target.relative_to(self._base_dir)) if target.is_relative_to(self._base_dir) else str(target)
             return {"fileName": target.name, "path": rel}
 
@@ -507,8 +1049,8 @@ class GraphStore:
     # Cards
     # ------------------------------------------------------------------
 
-    def list_cards(self, q: str | None = None, group_id: str | None = None) -> list[dict[str, Any]]:
-        with self._lock:
+    def list_cards(self, q: str | None = None, group_id: str | None = None, canvas_id: str = ROOT_CANVAS_ID) -> list[dict[str, Any]]:
+        with self._lock, self._use_canvas(canvas_id):
             cards = self.state["cards"]
             if group_id:
                 group = next((g for g in self.state.get("groups", []) if g["id"] == group_id), None)
@@ -528,8 +1070,8 @@ class GraphStore:
                 result.append(view)
             return result
 
-    def get_card(self, card_id: str) -> dict[str, Any]:
-        with self._lock:
+    def get_card(self, card_id: str, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             card = next((c for c in self.state["cards"] if c["id"] == card_id), None)
             if not card:
                 raise ApiError(404, "CARD_NOT_FOUND", f"Card '{card_id}' not found.")
@@ -554,8 +1096,9 @@ class GraphStore:
         if any(c["id"] == card_id for c in self.state["cards"]):
             raise ApiError(409, "DUPLICATE_CARD_ID", f"Card ID '{card_id}' already exists.")
 
-        title = (payload.get("title") or "").strip() or "未命名节点"
-        width = payload.get("width", DEFAULT_CARD_WIDTH)
+        kind = payload.get("kind") or "card"
+        title = (payload.get("title") or "").strip() or ("未命名子画布" if kind == "subcanvas" else "未命名节点")
+        width = payload.get("width", DEFAULT_SUBCANVAS_WIDTH if kind == "subcanvas" else DEFAULT_CARD_WIDTH)
         if not isinstance(width, (int, float)) or isinstance(width, bool) or width < MIN_CARD_WIDTH:
             raise ApiError(400, "INVALID_CARD_WIDTH", f"Card width must be >= {MIN_CARD_WIDTH}.")
 
@@ -566,6 +1109,27 @@ class GraphStore:
             auto_x, auto_y = self._auto_spawn_position()
             x = self._snap_coord(float(payload.get("x", auto_x)))
             y = self._snap_coord(float(payload.get("y", auto_y)))
+
+        if kind == "subcanvas":
+            height = payload.get("height", DEFAULT_SUBCANVAS_HEIGHT)
+            if not isinstance(height, (int, float)) or isinstance(height, bool) or height < MIN_SUBCANVAS_HEIGHT:
+                raise ApiError(400, "INVALID_SUBCANVAS_HEIGHT", f"Subcanvas height must be >= {MIN_SUBCANVAS_HEIGHT}.")
+            subcanvas_id = str(payload.get("subcanvasId") or "").strip() or self._next_id("canvas")
+            self.db.ensure_canvas(subcanvas_id, parent_canvas_id=self._current_canvas_id(), title=title)
+            card: dict[str, Any] = {
+                "id": card_id,
+                "kind": "subcanvas",
+                "subcanvasId": subcanvas_id,
+                "title": title,
+                "x": x,
+                "y": y,
+                "width": int(round(width)),
+                "height": int(round(height)),
+                "contentHtml": "",
+            }
+            if payload.get("headerColor"):
+                card["headerColor"] = payload["headerColor"]
+            return card
 
         if "contentHtml" in payload and payload["contentHtml"] is not None:
             content_html = str(payload["contentHtml"])
@@ -578,7 +1142,7 @@ class GraphStore:
         else:
             content_html = ""
 
-        card: dict[str, Any] = {
+        card = {
             "id": card_id,
             "title": title,
             "x": x,
@@ -590,10 +1154,10 @@ class GraphStore:
             card["headerColor"] = payload["headerColor"]
         return card
 
-    def create_card(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_card(self, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             card = self._build_card_dict(payload)
             self.state["cards"].append(card)
             self._commit("CARD_ADDED", {"cardId": card["id"]})
@@ -601,7 +1165,10 @@ class GraphStore:
 
     def _apply_card_patch(self, card: dict[str, Any], patch: dict[str, Any]) -> None:
         if "title" in patch:
-            card["title"] = (str(patch["title"] or "").strip()) or "未命名节点"
+            default_t = "子画布" if card.get("kind") == "subcanvas" else "未命名节点"
+            card["title"] = (str(patch["title"] or "").strip()) or default_t
+            if card.get("kind") == "subcanvas" and card.get("subcanvasId"):
+                self.db.update_canvas_meta(card["subcanvasId"], title=card["title"])
         if "x" in patch:
             card["x"] = int(round(float(patch["x"])))
         if "y" in patch:
@@ -611,30 +1178,36 @@ class GraphStore:
             if not isinstance(w, (int, float)) or isinstance(w, bool) or w < MIN_CARD_WIDTH:
                 raise ApiError(400, "INVALID_CARD_WIDTH", f"Card width must be >= {MIN_CARD_WIDTH}.")
             card["width"] = int(round(w))
-        if "contentHtml" in patch and patch["contentHtml"] is not None:
-            _, old_capsules, _ = parse_content(card.get("contentHtml", ""))
-            card["contentHtml"] = str(patch["contentHtml"])
-            _, new_capsules, _ = parse_content(card["contentHtml"])
-            removed_pins = {c["pinId"] for c in old_capsules} - {c["pinId"] for c in new_capsules}
-            if removed_pins:
-                self.state["connections"] = [
-                    conn for conn in self.state["connections"]
-                    if conn["fromPinId"] not in removed_pins and conn["toPinId"] not in removed_pins
-                ]
-        elif "contentText" in patch and patch["contentText"] is not None:
-            _, old_capsules, _ = parse_content(card.get("contentHtml", ""))
-            card["contentHtml"] = text_and_capsules_to_html(
-                str(patch["contentText"]),
-                patch.get("capsules"),
-                gen_pin_fn=lambda: self._next_id("pin"),
-            )
-            _, new_capsules, _ = parse_content(card["contentHtml"])
-            removed_pins = {c["pinId"] for c in old_capsules} - {c["pinId"] for c in new_capsules}
-            if removed_pins:
-                self.state["connections"] = [
-                    conn for conn in self.state["connections"]
-                    if conn["fromPinId"] not in removed_pins and conn["toPinId"] not in removed_pins
-                ]
+        if "height" in patch and card.get("kind") == "subcanvas":
+            h = patch["height"]
+            if not isinstance(h, (int, float)) or isinstance(h, bool) or h < MIN_SUBCANVAS_HEIGHT:
+                raise ApiError(400, "INVALID_SUBCANVAS_HEIGHT", f"Subcanvas height must be >= {MIN_SUBCANVAS_HEIGHT}.")
+            card["height"] = int(round(h))
+        if card.get("kind") != "subcanvas":
+            if "contentHtml" in patch and patch["contentHtml"] is not None:
+                _, old_capsules, _ = parse_content(card.get("contentHtml", ""))
+                card["contentHtml"] = str(patch["contentHtml"])
+                _, new_capsules, _ = parse_content(card["contentHtml"])
+                removed_pins = {c["pinId"] for c in old_capsules} - {c["pinId"] for c in new_capsules}
+                if removed_pins:
+                    self.state["connections"] = [
+                        conn for conn in self.state["connections"]
+                        if conn["fromPinId"] not in removed_pins and conn["toPinId"] not in removed_pins
+                    ]
+            elif "contentText" in patch and patch["contentText"] is not None:
+                _, old_capsules, _ = parse_content(card.get("contentHtml", ""))
+                card["contentHtml"] = text_and_capsules_to_html(
+                    str(patch["contentText"]),
+                    patch.get("capsules"),
+                    gen_pin_fn=lambda: self._next_id("pin"),
+                )
+                _, new_capsules, _ = parse_content(card["contentHtml"])
+                removed_pins = {c["pinId"] for c in old_capsules} - {c["pinId"] for c in new_capsules}
+                if removed_pins:
+                    self.state["connections"] = [
+                        conn for conn in self.state["connections"]
+                        if conn["fromPinId"] not in removed_pins and conn["toPinId"] not in removed_pins
+                    ]
 
         if "headerColor" in patch:
             new_color = patch["headerColor"] or None
@@ -663,10 +1236,10 @@ class GraphStore:
                     if not is_from_capsule:
                         conn["color"] = (other_card or {}).get("headerColor") or new_color or DEFAULT_COLOR_NEUTRAL
 
-    def update_card(self, card_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    def update_card(self, card_id: str, patch: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(patch, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             card = next((c for c in self.state["cards"] if c["id"] == card_id), None)
             if not card:
                 raise ApiError(404, "CARD_NOT_FOUND", f"Card '{card_id}' not found.")
@@ -674,12 +1247,23 @@ class GraphStore:
             self._commit("CARD_UPDATED", {"cardId": card_id})
             return self._card_to_view(card)
 
-    def _remove_cards_internal(self, card_ids: list[str]) -> list[str]:
+    def _remove_cards_internal(self, card_ids: list[str], delete_subcanvases: bool = True) -> list[str]:
         id_set = set(card_ids)
         existing_ids = {c["id"] for c in self.state["cards"]}
         removed = [cid for cid in card_ids if cid in existing_ids]
         if not removed:
             return []
+
+        if delete_subcanvases:
+            for c in self.state["cards"]:
+                if c["id"] in id_set and c.get("kind") == "subcanvas" and c.get("subcanvasId"):
+                    sub_id = c["subcanvasId"]
+                    if sub_id != ROOT_CANVAS_ID and self.db.has_canvas(sub_id):
+                        deleted = self.db.delete_canvas_subtree(sub_id)
+                        for did in deleted:
+                            self._canvases.pop(did, None)
+                            self.undo_stacks.pop(did, None)
+                            self.redo_stacks.pop(did, None)
 
         # Collect pin owners while deleted cards are still present in self.state["cards"]
         self.state["connections"] = [
@@ -705,18 +1289,18 @@ class GraphStore:
 
         return removed
 
-    def delete_card(self, card_id: str) -> dict[str, Any]:
-        with self._lock:
+    def delete_card(self, card_id: str, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             removed = self._remove_cards_internal([card_id])
             if not removed:
                 raise ApiError(404, "CARD_NOT_FOUND", f"Card '{card_id}' not found.")
             self._commit("CARD_REMOVED", {"cardIds": removed})
             return {"deletedIds": removed}
 
-    def batch_cards(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def batch_cards(self, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             backup = json.loads(self._snapshot())
             created: list[dict[str, Any]] = []
             updated: list[dict[str, Any]] = []
@@ -752,8 +1336,20 @@ class GraphStore:
             })
             return {"created": created, "updated": updated, "deletedIds": deleted}
 
-    def clone_card(self, card_id: str, offset_x: float = 32, offset_y: float = 32) -> dict[str, Any]:
-        with self._lock:
+    def _clone_canvas_subtree(self, src_canvas_id: str, new_parent_id: str) -> str:
+        exported = self.export_canvas(src_canvas_id, include_subcanvases=True)
+        new_cid = self._next_id("canvas")
+        norm = self._normalize_state(exported)
+        self.db.save_canvas_data(new_cid, norm, parent_canvas_id=new_parent_id, title=exported.get("title") or "子画布")
+        self._canvases[new_cid] = norm
+        self.undo_stacks[new_cid] = [self._snapshot(new_cid)]
+        self.redo_stacks[new_cid] = []
+        if "subcanvases" in exported:
+            self._import_subcanvases_dict(new_cid, exported["subcanvases"])
+        return new_cid
+
+    def clone_card(self, card_id: str, offset_x: float = 32, offset_y: float = 32, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id) as cid:
             src = next((c for c in self.state["cards"] if c["id"] == card_id), None)
             if not src:
                 raise ApiError(404, "CARD_NOT_FOUND", f"Card '{card_id}' not found.")
@@ -763,11 +1359,14 @@ class GraphStore:
             new_card["x"] = self._snap_coord(src["x"] + offset_x)
             new_card["y"] = self._snap_coord(src["y"] + offset_y)
 
-            _, _, segments = parse_content(src.get("contentHtml", ""))
-            for seg in segments:
-                if seg["type"] == "capsule":
-                    seg["pinId"] = self._next_id("pin")
-            new_card["contentHtml"] = render_segments_to_html(segments)
+            if new_card.get("kind") == "subcanvas" and new_card.get("subcanvasId"):
+                new_card["subcanvasId"] = self._clone_canvas_subtree(new_card["subcanvasId"], cid)
+            else:
+                _, _, segments = parse_content(src.get("contentHtml", ""))
+                for seg in segments:
+                    if seg["type"] == "capsule":
+                        seg["pinId"] = self._next_id("pin")
+                new_card["contentHtml"] = render_segments_to_html(segments)
 
             self.state["cards"].append(new_card)
             self._commit("CARD_ADDED", {"cardId": new_card["id"]})
@@ -777,18 +1376,18 @@ class GraphStore:
     # Capsules
     # ------------------------------------------------------------------
 
-    def list_capsules(self, card_id: str) -> list[dict[str, Any]]:
-        with self._lock:
+    def list_capsules(self, card_id: str, canvas_id: str = ROOT_CANVAS_ID) -> list[dict[str, Any]]:
+        with self._lock, self._use_canvas(canvas_id):
             card = next((c for c in self.state["cards"] if c["id"] == card_id), None)
             if not card:
                 raise ApiError(404, "CARD_NOT_FOUND", f"Card '{card_id}' not found.")
             _, capsules, _ = parse_content(card.get("contentHtml", ""))
             return capsules
 
-    def create_capsule(self, card_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_capsule(self, card_id: str, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             card = next((c for c in self.state["cards"] if c["id"] == card_id), None)
             if not card:
                 raise ApiError(404, "CARD_NOT_FOUND", f"Card '{card_id}' not found.")
@@ -856,10 +1455,10 @@ class GraphStore:
             self._commit("CARD_UPDATED", {"cardId": card_id, "pinId": pin_id})
             return {"pinId": pin_id, "cardId": card_id, "text": cap_text, "color": color}
 
-    def update_capsule(self, pin_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_capsule(self, pin_id: str, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             for card in self.state["cards"]:
                 _, _, segments = parse_content(card.get("contentHtml", ""))
                 target = next((s for s in segments if s["type"] == "capsule" and s["pinId"] == pin_id), None)
@@ -890,8 +1489,8 @@ class GraphStore:
                 }
             raise ApiError(404, "CAPSULE_NOT_FOUND", f"Capsule '{pin_id}' not found.")
 
-    def delete_capsule(self, pin_id: str) -> dict[str, Any]:
-        with self._lock:
+    def delete_capsule(self, pin_id: str, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             for card in self.state["cards"]:
                 _, _, segments = parse_content(card.get("contentHtml", ""))
                 found = False
@@ -923,8 +1522,9 @@ class GraphStore:
         card_id: str | None = None,
         group_id: str | None = None,
         pin_id: str | None = None,
+        canvas_id: str = ROOT_CANVAS_ID,
     ) -> list[dict[str, Any]]:
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             result = []
             for conn in self.state["connections"]:
                 if pin_id and conn["fromPinId"] != pin_id and conn["toPinId"] != pin_id:
@@ -970,10 +1570,10 @@ class GraphStore:
             return f"pin-head-{'left' if side == 'left' else 'right'}-{card_id}"
         raise ApiError(400, "MISSING_ENDPOINT", f"Missing {role} endpoint (provide pinId, cardId, or groupId).")
 
-    def create_connection(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_connection(self, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             from_pin = self._resolve_endpoint_pin(
                 payload.get("fromPinId"),
                 payload.get("fromCardId"),
@@ -1025,10 +1625,10 @@ class GraphStore:
             self._commit("CONNECTION_ADDED", {"connId": conn["id"]})
             return copy.deepcopy(conn)
 
-    def update_connection(self, conn_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_connection(self, conn_id: str, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             conn = next((c for c in self.state["connections"] if c["id"] == conn_id), None)
             if not conn:
                 raise ApiError(404, "CONNECTION_NOT_FOUND", f"Connection '{conn_id}' not found.")
@@ -1059,8 +1659,8 @@ class GraphStore:
             self._commit("CONNECTION_RECONNECTED", {"connId": conn_id})
             return copy.deepcopy(conn)
 
-    def delete_connection(self, conn_id: str) -> dict[str, Any]:
-        with self._lock:
+    def delete_connection(self, conn_id: str, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             before = len(self.state["connections"])
             self.state["connections"] = [c for c in self.state["connections"] if c["id"] != conn_id]
             if len(self.state["connections"]) == before:
@@ -1072,8 +1672,8 @@ class GraphStore:
     # Groups
     # ------------------------------------------------------------------
 
-    def list_groups(self) -> list[dict[str, Any]]:
-        with self._lock:
+    def list_groups(self, canvas_id: str = ROOT_CANVAS_ID) -> list[dict[str, Any]]:
+        with self._lock, self._use_canvas(canvas_id):
             out = []
             for g in self.state.get("groups", []):
                 item = copy.deepcopy(g)
@@ -1081,10 +1681,10 @@ class GraphStore:
                 out.append(item)
             return out
 
-    def create_group(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_group(self, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             card_ids = payload.get("cardIds")
             if not isinstance(card_ids, list):
                 raise ApiError(400, "INVALID_GROUP_CARDS", "'cardIds' must be an array of card IDs.")
@@ -1109,10 +1709,10 @@ class GraphStore:
             item["bounds"] = self._calc_group_bounds(group)
             return item
 
-    def update_group(self, group_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_group(self, group_id: str, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             group = next((g for g in self.state.get("groups", []) if g["id"] == group_id), None)
             if not group:
                 raise ApiError(404, "GROUP_NOT_FOUND", f"Group '{group_id}' not found.")
@@ -1149,8 +1749,8 @@ class GraphStore:
             item["bounds"] = self._calc_group_bounds(group)
             return item
 
-    def add_card_to_group(self, group_id: str, card_id: str) -> dict[str, Any]:
-        with self._lock:
+    def add_card_to_group(self, group_id: str, card_id: str, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             group = next((g for g in self.state.get("groups", []) if g["id"] == group_id), None)
             if not group:
                 raise ApiError(404, "GROUP_NOT_FOUND", f"Group '{group_id}' not found.")
@@ -1163,8 +1763,8 @@ class GraphStore:
             item["bounds"] = self._calc_group_bounds(group)
             return item
 
-    def remove_card_from_group(self, group_id: str, card_id: str) -> dict[str, Any]:
-        with self._lock:
+    def remove_card_from_group(self, group_id: str, card_id: str, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             group = next((g for g in self.state.get("groups", []) if g["id"] == group_id), None)
             if not group:
                 raise ApiError(404, "GROUP_NOT_FOUND", f"Group '{group_id}' not found.")
@@ -1195,8 +1795,8 @@ class GraphStore:
         ]
         return True
 
-    def delete_group(self, group_id: str) -> dict[str, Any]:
-        with self._lock:
+    def delete_group(self, group_id: str, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             if not self._remove_group_internal(group_id):
                 raise ApiError(404, "GROUP_NOT_FOUND", f"Group '{group_id}' not found.")
             self._commit("GROUP_REMOVED", {"groupId": group_id})
@@ -1206,13 +1806,13 @@ class GraphStore:
     # Layout & Alignment
     # ------------------------------------------------------------------
 
-    def align_cards(self, card_ids: list[str], align_type: str) -> list[dict[str, Any]]:
+    def align_cards(self, card_ids: list[str], align_type: str, canvas_id: str = ROOT_CANVAS_ID) -> list[dict[str, Any]]:
         if align_type not in VALID_ALIGN_TYPES:
             raise ApiError(400, "INVALID_ALIGN_TYPE", f"Unsupported align type '{align_type}'.")
         if not isinstance(card_ids, list) or len(card_ids) < 2:
             raise ApiError(400, "INSUFFICIENT_CARDS", "At least 2 cards are required for alignment.")
 
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             id_set = set(card_ids)
             cards = [c for c in self.state["cards"] if c["id"] in id_set]
             if len(cards) < 2:
@@ -1281,11 +1881,12 @@ class GraphStore:
         card_ids: list[str] | None = None,
         spacing_x: float = 96,
         spacing_y: float = 64,
+        canvas_id: str = ROOT_CANVAS_ID,
     ) -> list[dict[str, Any]]:
         if strategy not in ("layered", "grid"):
             raise ApiError(400, "INVALID_LAYOUT_STRATEGY", f"Unsupported strategy '{strategy}'.")
 
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             target_set = set(card_ids) if card_ids else {c["id"] for c in self.state["cards"]}
             cards = [c for c in self.state["cards"] if c["id"] in target_set]
             if not cards:
@@ -1301,7 +1902,6 @@ class GraphStore:
                     c["x"] = self._snap_coord(start_x + col * col_w)
                     c["y"] = self._snap_coord(start_y + r * row_h)
             else:
-                # Layered topological assignment (left-to-right DAG with cycle breaking)
                 adj: dict[str, list[str]] = {c["id"]: [] for c in cards}
                 indeg: dict[str, int] = {c["id"]: 0 for c in cards}
                 for conn in self.state["connections"]:
@@ -1350,8 +1950,8 @@ class GraphStore:
     # History
     # ------------------------------------------------------------------
 
-    def get_history(self) -> dict[str, Any]:
-        with self._lock:
+    def get_history(self, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             return {
                 "canUndo": len(self.undo_stack) > 1,
                 "canRedo": len(self.redo_stack) > 0,
@@ -1359,10 +1959,10 @@ class GraphStore:
                 "redoDepth": len(self.redo_stack),
             }
 
-    def undo(self) -> dict[str, Any]:
-        with self._lock:
+    def undo(self, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             if len(self.undo_stack) <= 1:
-                return {"undone": False, **self.get_history()}
+                return {"undone": False, **self.get_history(canvas_id)}
             current = self.undo_stack.pop()
             self.redo_stack.append(current)
             prev_data = json.loads(self.undo_stack[-1])
@@ -1370,12 +1970,12 @@ class GraphStore:
             self.state["connections"] = prev_data["connections"]
             self.state["groups"] = prev_data.get("groups", [])
             self._publish("STATE_RESTORED", {"action": "undo"})
-            return {"undone": True, **self.get_history()}
+            return {"undone": True, **self.get_history(canvas_id)}
 
-    def redo(self) -> dict[str, Any]:
-        with self._lock:
+    def redo(self, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             if not self.redo_stack:
-                return {"redone": False, **self.get_history()}
+                return {"redone": False, **self.get_history(canvas_id)}
             nxt = self.redo_stack.pop()
             self.undo_stack.append(nxt)
             next_data = json.loads(nxt)
@@ -1383,20 +1983,20 @@ class GraphStore:
             self.state["connections"] = next_data["connections"]
             self.state["groups"] = next_data.get("groups", [])
             self._publish("STATE_RESTORED", {"action": "redo"})
-            return {"redone": True, **self.get_history()}
+            return {"redone": True, **self.get_history(canvas_id)}
 
     # ------------------------------------------------------------------
     # Viewport
     # ------------------------------------------------------------------
 
-    def get_viewport(self) -> dict[str, Any]:
-        with self._lock:
+    def get_viewport(self, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             return copy.deepcopy(self.state["viewport"])
 
-    def update_viewport(self, patch: dict[str, Any]) -> dict[str, Any]:
+    def update_viewport(self, patch: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(patch, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             vp = self.state["viewport"]
             if "x" in patch:
                 vp["x"] = float(patch["x"])
@@ -1407,8 +2007,8 @@ class GraphStore:
             self._publish("VIEWPORT_CHANGED", vp)
             return copy.deepcopy(vp)
 
-    def fit_viewport(self, viewport_width: float = 1440, viewport_height: float = 900) -> dict[str, Any]:
-        with self._lock:
+    def fit_viewport(self, viewport_width: float = 1440, viewport_height: float = 900, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
+        with self._lock, self._use_canvas(canvas_id):
             cards = self.state["cards"]
             if not cards:
                 self.state["viewport"] = {"x": 0.0, "y": 0.0, "zoom": 1.0}
@@ -1440,8 +2040,9 @@ class GraphStore:
         group_id: str | None = None,
         viewport_width: float = 1440,
         viewport_height: float = 900,
+        canvas_id: str = ROOT_CANVAS_ID,
     ) -> dict[str, Any]:
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             target_ids = set(card_ids or [])
             if group_id:
                 group = next((g for g in self.state.get("groups", []) if g["id"] == group_id), None)
@@ -1471,13 +2072,13 @@ class GraphStore:
 
     def get_settings(self) -> dict[str, Any]:
         with self._lock:
-            return copy.deepcopy(self.state["settings"])
+            return copy.deepcopy(self.settings)
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(patch, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
         with self._lock:
-            settings = self.state["settings"]
+            settings = self.settings
             if "alignMode" in patch:
                 settings["alignMode"] = bool(patch["alignMode"])
             if "gridSnapMode" in patch:
@@ -1524,15 +2125,51 @@ class GraphStore:
                     if not isinstance(lib_w, (int, float)) or isinstance(lib_w, bool):
                         raise ApiError(400, "INVALID_LIBRARY_WIDTH", "Library width must be a number.")
                     lib["width"] = int(max(260, min(800, lib_w)))
+            if "save" in patch:
+                save_patch = patch["save"]
+                if not isinstance(save_patch, dict):
+                    raise ApiError(400, "INVALID_SAVE_SETTINGS", "'save' must be an object.")
+                sv = settings.setdefault("save", dict(DEFAULT_SAVE_SETTINGS))
+                if "mode" in save_patch:
+                    m = save_patch["mode"]
+                    if m not in VALID_SAVE_MODES:
+                        raise ApiError(400, "INVALID_SAVE_MODE", f"Save mode must be one of {sorted(VALID_SAVE_MODES)}.")
+                    sv["mode"] = m
+                if "intervalSec" in save_patch:
+                    iv = save_patch["intervalSec"]
+                    if not isinstance(iv, (int, float)) or isinstance(iv, bool):
+                        raise ApiError(400, "INVALID_SAVE_INTERVAL", "Save intervalSec must be a number.")
+                    sv["intervalSec"] = int(max(1, min(300, iv)))
+            if "toast" in patch:
+                toast_patch = patch["toast"]
+                if not isinstance(toast_patch, dict):
+                    raise ApiError(400, "INVALID_TOAST_SETTINGS", "'toast' must be an object.")
+                ts = settings.setdefault("toast", dict(DEFAULT_TOAST_SETTINGS))
+                if "position" in toast_patch:
+                    tp = toast_patch["position"]
+                    if tp not in VALID_TOAST_POSITIONS:
+                        raise ApiError(400, "INVALID_TOAST_POSITION", f"Toast position must be one of {sorted(VALID_TOAST_POSITIONS)}.")
+                    ts["position"] = tp
+                if "durationSec" in toast_patch:
+                    td = toast_patch["durationSec"]
+                    if not isinstance(td, (int, float)) or isinstance(td, bool):
+                        raise ApiError(400, "INVALID_TOAST_DURATION", "Toast durationSec must be a number.")
+                    ts["durationSec"] = int(max(2, min(30, td)))
 
+            for st in self._canvases.values():
+                st["settings"] = self.settings
+            self.db.save_settings(self.settings)
             self._publish("SETTINGS_CHANGED", settings)
             return copy.deepcopy(settings)
 
     def reset_palette(self) -> dict[str, Any]:
         with self._lock:
-            self.state["settings"]["palette"] = list(DEFAULT_PALETTE)
-            self._publish("SETTINGS_CHANGED", self.state["settings"])
-            return copy.deepcopy(self.state["settings"])
+            self.settings["palette"] = list(DEFAULT_PALETTE)
+            for st in self._canvases.values():
+                st["settings"] = self.settings
+            self.db.save_settings(self.settings)
+            self._publish("SETTINGS_CHANGED", self.settings)
+            return copy.deepcopy(self.settings)
 
     # ------------------------------------------------------------------
     # Transient Selection State (Live UI <-> MCP)
@@ -1574,98 +2211,106 @@ class GraphStore:
             if not cid or cid not in existing_ids or not txt:
                 self.selection["textSelection"] = None
 
-    def get_selection(self) -> dict[str, Any]:
+    def get_selection(self, canvas_id: str | None = None) -> dict[str, Any]:
         with self._lock:
-            self._prune_selection()
-            card_map = {c["id"]: c for c in self.state["cards"]}
-            card_ids = list(self.selection["cardIds"])
-            selected_cards = [self._card_to_view(card_map[cid]) for cid in card_ids if cid in card_map]
-            capsule_info = self._find_capsule_info(self.selection.get("capsulePinId"))
-            text_sel = copy.deepcopy(self.selection.get("textSelection"))
-            return {
-                "cardIds": card_ids,
-                "count": len(card_ids),
-                "cards": selected_cards,
-                "capsulePinId": capsule_info["pinId"] if capsule_info else None,
-                "capsule": capsule_info,
-                "textSelection": text_sel,
-            }
+            target_cid = canvas_id or self.selection.get("canvasId") or ROOT_CANVAS_ID
+            with self._use_canvas(target_cid):
+                self._prune_selection()
+                card_map = {c["id"]: c for c in self.state["cards"]}
+                card_ids = list(self.selection["cardIds"])
+                selected_cards = [self._card_to_view(card_map[cid]) for cid in card_ids if cid in card_map]
+                capsule_info = self._find_capsule_info(self.selection.get("capsulePinId"))
+                text_sel = copy.deepcopy(self.selection.get("textSelection"))
+                return {
+                    "canvasId": target_cid,
+                    "cardIds": card_ids,
+                    "count": len(card_ids),
+                    "cards": selected_cards,
+                    "capsulePinId": capsule_info["pinId"] if capsule_info else None,
+                    "capsule": capsule_info,
+                    "textSelection": text_sel,
+                }
 
-    def update_selection(self, payload: dict[str, Any], strict: bool = False) -> dict[str, Any]:
+    def update_selection(self, payload: dict[str, Any], strict: bool = False, canvas_id: str | None = None) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
         with self._lock:
-            existing_ids = {c["id"] for c in self.state["cards"]}
-            next_card_ids = list(self.selection.get("cardIds", []))
-            next_capsule_id = self.selection.get("capsulePinId")
-            next_text_sel = copy.deepcopy(self.selection.get("textSelection"))
+            target_cid = str(payload.get("canvasId") or canvas_id or self.selection.get("canvasId") or ROOT_CANVAS_ID)
+            with self._use_canvas(target_cid):
+                existing_ids = {c["id"] for c in self.state["cards"]}
+                next_card_ids = list(self.selection.get("cardIds", [])) if self.selection.get("canvasId") == target_cid else []
+                next_capsule_id = self.selection.get("capsulePinId") if self.selection.get("canvasId") == target_cid else None
+                next_text_sel = copy.deepcopy(self.selection.get("textSelection")) if self.selection.get("canvasId") == target_cid else None
 
-            if "cardIds" in payload or "groupId" in payload:
-                raw_ids: list[str] = []
-                if "cardIds" in payload:
-                    if not isinstance(payload["cardIds"], list):
-                        raise ApiError(400, "INVALID_CARD_IDS", "'cardIds' must be an array of strings.")
-                    raw_ids.extend(str(cid) for cid in payload["cardIds"])
-                if payload.get("groupId"):
-                    gid = str(payload["groupId"])
-                    grp = next((g for g in self.state.get("groups", []) if g["id"] == gid), None)
-                    if not grp:
-                        if strict:
-                            raise ApiError(404, "GROUP_NOT_FOUND", f"Group '{gid}' not found.")
-                    else:
-                        raw_ids.extend(grp.get("cardIds", []))
+                if "cardIds" in payload or "groupId" in payload:
+                    raw_ids: list[str] = []
+                    if "cardIds" in payload:
+                        if not isinstance(payload["cardIds"], list):
+                            raise ApiError(400, "INVALID_CARD_IDS", "'cardIds' must be an array of strings.")
+                        raw_ids.extend(str(cid) for cid in payload["cardIds"])
+                    if payload.get("groupId"):
+                        gid = str(payload["groupId"])
+                        grp = next((g for g in self.state.get("groups", []) if g["id"] == gid), None)
+                        if not grp:
+                            if strict:
+                                raise ApiError(404, "GROUP_NOT_FOUND", f"Group '{gid}' not found.")
+                        else:
+                            raw_ids.extend(grp.get("cardIds", []))
 
-                if strict:
-                    missing = [cid for cid in raw_ids if cid not in existing_ids]
-                    if missing:
-                        raise ApiError(404, "CARD_NOT_FOUND", f"Card '{missing[0]}' not found.")
+                    if strict:
+                        missing = [cid for cid in raw_ids if cid not in existing_ids]
+                        if missing:
+                            raise ApiError(404, "CARD_NOT_FOUND", f"Card '{missing[0]}' not found.")
 
-                seen: set[str] = set()
-                next_card_ids = []
-                for cid in raw_ids:
-                    if cid in existing_ids and cid not in seen:
-                        seen.add(cid)
-                        next_card_ids.append(cid)
+                    seen: set[str] = set()
+                    next_card_ids = []
+                    for cid in raw_ids:
+                        if cid in existing_ids and cid not in seen:
+                            seen.add(cid)
+                            next_card_ids.append(cid)
 
-            if "capsulePinId" in payload:
-                raw_pin = payload["capsulePinId"]
-                if raw_pin is None or raw_pin == "":
-                    next_capsule_id = None
-                else:
-                    pin_str = str(raw_pin)
-                    if not self._find_capsule_info(pin_str):
-                        if strict:
-                            raise ApiError(404, "CAPSULE_NOT_FOUND", f"Capsule '{pin_str}' not found.")
+                if "capsulePinId" in payload:
+                    raw_pin = payload["capsulePinId"]
+                    if raw_pin is None or raw_pin == "":
                         next_capsule_id = None
                     else:
-                        next_capsule_id = pin_str
+                        pin_str = str(raw_pin)
+                        if not self._find_capsule_info(pin_str):
+                            if strict:
+                                raise ApiError(404, "CAPSULE_NOT_FOUND", f"Capsule '{pin_str}' not found.")
+                            next_capsule_id = None
+                        else:
+                            next_capsule_id = pin_str
 
-            if "textSelection" in payload:
-                raw_ts = payload["textSelection"]
-                if not raw_ts:
-                    next_text_sel = None
-                elif isinstance(raw_ts, dict) and raw_ts.get("cardId") in existing_ids and str(raw_ts.get("text") or "").strip():
-                    next_text_sel = {
-                        "cardId": str(raw_ts["cardId"]),
-                        "text": str(raw_ts["text"]).strip(),
-                    }
-                else:
-                    next_text_sel = None
+                if "textSelection" in payload:
+                    raw_ts = payload["textSelection"]
+                    if not raw_ts:
+                        next_text_sel = None
+                    elif isinstance(raw_ts, dict) and raw_ts.get("cardId") in existing_ids and str(raw_ts.get("text") or "").strip():
+                        next_text_sel = {
+                            "cardId": str(raw_ts["cardId"]),
+                            "text": str(raw_ts["text"]).strip(),
+                        }
+                    else:
+                        next_text_sel = None
 
-            self.selection = {
-                "cardIds": next_card_ids,
-                "capsulePinId": next_capsule_id,
-                "textSelection": next_text_sel,
-            }
-            self._publish(
-                "SELECTION_CHANGED",
-                {
-                    "cardIds": list(next_card_ids),
+                self.selection = {
+                    "canvasId": target_cid,
+                    "cardIds": next_card_ids,
                     "capsulePinId": next_capsule_id,
-                    "textSelection": copy.deepcopy(next_text_sel),
-                },
-            )
-            return self.get_selection()
+                    "textSelection": next_text_sel,
+                }
+                self._publish(
+                    "SELECTION_CHANGED",
+                    {
+                        "canvasId": target_cid,
+                        "cardIds": list(next_card_ids),
+                        "capsulePinId": next_capsule_id,
+                        "textSelection": copy.deepcopy(next_text_sel),
+                    },
+                    canvas_id=target_cid,
+                )
+                return self.get_selection(target_cid)
 
     # ------------------------------------------------------------------
     # Reusable Node Library ("库")
@@ -1822,10 +2467,10 @@ class GraphStore:
                 raise ApiError(404, "LIBRARY_ITEM_NOT_FOUND", f"Library item '{item_id}' not found.")
             return copy.deepcopy(item)
 
-    def create_library_item(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_library_item(self, payload: dict[str, Any], canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             if "cards" in payload and payload["cards"] is not None:
                 source_payload = copy.deepcopy(payload)
             elif "cardIds" in payload:
@@ -1916,11 +2561,11 @@ class GraphStore:
             self._publish_library("LIBRARY_ITEM_DELETED", {"itemId": item_id})
             return {"deletedId": item_id}
 
-    def instantiate_library_item(self, item_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def instantiate_library_item(self, item_id: str, payload: dict[str, Any] | None = None, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         if payload is not None and not isinstance(payload, dict):
             raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
         b = payload or {}
-        with self._lock:
+        with self._lock, self._use_canvas(canvas_id):
             item = next((it for it in self.library if it["id"] == item_id), None)
             if not item:
                 raise ApiError(404, "LIBRARY_ITEM_NOT_FOUND", f"Library item '{item_id}' not found.")

@@ -416,27 +416,43 @@ class MinimapManager {
 
     // 3. Draw Cards
     this.ctx.save();
-    const defaultColor = store.getPalette()[0] || '#30d158';
+    const neutralHeaderColor = 'rgba(152, 152, 157, 0.55)';
     for (const card of cards) {
+      const isSub = card.kind === 'subcanvas';
       const cw = card.width || 320;
       const cardEl = document.getElementById(`card-dom-${card.id}`);
-      const ch = cardEl ? cardEl.offsetHeight : 180;
+      const ch = cardEl ? cardEl.offsetHeight : (card.height || 180);
       const cx = offsetX + (card.x - minX) * scale;
       const cy = offsetY + (card.y - minY) * scale;
       const mw = Math.max(cw * scale, 5);
       const mh = Math.max(ch * scale, 4);
       const radius = Math.min(2.5, mw / 2);
 
-      // Card body background
-      this.ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
-      this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
-      this.ctx.fill();
+      if (isSub) {
+        this.ctx.fillStyle = card.headerColor ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.05)';
+        this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
+        this.ctx.fill();
+        this.ctx.strokeStyle = card.headerColor || 'rgba(180, 180, 190, 0.55)';
+        this.ctx.lineWidth = 1;
+        this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
+        this.ctx.stroke();
+        if (mw >= 10 && mh >= 8) {
+          this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+          this.ctx.lineWidth = 0.75;
+          this.ctx.strokeRect(cx + 2, cy + 2, Math.max(4, mw - 4), Math.max(3, mh - 4));
+        }
+      } else {
+        // Card body background
+        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+        this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
+        this.ctx.fill();
 
-      // Card header bar
-      const headerH = Math.max(mh * 0.28, 2.5);
-      this.ctx.fillStyle = card.headerColor || defaultColor;
-      this.drawTopRoundedRect(this.ctx, cx, cy, mw, headerH, radius);
-      this.ctx.fill();
+        // Card header bar
+        const headerH = Math.max(mh * 0.28, 2.5);
+        this.ctx.fillStyle = card.headerColor || neutralHeaderColor;
+        this.drawTopRoundedRect(this.ctx, cx, cy, mw, headerH, radius);
+        this.ctx.fill();
+      }
 
       // Selection or normal border
       const isSelected = nodes?.selectedCardIds?.has(card.id);
@@ -446,7 +462,7 @@ class MinimapManager {
         this.drawRoundRect(this.ctx, cx - 0.5, cy - 0.5, mw + 1, mh + 1, radius);
         this.ctx.stroke();
       } else {
-        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+        this.ctx.strokeStyle = isSub ? (card.headerColor || 'rgba(10, 132, 255, 0.6)') : 'rgba(255, 255, 255, 0.22)';
         this.ctx.lineWidth = 0.75;
         this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
         this.ctx.stroke();

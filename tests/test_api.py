@@ -341,16 +341,18 @@ class PinPointApiTestCase(unittest.TestCase):
         from backend import GraphStore
 
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
-            ws_path = Path(tmpdir) / "nested" / "workspace.pinpoint"
-            store1 = GraphStore(workspace_file=ws_path, base_dir=Path.cwd())
+            db_path = Path(tmpdir) / "nested" / "pinpoint.db"
+            store1 = GraphStore(db_path=db_path, base_dir=Path.cwd())
             created = store1.create_card({"title": "Persisted Card", "contentText": "Survives restart"})
-            self.assertTrue(ws_path.exists())
+            self.assertTrue(db_path.exists())
+            store1.close()
 
-            # Simulate container restart by reloading from the same workspace file
-            store2 = GraphStore(workspace_file=ws_path, base_dir=Path.cwd())
+            # Simulate server restart by reloading from the same SQLite database
+            store2 = GraphStore(db_path=db_path, base_dir=Path.cwd())
             titles = [c["title"] for c in store2.list_cards()]
             self.assertIn("Persisted Card", titles)
             self.assertEqual(store2.get_card(created["id"])["contentText"], "Survives restart")
+            store2.close()
 
     def test_frontend_static_root_and_backend_isolation(self) -> None:
         root_url = f"http://127.0.0.1:{self.port}"
@@ -554,22 +556,24 @@ class PinPointApiTestCase(unittest.TestCase):
             self.assertEqual(len(evt["library"]), 1)
             self.assertEqual(evt["library"][0]["name"], "SSE 模板")
 
-        # File persistence alongside workspace
+        # SQLite persistence alongside workspace
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
             ws_path = Path(tmpdir) / "workspace.pinpoint"
+            db_path = ws_path.with_suffix(".db")
             store1 = GraphStore(workspace_file=ws_path, base_dir=Path.cwd())
             created = store1.create_library_item({
                 "name": "持久模板",
                 "cards": [{"id": "c1", "title": "A", "x": 10, "y": 20, "headerColor": "#ff9f0a", "contentHtml": "Hi"}],
             })
-            lib_path = ws_path.with_name("library.json")
-            self.assertTrue(lib_path.exists())
+            self.assertTrue(db_path.exists())
+            store1.close()
 
             store2 = GraphStore(workspace_file=ws_path, base_dir=Path.cwd())
             items = store2.list_library()
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0]["id"], created["id"])
             self.assertEqual(items[0]["cards"][0]["headerColor"], "#ff9f0a")
+            store2.close()
 
     def test_library_settings_validation_and_update(self) -> None:
         _, initial = self._request("GET", "/settings")
@@ -608,6 +612,145 @@ class PinPointApiTestCase(unittest.TestCase):
         })
         self.assertEqual(bad_width_status, 400)
         self.assertEqual(bad_width["error"]["code"], "INVALID_LIBRARY_WIDTH")
+
+    def test_save_settings_validation_and_update(self) -> None:
+        _, initial = self._request("GET", "/settings")
+        self.assertEqual(initial["data"]["save"], {"mode": "auto", "intervalSec": 1})
+
+        status, updated = self._request("PATCH", "/settings", {
+            "save": {"mode": "manual", "intervalSec": 45},
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["data"]["save"], {"mode": "manual", "intervalSec": 45})
+
+        _, clamped = self._request("PATCH", "/settings", {
+            "save": {"mode": "auto", "intervalSec": 999},
+        })
+        self.assertEqual(clamped["data"]["save"], {"mode": "auto", "intervalSec": 300})
+
+        bad_status, bad_res = self._request("PATCH", "/settings", {
+            "save": {"mode": "invalid-mode"},
+        })
+        self.assertEqual(bad_status, 400)
+        self.assertEqual(bad_res["error"]["code"], "INVALID_SAVE_MODE")
+
+        # Toast notification settings
+        _, toast_updated = self._request("PATCH", "/settings", {
+            "toast": {"position": "bottom-right", "durationSec": 8},
+        })
+        self.assertEqual(toast_updated["data"]["toast"], {"position": "bottom-right", "durationSec": 8})
+
+        _, toast_clamped = self._request("PATCH", "/settings", {
+            "toast": {"position": "bottom-left", "durationSec": 99},
+        })
+        self.assertEqual(toast_clamped["data"]["toast"], {"position": "bottom-left", "durationSec": 30})
+
+        bad_t_status, bad_t_res = self._request("PATCH", "/settings", {
+            "toast": {"position": "middle-nowhere"},
+        })
+        self.assertEqual(bad_t_status, 400)
+        self.assertEqual(bad_t_res["error"]["code"], "INVALID_TOAST_POSITION")
+
+    def test_subcanvas_infinite_nesting_thumbnail_and_cascade_delete(self) -> None:
+        # 1. Create level-1 subcanvas inside root
+        status, sub1_res = self._request("POST", "/canvases/root/subcanvases", {
+            "title": "Level 1 Canvas",
+            "x": 300,
+            "y": 240,
+            "headerColor": "#0a84ff",
+        })
+        self.assertEqual(status, 201)
+        sub1_id = sub1_res["data"]["canvas"]["id"]
+        sub1_card_id = sub1_res["data"]["card"]["id"]
+        self.assertEqual(sub1_res["data"]["card"]["kind"], "subcanvas")
+        self.assertEqual(sub1_res["data"]["card"]["subcanvasId"], sub1_id)
+
+        # 2. Add a card and a level-2 subcanvas inside level-1
+        status, c_in_1 = self._request("POST", f"/cards?canvasId={sub1_id}", {
+            "title": "L1 Card",
+            "x": 100,
+            "y": 100,
+            "contentText": "Inside Level 1",
+        })
+        self.assertEqual(status, 201)
+
+        status, sub2_res = self._request("POST", f"/canvases/{sub1_id}/subcanvases", {
+            "title": "Level 2 Canvas",
+            "x": 500,
+            "y": 160,
+        })
+        self.assertEqual(status, 201)
+        sub2_id = sub2_res["data"]["canvas"]["id"]
+
+        # 3. Add a card inside level-2 (must NOT leak into root's thumbnail of level-1)
+        status, c_in_2 = self._request("POST", f"/cards?canvasId={sub2_id}", {
+            "title": "L2 Deep Card",
+            "x": 80,
+            "y": 90,
+            "contentText": "Deeply nested",
+        })
+        self.assertEqual(status, 201)
+
+        # 4. Verify breadcrumbs on level-2
+        status, sub2_get = self._request("GET", f"/canvases/{sub2_id}")
+        self.assertEqual(status, 200)
+        crumbs = sub2_get["data"]["breadcrumbs"]
+        self.assertEqual([c["id"] for c in crumbs], ["root", sub1_id, sub2_id])
+        self.assertEqual(len(sub2_get["data"]["cards"]), 1)
+        self.assertEqual(sub2_get["data"]["cards"][0]["title"], "L2 Deep Card")
+
+        # 5. Verify root canvas sees sub1 card with non-recursive thumbnail (1 card + 1 subcanvas, NOT L2's card)
+        status, root_get = self._request("GET", "/canvases/root")
+        self.assertEqual(status, 200)
+        root_sub1_card = next(c for c in root_get["data"]["cards"] if c["id"] == sub1_card_id)
+        thumb = root_sub1_card["thumbnail"]
+        self.assertEqual(thumb["cardCount"], 1)
+        self.assertEqual(thumb["subcanvasCount"], 1)
+        self.assertEqual(len(thumb["cards"]), 2)
+
+        # 6. Export level-1 subcanvas as .pinpoint (includes sub2 in subcanvases map)
+        status, exp_res = self._request("GET", f"/canvases/{sub1_id}/export")
+        self.assertEqual(status, 200)
+        pinpoint_doc = exp_res["data"]
+        self.assertEqual(pinpoint_doc["canvasId"], sub1_id)
+        self.assertEqual(pinpoint_doc["title"], "Level 1 Canvas")
+        self.assertIn(sub2_id, pinpoint_doc.get("subcanvases", {}))
+        self.assertEqual(pinpoint_doc["subcanvases"][sub2_id]["cards"][0]["title"], "L2 Deep Card")
+
+        # 7. Delete level-1 subcanvas and verify level-2 + parent card are cascaded
+        status, del_res = self._request("DELETE", f"/canvases/{sub1_id}")
+        self.assertEqual(status, 200)
+        self.assertIn(sub1_id, del_res["data"]["deletedCanvasIds"])
+        self.assertIn(sub2_id, del_res["data"]["deletedCanvasIds"])
+
+        status_missing, _ = self._request("GET", f"/canvases/{sub2_id}")
+        self.assertEqual(status_missing, 404)
+        _, root_after = self._request("GET", "/canvases/root")
+        self.assertFalse(any(c["id"] == sub1_card_id for c in root_after["data"]["cards"]))
+
+    def test_pack_cards_into_subcanvas_and_import_pinpoint(self) -> None:
+        status, sub_res = self._request("POST", "/canvases/root/subcanvases", {
+            "title": "Packed Canvas",
+            "cardIds": ["card-1", "card-2"],
+        })
+        self.assertEqual(status, 201)
+        sub_id = sub_res["data"]["canvas"]["id"]
+
+        _, root_data = self._request("GET", "/canvases/root")
+        self.assertEqual(len(root_data["data"]["cards"]), 1)
+        self.assertEqual(root_data["data"]["cards"][0]["kind"], "subcanvas")
+        self.assertEqual(root_data["data"]["cards"][0]["thumbnail"]["cardCount"], 2)
+        self.assertEqual(root_data["data"]["cards"][0]["thumbnail"]["connectionCount"], 1)
+
+        _, exported = self._request("GET", f"/canvases/{sub_id}/export")
+        # Import exported .pinpoint back into a new subcanvas
+        _, target_sub = self._request("POST", "/canvases/root/subcanvases", {"title": "Import Target"})
+        target_id = target_sub["data"]["canvas"]["id"]
+        status_imp, _ = self._request("POST", f"/canvases/{target_id}/import", exported["data"])
+        self.assertEqual(status_imp, 200)
+        _, target_loaded = self._request("GET", f"/canvases/{target_id}")
+        self.assertEqual(len(target_loaded["data"]["cards"]), 2)
+        self.assertEqual(len(target_loaded["data"]["connections"]), 1)
 
 
 if __name__ == "__main__":

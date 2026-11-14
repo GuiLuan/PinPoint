@@ -8,6 +8,11 @@ from typing import Any
 MIN_CARD_WIDTH = 250
 DEFAULT_CARD_WIDTH = 310
 DEFAULT_CARD_HEIGHT = 140
+DEFAULT_SUBCANVAS_WIDTH = 300
+DEFAULT_SUBCANVAS_HEIGHT = 180
+MIN_SUBCANVAS_HEIGHT = 120
+ROOT_CANVAS_ID = "root"
+ROOT_CANVAS_TITLE = "主画布"
 GRID_SIZE = 24
 MIN_ZOOM = 0.35
 MAX_ZOOM = 2.5
@@ -22,6 +27,10 @@ PRESET_POOL = [
 VALID_MINIMAP_POSITIONS = {"top-left", "top-right", "bottom-left", "bottom-right"}
 VALID_LIBRARY_POSITIONS = {"left", "right"}
 VALID_LIBRARY_LAYOUTS = {"grid", "list"}
+VALID_SAVE_MODES = {"auto", "manual"}
+DEFAULT_SAVE_SETTINGS = {"mode": "auto", "intervalSec": 1}
+VALID_TOAST_POSITIONS = {"top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"}
+DEFAULT_TOAST_SETTINGS = {"position": "bottom-left", "durationSec": 5}
 VALID_ALIGN_TYPES = {
     "left", "center-h", "right",
     "top", "center-v", "bottom",
@@ -53,6 +62,11 @@ DEFAULT_STATE: dict[str, Any] = {
             "layout": "grid",
             "width": 348,
         },
+        "save": {
+            "mode": "auto",
+            "intervalSec": 1,
+        },
+        "toast": dict(DEFAULT_TOAST_SETTINGS),
     },
     "cards": [
         {

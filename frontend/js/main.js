@@ -7,6 +7,14 @@ import { minimap } from './minimap.js';
 import { sync } from './sync.js';
 import { library } from './library.js';
 
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 async function initApp() {
   const viewportEl = document.getElementById('viewport');
   const boardEl = document.getElementById('board');
@@ -23,6 +31,19 @@ async function initApp() {
   const minimapWidgetEl = document.getElementById('minimap-widget');
   const libraryDrawerEl = document.getElementById('library-drawer');
   const btnLibraryEl = document.getElementById('btn-library');
+
+  const btnCanvasesEl = document.getElementById('btn-canvases');
+  const canvasesDrawerEl = document.getElementById('canvases-drawer');
+  const btnCloseCanvasesEl = document.getElementById('btn-close-canvases');
+  const canvasesSearchInputEl = document.getElementById('canvases-search-input');
+  const canvasesCountBadgeEl = document.getElementById('canvases-count-badge');
+  const canvasTreeListEl = document.getElementById('canvas-tree-list');
+
+  const breadcrumbBarEl = document.getElementById('canvas-breadcrumb-bar');
+  const breadcrumbTrailEl = document.getElementById('canvas-breadcrumb-trail');
+  const btnCanvasBackEl = document.getElementById('btn-canvas-back');
+
+  await store.restoreFromIndexedDB();
 
   canvas.init(viewportEl, boardEl);
   wires.init(wireSvgEl, (pos, skipCommit, title, headerColor) => nodes.spawnNode(pos, title, skipCommit, headerColor), wireDropMenuEl);
@@ -59,23 +80,364 @@ async function initApp() {
   };
 
   function updateStatus(text) {
-    if (fileStatusEl) fileStatusEl.textContent = text;
+    if (fileStatusEl) fileStatusEl.textContent = text || '';
   }
 
   let toastTimer = null;
+  let toastRemainingMs = 5000;
+  let toastStartedAt = 0;
+  let isToastHovered = false;
+  const TOAST_POS_CLASSES = [
+    'toast-pos-top-left',
+    'toast-pos-top-center',
+    'toast-pos-top-right',
+    'toast-pos-bottom-left',
+    'toast-pos-bottom-center',
+    'toast-pos-bottom-right'
+  ];
+
+  function applyToastSettings() {
+    const toastEl = document.getElementById('app-toast');
+    if (!toastEl) return;
+    const ts = store.getToastSettings();
+    TOAST_POS_CLASSES.forEach(cls => toastEl.classList.remove(cls));
+    toastEl.classList.add(`toast-pos-${ts.position || 'bottom-left'}`);
+  }
+
+  function hideToast() {
+    const toastEl = document.getElementById('app-toast');
+    clearTimeout(toastTimer);
+    toastTimer = null;
+    if (toastEl) {
+      toastEl.classList.remove('is-visible');
+    }
+  }
+
+  function scheduleToastHide(delayMs) {
+    clearTimeout(toastTimer);
+    toastRemainingMs = Math.max(800, delayMs);
+    toastStartedAt = Date.now();
+    toastTimer = setTimeout(() => {
+      hideToast();
+    }, toastRemainingMs);
+  }
+
+  const appToastEl = document.getElementById('app-toast');
+  const btnCloseToastEl = document.getElementById('btn-close-toast');
+  btnCloseToastEl?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideToast();
+  });
+  appToastEl?.addEventListener('mousedown', (e) => e.stopPropagation());
+  appToastEl?.addEventListener('mouseenter', () => {
+    isToastHovered = true;
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+      const elapsed = Date.now() - toastStartedAt;
+      toastRemainingMs = Math.max(1200, toastRemainingMs - elapsed);
+    }
+  });
+  appToastEl?.addEventListener('mouseleave', () => {
+    isToastHovered = false;
+    if (appToastEl.classList.contains('is-visible')) {
+      scheduleToastHide(toastRemainingMs);
+    }
+  });
+
   function showToast(message, variant = 'info') {
     const toastEl = document.getElementById('app-toast');
+    const textEl = document.getElementById('app-toast-text');
     if (!toastEl || !message) return;
-    toastEl.textContent = message;
+    if (textEl) {
+      textEl.textContent = message;
+    } else {
+      toastEl.textContent = message;
+    }
+    applyToastSettings();
     toastEl.classList.remove('toast-info', 'toast-warning', 'toast-success', 'is-visible');
     toastEl.classList.add(`toast-${variant}`);
     void toastEl.offsetWidth;
     toastEl.classList.add('is-visible');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      toastEl.classList.remove('is-visible');
-    }, 3600);
+
+    const ts = store.getToastSettings();
+    const durationMs = Math.max(2, Math.min(30, ts?.durationSec || 5)) * 1000;
+    toastRemainingMs = durationMs;
+    if (!isToastHovered) {
+      scheduleToastHide(durationMs);
+    } else {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
   }
+
+  let canvasesSearchQuery = '';
+  const collapsedCanvasIds = new Set();
+
+  function isCanvasesDrawerOpen() {
+    return !!canvasesDrawerEl?.classList.contains('is-open');
+  }
+
+  async function openCanvasesDrawer() {
+    if (!canvasesDrawerEl) return;
+    if (library.isOpen()) {
+      library.close();
+    }
+    const libPos = store.getLibrarySettings()?.position === 'right' ? 'right' : 'left';
+    canvasesDrawerEl.classList.remove('pos-left', 'pos-right');
+    canvasesDrawerEl.classList.add(`pos-${libPos}`);
+    canvasesDrawerEl.classList.add('is-open');
+    btnCanvasesEl?.classList.add('is-active');
+    renderCanvasTreeDrawer();
+    await store.refreshCanvasTree();
+    renderCanvasTreeDrawer();
+  }
+
+  function closeCanvasesDrawer() {
+    if (!canvasesDrawerEl) return;
+    canvasesDrawerEl.classList.remove('is-open');
+    btnCanvasesEl?.classList.remove('is-active');
+  }
+
+  function toggleCanvasesDrawer() {
+    if (isCanvasesDrawerOpen()) {
+      closeCanvasesDrawer();
+    } else {
+      openCanvasesDrawer();
+    }
+  }
+
+  function renderCanvasNavigation() {
+    const crumbs = store.breadcrumbs || [{ id: 'root', title: '主画布' }];
+    const showBreadcrumbs = !(store.activeCanvasId === 'root' && crumbs.length <= 1);
+    document.body.classList.toggle('has-breadcrumbs', showBreadcrumbs);
+
+    if (breadcrumbBarEl && breadcrumbTrailEl) {
+      if (!showBreadcrumbs) {
+        breadcrumbBarEl.style.display = 'none';
+      } else {
+        breadcrumbBarEl.style.display = 'flex';
+        breadcrumbTrailEl.innerHTML = '';
+        crumbs.forEach((crumb, idx) => {
+          if (idx > 0) {
+            const sep = document.createElement('span');
+            sep.className = 'breadcrumb-sep';
+            sep.textContent = '/';
+            breadcrumbTrailEl.appendChild(sep);
+          }
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'breadcrumb-item' + (crumb.id === store.activeCanvasId ? ' is-current' : '');
+          btn.textContent = crumb.title || (crumb.id === 'root' ? '主画布' : '子画布');
+          btn.disabled = crumb.id === store.activeCanvasId;
+          btn.addEventListener('click', () => {
+            store.navigateToCanvas(crumb.id);
+          });
+          breadcrumbTrailEl.appendChild(btn);
+        });
+      }
+    }
+
+    if (isCanvasesDrawerOpen()) {
+      renderCanvasTreeDrawer();
+    } else if (canvasesCountBadgeEl) {
+      canvasesCountBadgeEl.textContent = String(store.getCanvasHierarchy().length);
+    }
+  }
+
+  function renderCanvasTreeDrawer() {
+    if (!canvasTreeListEl) return;
+    const allRows = store.getCanvasHierarchy();
+    if (canvasesCountBadgeEl) {
+      canvasesCountBadgeEl.textContent = String(allRows.length);
+    }
+
+    const rowMap = new Map(allRows.map(r => [r.id, r]));
+    const childrenSet = new Set();
+    allRows.forEach(r => {
+      if (r.parentCanvasId) childrenSet.add(r.parentCanvasId);
+    });
+
+    const isHiddenByCollapse = (row) => {
+      let pid = row.parentCanvasId;
+      const seen = new Set();
+      while (pid && !seen.has(pid)) {
+        seen.add(pid);
+        if (collapsedCanvasIds.has(pid)) return true;
+        pid = rowMap.get(pid)?.parentCanvasId || null;
+      }
+      return false;
+    };
+
+    const q = canvasesSearchQuery.trim().toLowerCase();
+    const rows = q
+      ? allRows.filter(r => (r.title || '').toLowerCase().includes(q))
+      : allRows.filter(r => !isHiddenByCollapse(r));
+
+    canvasTreeListEl.innerHTML = '';
+    if (rows.length === 0) {
+      canvasTreeListEl.innerHTML = `<div class="library-empty-state"><p>没有匹配的画布</p></div>`;
+      return;
+    }
+
+    rows.forEach(row => {
+      const hasChildren = childrenSet.has(row.id);
+      const isCollapsed = collapsedCanvasIds.has(row.id);
+      const itemEl = document.createElement('div');
+      itemEl.className = 'canvas-tree-row' + (row.id === store.activeCanvasId ? ' is-active' : '');
+      itemEl.style.paddingLeft = `${6 + (q ? 0 : (row.depth || 0) * 14)}px`;
+
+      const dirtyMark = row.dirty ? '<span class="canvas-tree-dirty-dot" title="未保存"></span>' : '';
+      const totalSub = (row.cardCount ?? 0) + (row.subcanvasCount ?? 0);
+      const countText = totalSub > 0 ? String(totalSub) : '';
+      const toggleHtml = hasChildren && !q
+        ? `<button type="button" class="canvas-tree-toggle-btn" title="${isCollapsed ? '展开' : '折叠'}">
+             <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.2" fill="none" style="transform: rotate(${isCollapsed ? '-90deg' : '0deg'}); transition: transform 0.14s ease;">
+               <polyline points="6 9 12 15 18 9"></polyline>
+             </svg>
+           </button>`
+        : '<span class="canvas-tree-toggle-spacer"></span>';
+
+      itemEl.innerHTML = `
+        ${toggleHtml}
+        <button type="button" class="canvas-tree-jump-btn">
+          <span class="canvas-tree-icon">${row.depth > 0 ? '↳' : '◈'}</span>
+          <span class="canvas-tree-name">${escapeHtml(row.title)}</span>
+          <input type="text" class="canvas-tree-rename-input" style="display: none;" value="${escapeHtml(row.title)}" />
+          ${dirtyMark}
+          ${countText ? `<span class="canvas-tree-meta">${countText}</span>` : ''}
+        </button>
+        <div class="canvas-tree-row-actions">
+          <button type="button" class="canvas-tree-action-btn canvas-tree-rename-btn" title="重命名">
+            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
+              <path d="M12 20h9"></path>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+            </svg>
+          </button>
+          <button type="button" class="canvas-tree-action-btn canvas-tree-export-btn" title="导出 .pinpoint">
+            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+          </button>
+        </div>
+      `;
+
+      const toggleBtn = itemEl.querySelector('.canvas-tree-toggle-btn');
+      toggleBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (collapsedCanvasIds.has(row.id)) {
+          collapsedCanvasIds.delete(row.id);
+        } else {
+          collapsedCanvasIds.add(row.id);
+        }
+        renderCanvasTreeDrawer();
+      });
+
+      const jumpBtn = itemEl.querySelector('.canvas-tree-jump-btn');
+      const nameEl = itemEl.querySelector('.canvas-tree-name');
+      const renameInput = itemEl.querySelector('.canvas-tree-rename-input');
+
+      const startInlineRename = (e) => {
+        e?.stopPropagation?.();
+        if (!nameEl || !renameInput) return;
+        nameEl.style.display = 'none';
+        renameInput.style.display = 'block';
+        renameInput.value = row.title || '';
+        renameInput.focus();
+        renameInput.select();
+      };
+
+      const finishInlineRename = async (commit = true) => {
+        if (!renameInput || renameInput.style.display === 'none') return;
+        const val = renameInput.value.trim();
+        renameInput.style.display = 'none';
+        nameEl.style.display = '';
+        if (commit && val && val !== row.title) {
+          await store.renameCanvas(row.id, val);
+        }
+      };
+
+      renameInput?.addEventListener('click', (e) => e.stopPropagation());
+      renameInput?.addEventListener('mousedown', (e) => e.stopPropagation());
+      renameInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          finishInlineRename(true);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          finishInlineRename(false);
+        }
+      });
+      renameInput?.addEventListener('blur', () => finishInlineRename(true));
+
+      nameEl?.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        startInlineRename(e);
+      });
+
+      jumpBtn?.addEventListener('click', (e) => {
+        if (renameInput && renameInput.style.display !== 'none') return;
+        e.stopPropagation();
+        store.navigateToCanvas(row.id);
+      });
+
+      itemEl.querySelector('.canvas-tree-rename-btn')?.addEventListener('click', startInlineRename);
+
+      itemEl.querySelector('.canvas-tree-export-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        store.exportCanvasToFile(row.id);
+      });
+
+      canvasTreeListEl.appendChild(itemEl);
+    });
+  }
+
+  window.__updateSaveUI = ({ connected, dirty, saving, label }) => {
+    const btnSave = document.getElementById('btn-save');
+    if (btnSave) {
+      btnSave.classList.toggle('is-offline', !connected);
+      btnSave.classList.toggle('has-unsaved', !!connected && !!dirty);
+      btnSave.classList.toggle('is-saving', !!saving);
+      if (label) {
+        btnSave.setAttribute('data-tooltip', label);
+      }
+    }
+  };
+
+  btnCanvasesEl?.addEventListener('click', () => {
+    toggleCanvasesDrawer();
+  });
+
+  btnCloseCanvasesEl?.addEventListener('click', () => {
+    closeCanvasesDrawer();
+  });
+
+  canvasesDrawerEl?.addEventListener('mousedown', (e) => e.stopPropagation());
+  canvasesDrawerEl?.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
+  canvasesSearchInputEl?.addEventListener('input', (e) => {
+    canvasesSearchQuery = e.target.value || '';
+    renderCanvasTreeDrawer();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isCanvasesDrawerOpen()) {
+      closeCanvasesDrawer();
+    }
+  });
+
+  btnCanvasBackEl?.addEventListener('click', () => {
+    const crumbs = store.breadcrumbs || [];
+    if (crumbs.length >= 2) {
+      store.navigateToCanvas(crumbs[crumbs.length - 2].id);
+    } else if (store.parentCanvasId) {
+      store.navigateToCanvas(store.parentCanvasId);
+    } else {
+      store.navigateToCanvas('root');
+    }
+  });
 
   // HUD Button: Focus Mode
   document.getElementById('btn-focus-mode')?.addEventListener('click', () => {
@@ -84,6 +446,9 @@ async function initApp() {
 
   // HUD Button: Library Drawer
   btnLibraryEl?.addEventListener('click', () => {
+    if (!library.isOpen() && isCanvasesDrawerOpen()) {
+      closeCanvasesDrawer();
+    }
     library.toggle();
   });
 
@@ -103,14 +468,22 @@ async function initApp() {
     const node = nodes.spawnNode({ x: centerX, y: centerY });
     wires.render();
 
-    // Focus and rename newly created node
     setTimeout(() => {
-      const cardEl = document.getElementById(`card-dom-${node.id}`);
-      if (cardEl) {
-        const titleSpan = cardEl.querySelector('.header-title');
-        titleSpan?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-      }
+      nodes.editCardTitle(node.id);
     }, 50);
+  });
+
+  // HUD Button: Add Subcanvas
+  document.getElementById('btn-add-subcanvas')?.addEventListener('click', async () => {
+    const { x, y, zoom } = store.state.viewport;
+    const centerX = (-x + window.innerWidth / 2) / zoom - 120;
+    const centerY = (-y + window.innerHeight / 2) / zoom - 60;
+    const card = await nodes.spawnSubcanvas({ x: centerX, y: centerY });
+    if (card) {
+      setTimeout(() => {
+        nodes.editCardTitle(card.id);
+      }, 50);
+    }
   });
 
   // HUD Button: Undo & Redo
@@ -135,17 +508,17 @@ async function initApp() {
     }
   }
 
-  // HUD Button: Open File
+  // HUD Button: Import .pinpoint into current canvas
   document.getElementById('btn-open')?.addEventListener('click', async () => {
     if (store.isFocusMode) {
-      showToast('当前处于专注模式，请先确认并退出专注模式后再打开文件', 'warning');
+      showToast('请先退出专注模式后再导入', 'warning');
       return;
     }
     if (document.activeElement && typeof document.activeElement.blur === 'function') {
       document.activeElement.blur();
     }
     if (store.hasUnsavedChanges()) {
-      const confirmed = confirm('当前图谱尚未保存到文件或有未保存的更改，打开新文件将覆盖当前内容。\n\n确定要继续打开吗？');
+      const confirmed = confirm('当前存在未保存的更改，导入将覆盖当前画布内容。\n\n确定要继续导入吗？');
       if (!confirmed) return;
     }
     const res = await store.openFromFile();
@@ -154,30 +527,33 @@ async function initApp() {
       canvas.applyTransform();
       nodes.render();
       wires.render();
+      renderCanvasNavigation();
     }
   });
 
-  // HUD Button: Save File (Ctrl+S or click)
+  // HUD Button: Export current canvas as .pinpoint
+  document.getElementById('btn-export')?.addEventListener('click', async () => {
+    await store.exportCanvasToFile(store.activeCanvasId);
+  });
+
+  // HUD Button: Save (Ctrl+S or click)
   document.getElementById('btn-save')?.addEventListener('click', async () => {
-    const res = await store.saveToFile();
-    if (res?.success) {
-      updateStatus(`已保存: ${res.fileName}`);
-      setTimeout(() => updateStatus(store.fileName || ''), 2500);
-    }
+    await sync.saveAllToBackend({ manual: true });
   });
 
-  // HUD Button: Reset Canvas
+  // HUD Button: Reset Current Canvas
   document.getElementById('btn-reset')?.addEventListener('click', () => {
     if (store.isFocusMode) {
-      showToast('当前处于专注模式，请先确认并退出专注模式后再重置画布', 'warning');
+      showToast('请先退出专注模式后再重置', 'warning');
       return;
     }
-    if (confirm('确定要清空画布并重置图谱吗？')) {
+    if (confirm('确定要清空并重置当前画布吗？')) {
       store.reset();
       updateStatus('');
       canvas.applyTransform();
       nodes.render();
       wires.render();
+      renderCanvasNavigation();
     }
   });
 
@@ -199,33 +575,50 @@ async function initApp() {
     if (event.type === 'TOAST') {
       showToast(event.message, event.variant);
       return;
+    } else if (event.type === 'DIRTY_CHANGED') {
+      if (isCanvasesDrawerOpen()) {
+        renderCanvasTreeDrawer();
+      }
+      return;
+    } else if (event.type === 'CANVAS_TREE_UPDATED') {
+      renderCanvasNavigation();
+      return;
+    } else if (event.type === 'CANVAS_SWITCHED') {
+      nodes.clearSelection();
+      nodes.hideAllMenus();
+      canvas.applyTransform();
+      nodes.render();
+      wires.render();
+      nodes.updateAlignmentBar();
+      minimap.checkAndHealViewport();
+      minimap.requestRender();
+      renderCanvasNavigation();
+      return;
     } else if (event.type === 'FOCUS_MODE_ENTERED' || event.type === 'FOCUS_MODE_EXITED' || event.type === 'FOCUS_MODE_CANCELLED') {
       nodes.updateFocusModeUI();
       minimap.requestRender();
       return;
     } else if (event.type === 'FILE_OPENED') {
-      updateStatus(store.fileName);
+      updateStatus(event.fileName || '');
       nodes.filterSelectionAfterRestore();
       canvas.applyTransform();
       nodes.render();
       wires.render();
-    } else if (event.type === 'FILE_SAVED') {
-      updateStatus(`已保存: ${store.fileName}`);
-      setTimeout(() => updateStatus(store.fileName || ''), 2500);
-    } else if (event.type === 'HANDLE_RESTORED') {
-      updateStatus(store.fileName);
+      renderCanvasNavigation();
     } else if (event.type === 'STATE_RESET') {
       updateStatus('');
       nodes.filterSelectionAfterRestore();
       canvas.applyTransform();
       nodes.render();
       wires.render();
+      renderCanvasNavigation();
     } else if (event.type === 'STATE_RESTORED') {
       nodes.filterSelectionAfterRestore();
       canvas.applyTransform();
       nodes.render();
       wires.render();
       nodes.updateAlignmentBar();
+      applyToastSettings();
       if (store.isFocusMode) nodes.updateFocusModeUI();
     } else if (event.type === 'SETTINGS_CHANGED') {
       settings.syncUI();
@@ -233,6 +626,12 @@ async function initApp() {
       nodes.updateContextMenuToggles();
       minimap.applySettings();
       library.applySettings();
+      applyToastSettings();
+      if (canvasesDrawerEl) {
+        const libPos = store.getLibrarySettings()?.position === 'right' ? 'right' : 'left';
+        canvasesDrawerEl.classList.remove('pos-left', 'pos-right');
+        canvasesDrawerEl.classList.add(`pos-${libPos}`);
+      }
     } else if (event.type === 'REMOTE_SYNCED') {
       if (event.sourceEvent === 'VIEWPORT_CHANGED') {
         canvas.applyTransform();
@@ -242,6 +641,7 @@ async function initApp() {
         nodes.updateContextMenuToggles();
         minimap.applySettings();
         library.applySettings();
+        applyToastSettings();
       } else {
         nodes.filterSelectionAfterRestore();
         canvas.applyTransform();
@@ -254,6 +654,8 @@ async function initApp() {
         minimap.applySettings();
         minimap.requestRender();
         library.applySettings();
+        applyToastSettings();
+        renderCanvasNavigation();
       }
     } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED' || event.type?.startsWith('GROUP_') || event.type?.startsWith('CARD_')) {
       nodes.render();
@@ -264,21 +666,23 @@ async function initApp() {
   });
 
   // Initial render
+  canvas.applyTransform();
   nodes.render();
   wires.render();
   updateUndoRedoButtons();
+  applyToastSettings();
+  renderCanvasNavigation();
   sync.init();
+
   document.fonts?.ready?.then(() => {
     if (!store.isFocusMode) {
       wires.render();
     }
   });
-  await store.restoreFileHandle();
-  if (store.fileName) updateStatus(store.fileName);
 
   let isBypassingUnloadCheck = false;
 
-  // Intercept Ctrl+R and F5 reload
+  // Intercept Ctrl+R and F5 reload when unsaved changes exist
   window.addEventListener('keydown', (e) => {
     const isReload = e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r');
     if (isReload) {
@@ -287,7 +691,7 @@ async function initApp() {
       }
       if (store.hasUnsavedChanges()) {
         e.preventDefault();
-        if (confirm('当前图谱尚未保存到文件或有未保存的更改，重新加载将丢失未保存的内容。\n\n确定要重新加载吗？')) {
+        if (confirm('当前有未保存的更改，重新加载将丢失未保存的内容。\n\n确定要重新加载吗？')) {
           isBypassingUnloadCheck = true;
           window.location.reload();
         }
@@ -295,7 +699,6 @@ async function initApp() {
     }
   });
 
-  // Warn before closing or navigating away if there are unsaved changes
   window.addEventListener('beforeunload', (e) => {
     if (isBypassingUnloadCheck) return;
     if (document.activeElement && typeof document.activeElement.blur === 'function') {

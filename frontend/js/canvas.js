@@ -122,7 +122,7 @@ class CanvasManager {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        store.saveToFile();
+        window.__sync?.saveAllToBackend?.({ manual: true });
       }
     });
 

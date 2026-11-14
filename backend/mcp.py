@@ -420,9 +420,54 @@ MCP_TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "canvasId": {"type": "string", "description": "Optional target canvas ID (default 'root')"},
                 "cardIds": {"type": "array", "items": {"type": "string"}, "description": "Card IDs to select (empty array clears selection)"},
                 "groupId": {"type": "string", "description": "Optional group ID whose member cards should be selected"},
                 "capsulePinId": {"type": ["string", "null"], "description": "Optional capsule pinId to highlight, or null to clear"},
+            },
+        },
+    },
+    {
+        "name": "list_canvases",
+        "description": "List the full hierarchy of canvases (root canvas and all nested subcanvases).",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "create_subcanvas",
+        "description": "Create a new subcanvas inside a parent canvas (default 'root'). Optionally pack existing cardIds into it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "parentCanvasId": {"type": "string", "default": "root", "description": "Parent canvas ID (default 'root')"},
+                "title": {"type": "string", "description": "Subcanvas title"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "width": {"type": "number", "minimum": 250},
+                "height": {"type": "number", "minimum": 120},
+                "headerColor": {"type": ["string", "null"]},
+                "cardIds": {"type": "array", "items": {"type": "string"}, "description": "Optional card IDs from parent canvas to move into the new subcanvas"},
+            },
+        },
+    },
+    {
+        "name": "delete_subcanvas",
+        "description": "Delete a subcanvas (and recursively all nested descendant subcanvases and its node on the parent canvas).",
+        "inputSchema": {
+            "type": "object",
+            "required": ["canvasId"],
+            "properties": {
+                "canvasId": {"type": "string", "description": "Target subcanvas ID (cannot be 'root')"},
+            },
+        },
+    },
+    {
+        "name": "export_canvas",
+        "description": "Export any canvas (and its nested subcanvases) in .pinpoint JSON format.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "canvasId": {"type": "string", "default": "root"},
+                "includeSubcanvases": {"type": "boolean", "default": True},
             },
         },
     },
@@ -439,6 +484,12 @@ MCP_RESOURCES: list[dict[str, Any]] = [
         "uri": "pinpoint://graph",
         "name": "PinPoint Full Graph State",
         "description": "Complete PinPoint workspace state including viewport and settings",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "pinpoint://canvases",
+        "name": "PinPoint Canvas Hierarchy",
+        "description": "Hierarchy tree of root canvas and all nested subcanvases",
         "mimeType": "application/json",
     },
     {
@@ -527,15 +578,36 @@ class PinPointMcpServer:
         except Exception as exc:
             return None if is_notification else self._error_resp(req_id, -32603, f"Internal error: {exc}")
 
+    def _with_canvas_qs(self, path: str, canvas_id: str | None) -> str:
+        if not canvas_id or canvas_id == "root":
+            return path
+        sep = "&" if "?" in path else "?"
+        return f"{path}{sep}canvasId={urllib.parse.quote(str(canvas_id), safe='')}"
+
     def _execute_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         status: int
         res: dict[str, Any]
+        canvas_id = args.get("canvasId")
+        clean_args = {k: v for k, v in args.items() if k != "canvasId"}
 
-        if name == "get_graph_summary":
-            status, res = self.call_rest("GET", "/graph/summary", None)
+        if name == "list_canvases":
+            status, res = self.call_rest("GET", "/canvases", None)
+        elif name == "create_subcanvas":
+            parent_id = urllib.parse.quote(str(args.get("parentCanvasId") or "root"), safe="")
+            body = {k: v for k, v in args.items() if k != "parentCanvasId"}
+            status, res = self.call_rest("POST", f"/canvases/{parent_id}/subcanvases", body)
+        elif name == "delete_subcanvas":
+            cid = urllib.parse.quote(str(args.get("canvasId", "")), safe="")
+            status, res = self.call_rest("DELETE", f"/canvases/{cid}", None)
+        elif name == "export_canvas":
+            cid = urllib.parse.quote(str(args.get("canvasId") or "root"), safe="")
+            inc = "true" if args.get("includeSubcanvases", True) else "false"
+            status, res = self.call_rest("GET", f"/canvases/{cid}/export?includeSubcanvases={inc}", None)
+        elif name == "get_graph_summary":
+            status, res = self.call_rest("GET", self._with_canvas_qs("/graph/summary", canvas_id), None)
         elif name == "get_card":
             cid = urllib.parse.quote(str(args.get("cardId", "")), safe="")
-            status, res = self.call_rest("GET", f"/cards/{cid}", None)
+            status, res = self.call_rest("GET", self._with_canvas_qs(f"/cards/{cid}", canvas_id), None)
         elif name == "search_cards":
             qs_parts = []
             if args.get("q") is not None:
@@ -543,66 +615,66 @@ class PinPointMcpServer:
             if args.get("groupId") is not None:
                 qs_parts.append("groupId=" + urllib.parse.quote(str(args["groupId"])))
             qs = ("?" + "&".join(qs_parts)) if qs_parts else ""
-            status, res = self.call_rest("GET", f"/cards{qs}", None)
+            status, res = self.call_rest("GET", self._with_canvas_qs(f"/cards{qs}", canvas_id), None)
         elif name == "create_card":
-            status, res = self.call_rest("POST", "/cards", args)
+            status, res = self.call_rest("POST", self._with_canvas_qs("/cards", canvas_id), clean_args)
         elif name == "update_card":
             cid = urllib.parse.quote(str(args.get("cardId", "")), safe="")
-            patch = {k: v for k, v in args.items() if k != "cardId"}
-            status, res = self.call_rest("PATCH", f"/cards/{cid}", patch)
+            patch = {k: v for k, v in clean_args.items() if k != "cardId"}
+            status, res = self.call_rest("PATCH", self._with_canvas_qs(f"/cards/{cid}", canvas_id), patch)
         elif name == "delete_card":
             cid = urllib.parse.quote(str(args.get("cardId", "")), safe="")
-            status, res = self.call_rest("DELETE", f"/cards/{cid}", None)
+            status, res = self.call_rest("DELETE", self._with_canvas_qs(f"/cards/{cid}", canvas_id), None)
         elif name == "batch_mutate_cards":
-            status, res = self.call_rest("POST", "/cards/batch", args)
+            status, res = self.call_rest("POST", self._with_canvas_qs("/cards/batch", canvas_id), clean_args)
         elif name == "clone_card":
             cid = urllib.parse.quote(str(args.get("cardId", "")), safe="")
-            body = {k: v for k, v in args.items() if k != "cardId"}
-            status, res = self.call_rest("POST", f"/cards/{cid}/clone", body)
+            body = {k: v for k, v in clean_args.items() if k != "cardId"}
+            status, res = self.call_rest("POST", self._with_canvas_qs(f"/cards/{cid}/clone", canvas_id), body)
         elif name == "create_capsule":
             cid = urllib.parse.quote(str(args.get("cardId", "")), safe="")
-            body = {k: v for k, v in args.items() if k != "cardId"}
-            status, res = self.call_rest("POST", f"/cards/{cid}/capsules", body)
+            body = {k: v for k, v in clean_args.items() if k != "cardId"}
+            status, res = self.call_rest("POST", self._with_canvas_qs(f"/cards/{cid}/capsules", canvas_id), body)
         elif name == "update_capsule":
             pid = urllib.parse.quote(str(args.get("pinId", "")), safe="")
-            body = {k: v for k, v in args.items() if k != "pinId"}
-            status, res = self.call_rest("PATCH", f"/capsules/{pid}", body)
+            body = {k: v for k, v in clean_args.items() if k != "pinId"}
+            status, res = self.call_rest("PATCH", self._with_canvas_qs(f"/capsules/{pid}", canvas_id), body)
         elif name == "delete_capsule":
             pid = urllib.parse.quote(str(args.get("pinId", "")), safe="")
-            status, res = self.call_rest("DELETE", f"/capsules/{pid}", None)
+            status, res = self.call_rest("DELETE", self._with_canvas_qs(f"/capsules/{pid}", canvas_id), None)
         elif name == "connect_nodes":
-            status, res = self.call_rest("POST", "/connections", args)
+            status, res = self.call_rest("POST", self._with_canvas_qs("/connections", canvas_id), clean_args)
         elif name == "update_connection":
             conn_id = urllib.parse.quote(str(args.get("connId", "")), safe="")
-            body = {k: v for k, v in args.items() if k != "connId"}
-            status, res = self.call_rest("PATCH", f"/connections/{conn_id}", body)
+            body = {k: v for k, v in clean_args.items() if k != "connId"}
+            status, res = self.call_rest("PATCH", self._with_canvas_qs(f"/connections/{conn_id}", canvas_id), body)
         elif name == "delete_connection":
             conn_id = urllib.parse.quote(str(args.get("connId", "")), safe="")
-            status, res = self.call_rest("DELETE", f"/connections/{conn_id}", None)
+            status, res = self.call_rest("DELETE", self._with_canvas_qs(f"/connections/{conn_id}", canvas_id), None)
         elif name == "create_group":
-            status, res = self.call_rest("POST", "/groups", args)
+            status, res = self.call_rest("POST", self._with_canvas_qs("/groups", canvas_id), clean_args)
         elif name == "update_group":
             gid = urllib.parse.quote(str(args.get("groupId", "")), safe="")
-            body = {k: v for k, v in args.items() if k != "groupId"}
-            status, res = self.call_rest("PATCH", f"/groups/{gid}", body)
+            body = {k: v for k, v in clean_args.items() if k != "groupId"}
+            status, res = self.call_rest("PATCH", self._with_canvas_qs(f"/groups/{gid}", canvas_id), body)
         elif name == "delete_group":
             gid = urllib.parse.quote(str(args.get("groupId", "")), safe="")
-            status, res = self.call_rest("DELETE", f"/groups/{gid}", None)
+            status, res = self.call_rest("DELETE", self._with_canvas_qs(f"/groups/{gid}", canvas_id), None)
         elif name == "manage_group_members":
             gid = urllib.parse.quote(str(args.get("groupId", "")), safe="")
             cid = str(args.get("cardId", ""))
             action = args.get("action")
             if action == "add":
-                status, res = self.call_rest("POST", f"/groups/{gid}/members", {"cardId": cid})
+                status, res = self.call_rest("POST", self._with_canvas_qs(f"/groups/{gid}/members", canvas_id), {"cardId": cid})
             elif action == "remove":
                 cid_q = urllib.parse.quote(cid, safe="")
-                status, res = self.call_rest("DELETE", f"/groups/{gid}/members/{cid_q}", None)
+                status, res = self.call_rest("DELETE", self._with_canvas_qs(f"/groups/{gid}/members/{cid_q}", canvas_id), None)
             else:
                 return self._tool_error("INVALID_ACTION", "action must be 'add' or 'remove'.")
         elif name == "align_cards":
-            status, res = self.call_rest("POST", "/layout/align", args)
+            status, res = self.call_rest("POST", self._with_canvas_qs("/layout/align", canvas_id), clean_args)
         elif name == "auto_layout":
-            status, res = self.call_rest("POST", "/layout/auto", args)
+            status, res = self.call_rest("POST", self._with_canvas_qs("/layout/auto", canvas_id), clean_args)
         elif name == "focus_viewport":
             if args.get("fitAll"):
                 body = {}
@@ -610,19 +682,19 @@ class PinPointMcpServer:
                     body["viewportWidth"] = args["viewportWidth"]
                 if "viewportHeight" in args:
                     body["viewportHeight"] = args["viewportHeight"]
-                status, res = self.call_rest("POST", "/viewport/fit", body)
+                status, res = self.call_rest("POST", self._with_canvas_qs("/viewport/fit", canvas_id), body)
             else:
-                body = {k: v for k, v in args.items() if k != "fitAll"}
-                status, res = self.call_rest("POST", "/viewport/focus", body)
+                body = {k: v for k, v in clean_args.items() if k != "fitAll"}
+                status, res = self.call_rest("POST", self._with_canvas_qs("/viewport/focus", canvas_id), body)
         elif name == "undo_redo":
             action = args.get("action")
             if action not in ("undo", "redo"):
                 return self._tool_error("INVALID_ACTION", "action must be 'undo' or 'redo'.")
-            status, res = self.call_rest("POST", f"/history/{action}", {})
+            status, res = self.call_rest("POST", self._with_canvas_qs(f"/history/{action}", canvas_id), {})
         elif name == "save_graph":
-            status, res = self.call_rest("POST", "/graph/save", args)
+            status, res = self.call_rest("POST", self._with_canvas_qs("/graph/save", canvas_id), clean_args)
         elif name == "get_selection":
-            status, res = self.call_rest("GET", "/selection", None)
+            status, res = self.call_rest("GET", self._with_canvas_qs("/selection", canvas_id), None)
         elif name == "set_selection":
             body = dict(args)
             body["strict"] = True
@@ -652,6 +724,9 @@ class PinPointMcpServer:
             payload = res.get("data") if status < 400 and res.get("ok") else res
         elif uri == "pinpoint://graph":
             status, res = self.call_rest("GET", "/graph", None)
+            payload = res.get("data") if status < 400 and res.get("ok") else res
+        elif uri == "pinpoint://canvases":
+            status, res = self.call_rest("GET", "/canvases", None)
             payload = res.get("data") if status < 400 and res.get("ok") else res
         elif uri == "pinpoint://selection":
             status, res = self.call_rest("GET", "/selection", None)

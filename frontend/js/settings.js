@@ -87,6 +87,12 @@ class SettingsManager {
     // Library settings listeners
     this.bindLibraryListeners();
 
+    // Save & Storage settings listeners
+    this.bindSaveListeners();
+
+    // Toast Notification settings listeners
+    this.bindToastListeners();
+
     // Nav tabs switching
     this.overlayEl.querySelectorAll('.settings-nav-item').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -101,6 +107,8 @@ class SettingsManager {
     this.syncAssistanceToggles();
     this.syncMinimapSettings();
     this.syncLibrarySettings();
+    this.syncSaveSettings();
+    this.syncToastSettings();
   }
 
   switchTab(tabId) {
@@ -123,6 +131,10 @@ class SettingsManager {
       this.syncMinimapSettings();
     } else if (tabId === 'library') {
       this.syncLibrarySettings();
+    } else if (tabId === 'save') {
+      this.syncSaveSettings();
+    } else if (tabId === 'toast') {
+      this.syncToastSettings();
     }
   }
 
@@ -137,6 +149,8 @@ class SettingsManager {
     this.syncAssistanceToggles();
     this.syncMinimapSettings();
     this.syncLibrarySettings();
+    this.syncSaveSettings();
+    this.syncToastSettings();
     this.overlayEl.classList.add('is-open');
   }
 
@@ -159,6 +173,8 @@ class SettingsManager {
       this.syncAssistanceToggles();
       this.syncMinimapSettings();
       this.syncLibrarySettings();
+      this.syncSaveSettings();
+      this.syncToastSettings();
     }
   }
 
@@ -318,6 +334,142 @@ class SettingsManager {
     this.overlayEl.querySelectorAll('.library-layout-card').forEach(card => {
       card.classList.toggle('is-active', card.getAttribute('data-lib-layout') === lib.layout);
     });
+  }
+
+  bindSaveListeners() {
+    if (!this.overlayEl) return;
+    const panel = this.overlayEl.querySelector('#tab-panel-save');
+    if (!panel) return;
+
+    panel.addEventListener('click', (e) => {
+      const modeCard = e.target.closest('.save-mode-card');
+      if (modeCard) {
+        e.preventDefault();
+        const mode = modeCard.getAttribute('data-save-mode');
+        if (mode === 'auto' || mode === 'manual') {
+          store.setSaveSettings({ mode });
+          this.syncSaveSettings();
+        }
+        return;
+      }
+
+      const presetBtn = e.target.closest('.save-interval-preset');
+      if (presetBtn) {
+        e.preventDefault();
+        const sec = parseInt(presetBtn.getAttribute('data-sec'), 10);
+        if (sec) {
+          store.setSaveSettings({ intervalSec: sec });
+          this.syncSaveSettings();
+        }
+        return;
+      }
+    });
+
+    const slider = panel.querySelector('#save-interval-slider');
+    slider?.addEventListener('input', (e) => {
+      const sec = parseInt(e.target.value, 10);
+      if (sec) {
+        store.setSaveSettings({ intervalSec: sec });
+        this.syncSaveSettings();
+      }
+    });
+
+    const btnSaveNow = panel.querySelector('#btn-settings-save-now');
+    btnSaveNow?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await window.__sync?.saveAllToBackend?.({ manual: true });
+      this.syncSaveSettings();
+    });
+  }
+
+  syncSaveSettings() {
+    if (!this.overlayEl) return;
+    const sv = store.getSaveSettings();
+
+    this.overlayEl.querySelectorAll('.save-mode-card').forEach(card => {
+      card.classList.toggle('is-active', card.getAttribute('data-save-mode') === sv.mode);
+    });
+
+    const intervalSection = this.overlayEl.querySelector('#settings-save-interval-section');
+    if (intervalSection) {
+      intervalSection.style.opacity = sv.mode === 'auto' ? '1' : '0.45';
+      intervalSection.style.pointerEvents = sv.mode === 'auto' ? 'auto' : 'none';
+    }
+
+    this.overlayEl.querySelectorAll('.save-interval-preset').forEach(btn => {
+      const sec = parseInt(btn.getAttribute('data-sec'), 10);
+      btn.classList.toggle('is-active', sec === sv.intervalSec);
+    });
+
+    const slider = this.overlayEl.querySelector('#save-interval-slider');
+    const valEl = this.overlayEl.querySelector('#save-interval-val');
+    if (slider) slider.value = sv.intervalSec;
+    if (valEl) valEl.textContent = `${sv.intervalSec} 秒`;
+  }
+
+  bindToastListeners() {
+    if (!this.overlayEl) return;
+    const panel = this.overlayEl.querySelector('#tab-panel-toast');
+    if (!panel) return;
+
+    panel.addEventListener('click', (e) => {
+      const posCard = e.target.closest('.toast-pos-card');
+      if (posCard) {
+        e.preventDefault();
+        const pos = posCard.getAttribute('data-toast-pos');
+        if (pos) {
+          store.setToastSettings({ position: pos });
+          this.syncToastSettings();
+        }
+        return;
+      }
+
+      const presetBtn = e.target.closest('.toast-duration-preset');
+      if (presetBtn) {
+        e.preventDefault();
+        const sec = parseInt(presetBtn.getAttribute('data-sec'), 10);
+        if (sec) {
+          store.setToastSettings({ durationSec: sec });
+          this.syncToastSettings();
+        }
+        return;
+      }
+    });
+
+    const slider = panel.querySelector('#toast-duration-slider');
+    slider?.addEventListener('input', (e) => {
+      const sec = parseInt(e.target.value, 10);
+      if (sec) {
+        store.setToastSettings({ durationSec: sec });
+        this.syncToastSettings();
+      }
+    });
+
+    const btnTest = panel.querySelector('#btn-settings-test-toast');
+    btnTest?.addEventListener('click', (e) => {
+      e.preventDefault();
+      const ts = store.getToastSettings();
+      store.emitToast(`通知预览（停留 ${ts.durationSec} 秒）`, 'info');
+    });
+  }
+
+  syncToastSettings() {
+    if (!this.overlayEl) return;
+    const ts = store.getToastSettings();
+
+    this.overlayEl.querySelectorAll('.toast-pos-card').forEach(card => {
+      card.classList.toggle('is-active', card.getAttribute('data-toast-pos') === ts.position);
+    });
+
+    this.overlayEl.querySelectorAll('.toast-duration-preset').forEach(btn => {
+      const sec = parseInt(btn.getAttribute('data-sec'), 10);
+      btn.classList.toggle('is-active', sec === ts.durationSec);
+    });
+
+    const slider = this.overlayEl.querySelector('#toast-duration-slider');
+    const valEl = this.overlayEl.querySelector('#toast-duration-val');
+    if (slider) slider.value = Math.min(15, Math.max(2, ts.durationSec));
+    if (valEl) valEl.textContent = `${ts.durationSec} 秒`;
   }
 
   syncAssistanceToggles() {

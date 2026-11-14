@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PINPOINT_HOST=0.0.0.0 \
     PINPOINT_PORT=5173 \
     PINPOINT_NO_BROWSER=1 \
+    PINPOINT_DB=/app/data/pinpoint.db \
     PINPOINT_WORKSPACE=/app/data/workspace.pinpoint
 
 WORKDIR /app

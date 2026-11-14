@@ -17,15 +17,16 @@
 
   <!-- Apple HIG 极简浮动工具栏 -->
   <header class="hud-bar">
-    <div class="hud-title">
-      <span class="hud-title-dot"></span>
-      <span>PinPoint</span>
-    </div>
-    <span class="hud-file-status" id="hud-file-status"></span>
-    <div class="hud-divider"></div>
     <div class="hud-actions">
+      <button class="hud-btn hud-normal-only" id="btn-canvases" data-tooltip="画布">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"></rect><rect x="7.5" y="7.5" width="4" height="4" rx="1"></rect><rect x="12.5" y="12.5" width="4" height="4" rx="1"></rect></svg>
+      </button>
+      <div class="hud-divider hud-normal-only"></div>
       <button class="hud-btn" id="btn-add-node" data-tooltip="新建节点">
         <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      </button>
+      <button class="hud-btn hud-normal-only" id="btn-add-subcanvas" data-tooltip="新建子画布">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
       </button>
       <button class="hud-btn" id="btn-undo" data-tooltip="撤销 (Ctrl+Z)">
         <svg viewBox="0 0 24 24"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
@@ -40,10 +41,13 @@
         <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
       </button>
       <div class="hud-divider hud-normal-only"></div>
-      <button class="hud-btn hud-normal-only" id="btn-open" data-tooltip="打开文件">
+      <button class="hud-btn hud-normal-only" id="btn-open" data-tooltip="导入 .pinpoint">
         <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
       </button>
-      <button class="hud-btn" id="btn-save" data-tooltip="保存图谱 (Ctrl+S)">
+      <button class="hud-btn hud-normal-only" id="btn-export" data-tooltip="导出画布 (.pinpoint)">
+        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      </button>
+      <button class="hud-btn" id="btn-save" data-tooltip="保存 (Ctrl+S)">
         <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
       </button>
       <button class="hud-btn hud-normal-only" id="btn-reset" data-tooltip="重置画布">
@@ -64,6 +68,43 @@
       </button>
     </div>
   </header>
+
+  <!-- 子画布面包屑导航条 -->
+  <nav id="canvas-breadcrumb-bar" class="canvas-breadcrumb-bar" style="display: none;" aria-label="画布导航">
+    <button type="button" class="breadcrumb-back-btn" id="btn-canvas-back" title="返回上一级">
+      <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.2" fill="none">
+        <polyline points="15 18 9 12 15 6"></polyline>
+      </svg>
+    </button>
+    <div class="breadcrumb-trail" id="canvas-breadcrumb-trail"></div>
+  </nav>
+
+  <!-- 画布层级抽屉面板（风格与库抽屉保持一致） -->
+  <aside id="canvases-drawer" class="library-drawer canvases-drawer pos-left" aria-label="画布">
+    <div class="library-header">
+      <div class="library-title-row">
+        <svg class="library-header-icon" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="18" height="18" rx="4"></rect>
+          <rect x="7.5" y="7.5" width="4" height="4" rx="1"></rect>
+          <rect x="12.5" y="12.5" width="4" height="4" rx="1"></rect>
+        </svg>
+        <span class="library-title">画布</span>
+        <span class="library-count-badge" id="canvases-count-badge">1</span>
+      </div>
+      <div class="library-header-actions">
+        <button type="button" class="library-header-btn library-close-btn" id="btn-close-canvases" data-tooltip="收起 (Esc)" aria-label="收起画布">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+    </div>
+    <div class="library-toolbar">
+      <div class="library-search-box">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="search" id="canvases-search-input" class="library-search-input" placeholder="搜索画布..." />
+      </div>
+    </div>
+    <div class="canvases-tree-list" id="canvas-tree-list"></div>
+  </aside>
 
   <!-- 多选卡片对齐工具栏 -->
   <div id="alignment-bar" class="hud-bar alignment-bar" style="display: none;">
@@ -96,6 +137,9 @@
     <div class="hud-divider"></div>
     <button class="hud-btn" id="btn-create-group" data-tooltip="创建组 (Ctrl+G)">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>
+    </button>
+    <button class="hud-btn" id="btn-pack-subcanvas" data-tooltip="打包为子画布">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"></rect><rect x="7" y="8" width="5" height="4" rx="1"></rect><rect x="13" y="12" width="4" height="4" rx="1"></rect></svg>
     </button>
     <button class="hud-btn" id="btn-save-to-library" data-tooltip="保存到库 (Shift+L)">
       <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path><line x1="12" y1="8" x2="12" y2="14"></line><line x1="9" y1="11" x2="15" y2="11"></line></svg>
@@ -156,8 +200,22 @@
     </button>
   </div>
 
-  <!-- 画板右键设置面板（对齐模式 / 吸附模式） -->
+  <!-- 画板右键设置面板（新建 / 对齐模式 / 吸附模式） -->
   <div id="canvas-context-menu" class="canvas-context-menu" style="display: none;">
+    <button class="context-menu-item" id="menu-new-node" title="在此处新建普通节点">
+      <div class="context-menu-label">
+        <svg class="context-menu-icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        <span>新建节点</span>
+      </div>
+      <span class="context-menu-shortcut">双击</span>
+    </button>
+    <button class="context-menu-item" id="menu-new-subcanvas" title="在此处创建一个可无限嵌套的子画布">
+      <div class="context-menu-label">
+        <svg class="context-menu-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"></rect><rect x="7" y="8" width="5" height="4" rx="1"></rect><rect x="13" y="12" width="4" height="4" rx="1"></rect></svg>
+        <span>新建子画布</span>
+      </div>
+    </button>
+    <div class="context-menu-divider"></div>
     <div class="context-menu-header">
       <span>画板辅助</span>
     </div>
@@ -265,6 +323,46 @@
     </button>
   </div>
 
+  <!-- 子画布卡片右键菜单（进入 / 导出 / 重命名 / 改色 / 删除） -->
+  <div id="subcanvas-context-menu" class="canvas-context-menu" style="display: none;">
+    <div class="context-menu-header">
+      <span>子画布操作</span>
+    </div>
+    <div class="context-menu-divider"></div>
+    <button class="context-menu-item" id="subcanvas-menu-enter" title="进入此子画布">
+      <div class="context-menu-label">
+        <svg class="context-menu-icon" viewBox="0 0 24 24"><path d="M7 17L17 7"></path><polyline points="8 7 17 7 17 16"></polyline></svg>
+        <span>进入子画布</span>
+      </div>
+      <span class="context-menu-shortcut">双击</span>
+    </button>
+    <button class="context-menu-item" id="subcanvas-menu-export" title="导出此子画布为 .pinpoint 文件">
+      <div class="context-menu-label">
+        <svg class="context-menu-icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        <span>导出 .pinpoint</span>
+      </div>
+    </button>
+    <button class="context-menu-item" id="subcanvas-menu-rename" title="重命名此子画布">
+      <div class="context-menu-label">
+        <svg class="context-menu-icon" viewBox="0 0 24 24"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+        <span>重命名</span>
+      </div>
+    </button>
+    <button class="context-menu-item" id="subcanvas-menu-color" title="更改子画布主题颜色">
+      <div class="context-menu-label">
+        <svg class="context-menu-icon" viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"></circle><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"></circle><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"></path></svg>
+        <span>更改颜色</span>
+      </div>
+    </button>
+    <div class="context-menu-divider"></div>
+    <button class="context-menu-item context-menu-item-danger" id="subcanvas-menu-delete" title="删除此子画布及其内部所有嵌套画布">
+      <div class="context-menu-label">
+        <svg class="context-menu-icon" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+        <span>删除子画布</span>
+      </div>
+    </button>
+  </div>
+
   <!-- 偏好设置模态框 (Ctrl+, 唤出) -->
   <div id="settings-overlay" class="settings-overlay">
     <div class="settings-modal" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -318,12 +416,27 @@
               </svg>
               <span>库</span>
             </button>
+            <button class="settings-nav-item" data-tab="save">
+              <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                <polyline points="7 3 7 8 15 8"></polyline>
+              </svg>
+              <span>保存</span>
+            </button>
+            <button class="settings-nav-item" data-tab="toast">
+              <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+              <span>通知</span>
+            </button>
             <button class="settings-nav-item" data-tab="shortcuts">
               <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
                 <rect x="2" y="4" width="20" height="16" rx="2"></rect>
                 <path d="M6 8h.001M10 8h.001M14 8h.001M18 8h.001M6 12h.001M10 12h.001M14 12h.001M18 12h.001M7 16h10"></path>
               </svg>
-              <span>快捷键速查</span>
+              <span>快捷键</span>
             </button>
           </nav>
         </aside>
@@ -333,45 +446,40 @@
           <!-- 常用配色方案 -->
           <div class="settings-tab-panel is-active" id="tab-panel-palette">
             <div class="settings-section-header">
-              <div>
-                <h3 class="settings-section-title">常用配色与槽位</h3>
-                <p class="settings-section-desc">自定义节点头部及划选胶囊的预设颜色与槽位数量（2 ~ 10 个）</p>
+              <div class="settings-title-with-info">
+                <h3 class="settings-section-title">常用配色</h3>
+                <span class="info-hint" data-tooltip="自定义节点与胶囊的预设颜色及槽位数量 (2~10)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
               </div>
-              <!-- 槽位数量步进器 -->
               <div class="palette-slot-stepper">
-                <span class="stepper-label">槽位数</span>
-                <button class="stepper-btn" id="btn-slot-dec" title="减少一个配色槽位">−</button>
+                <span class="stepper-label">槽位</span>
+                <button class="stepper-btn" id="btn-slot-dec" title="减少槽位">−</button>
                 <span class="stepper-count" id="slot-count-val">5</span>
-                <button class="stepper-btn" id="btn-slot-inc" title="增加一个配色槽位">+</button>
+                <button class="stepper-btn" id="btn-slot-inc" title="增加槽位">+</button>
               </div>
             </div>
 
-            <!-- 配色槽位容器 -->
-            <div class="palette-slots-container" id="palette-slots-container">
-              <!-- 动态生成各个槽位 -->
-            </div>
+            <div class="palette-slots-container" id="palette-slots-container"></div>
 
             <div class="palette-actions-row">
               <button class="settings-action-btn" id="btn-add-slot">
                 <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                <span>添加槽位</span>
+                <span>添加</span>
               </button>
               <button class="settings-action-btn secondary" id="btn-reset-palette">
                 <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
-                <span>恢复默认配色</span>
+                <span>恢复默认</span>
               </button>
             </div>
 
-            <!-- 实时效果预览 -->
             <div class="palette-preview-box">
-              <span class="preview-label">效果预览</span>
+              <span class="preview-label">预览</span>
               <div class="preview-card-mockup" id="preview-card-mockup">
                 <div class="preview-header-mockup" id="preview-header-mockup">
                   <span class="preview-dot"></span>
-                  <span>核心节点 (Slot 1)</span>
+                  <span>节点标题</span>
                 </div>
                 <div class="preview-body-mockup">
-                  包含划选词汇 <span class="preview-capsule-mockup" id="preview-capsule-mockup"><i class="capsule-pin"></i>衍生概念 (Slot 2)</span> 的效果。
+                  划选文本 <span class="preview-capsule-mockup" id="preview-capsule-mockup"><i class="capsule-pin"></i>胶囊</span> 效果。
                 </div>
               </div>
             </div>
@@ -380,54 +488,41 @@
           <!-- 画板辅助开关 -->
           <div class="settings-tab-panel" id="tab-panel-canvas">
             <div class="settings-section-header">
-              <div>
-                <h3 class="settings-section-title">画板辅助与交互</h3>
-                <p class="settings-section-desc">配置拖拽、磁吸对齐以及背景网格吸附行为</p>
-              </div>
+              <h3 class="settings-section-title">画板辅助</h3>
             </div>
 
             <div class="settings-card-group">
               <div class="settings-row">
-                <div class="settings-row-info">
+                <div class="settings-row-info settings-title-with-info">
                   <span class="settings-row-label">对齐模式</span>
-                  <span class="settings-row-sub">拖动节点时默认磁吸对齐其他节点；按住 Ctrl 键临时取消对齐</span>
+                  <span class="info-hint" data-tooltip="拖拽时磁吸对齐其他节点，按住 Ctrl 临时关闭"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
                 </div>
                 <div class="toggle-pill" id="settings-toggle-align">
                   <div class="toggle-knob"></div>
                 </div>
               </div>
               <div class="settings-row">
-                <div class="settings-row-info">
-                  <span class="settings-row-label">吸附模式</span>
-                  <span class="settings-row-sub">拖动节点与新建节点时，自动吸附到 24px 背景网格点</span>
+                <div class="settings-row-info settings-title-with-info">
+                  <span class="settings-row-label">网格吸附</span>
+                  <span class="info-hint" data-tooltip="移动和新建节点时自动对齐背景网格"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
                 </div>
                 <div class="toggle-pill" id="settings-toggle-gridsnap">
                   <div class="toggle-knob"></div>
                 </div>
               </div>
             </div>
-
-            <div class="settings-tip-box">
-              <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-              <span>在画布任意空白区域点击鼠标右键，可快速呼出菜单切换对齐模式与吸附模式。</span>
-            </div>
           </div>
 
           <!-- 全局小地图配置 -->
           <div class="settings-tab-panel" id="tab-panel-minimap">
             <div class="settings-section-header">
-              <div>
-                <h3 class="settings-section-title">全局小地图</h3>
-                <p class="settings-section-desc">配置画板缩略概览小地图，随时掌握图谱整体分布与视口导航</p>
-              </div>
+              <h3 class="settings-section-title">小地图</h3>
             </div>
 
-            <!-- 开启/关闭 开关 -->
             <div class="settings-card-group">
               <div class="settings-row" id="row-toggle-minimap" style="cursor: pointer;">
                 <div class="settings-row-info">
-                  <span class="settings-row-label">启用小地图</span>
-                  <span class="settings-row-sub">在画布角落浮动显示全局小地图；支持拖动视口方框与单击快速定位</span>
+                  <span class="settings-row-label">显示小地图</span>
                 </div>
                 <div class="toggle-pill" id="settings-toggle-minimap">
                   <div class="toggle-knob"></div>
@@ -435,47 +530,39 @@
               </div>
             </div>
 
-            <!-- 位置选择 (4个角落) -->
             <div class="settings-section">
               <div class="settings-section-header">
-                <div>
-                  <h4 class="settings-section-title" style="font-size: 12px;">停靠位置</h4>
-                  <p class="settings-section-desc">选择小地图固定停靠在画布视口的哪个角落</p>
-                </div>
+                <h4 class="settings-section-title" style="font-size: 12px;">停靠位置</h4>
               </div>
               <div class="minimap-pos-grid">
                 <button class="minimap-pos-card" data-pos="top-left" type="button">
                   <div class="minimap-pos-mockup top-left"><span class="mockup-dot"></span></div>
-                  <span>左上角</span>
+                  <span>左上</span>
                 </button>
                 <button class="minimap-pos-card" data-pos="top-right" type="button">
                   <div class="minimap-pos-mockup top-right"><span class="mockup-dot"></span></div>
-                  <span>右上角</span>
+                  <span>右上</span>
                 </button>
                 <button class="minimap-pos-card" data-pos="bottom-left" type="button">
                   <div class="minimap-pos-mockup bottom-left"><span class="mockup-dot"></span></div>
-                  <span>左下角</span>
+                  <span>左下</span>
                 </button>
                 <button class="minimap-pos-card is-active" data-pos="bottom-right" type="button">
                   <div class="minimap-pos-mockup bottom-right"><span class="mockup-dot"></span></div>
-                  <span>右下角 (默认)</span>
+                  <span>右下</span>
                 </button>
               </div>
             </div>
 
-            <!-- 尺寸定义 -->
             <div class="settings-section">
               <div class="settings-section-header">
-                <div>
-                  <h4 class="settings-section-title" style="font-size: 12px;">尺寸大小</h4>
-                  <p class="settings-section-desc">自定义小地图宽度（140px ~ 320px），高度自适应黄金视野比例</p>
-                </div>
+                <h4 class="settings-section-title" style="font-size: 12px;">尺寸</h4>
               </div>
               <div class="minimap-size-controls">
                 <div class="minimap-size-presets">
-                  <button class="settings-size-btn" data-size="160" type="button">小 (160px)</button>
-                  <button class="settings-size-btn is-active" data-size="220" type="button">中 (220px)</button>
-                  <button class="settings-size-btn" data-size="280" type="button">大 (280px)</button>
+                  <button class="settings-size-btn" data-size="160" type="button">小</button>
+                  <button class="settings-size-btn is-active" data-size="220" type="button">中</button>
+                  <button class="settings-size-btn" data-size="280" type="button">大</button>
                 </div>
                 <div class="minimap-slider-row">
                   <input type="range" class="settings-slider" id="minimap-size-slider" min="140" max="320" step="10" value="220">
@@ -483,79 +570,179 @@
                 </div>
               </div>
             </div>
-
-            <div class="settings-tip-box">
-              <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-              <span>在画布任意空白区域点击鼠标右键，也可快速呼出菜单随时开启或关闭小地图。</span>
-            </div>
           </div>
 
           <!-- 库配置 -->
           <div class="settings-tab-panel" id="tab-panel-library">
             <div class="settings-section-header">
-              <div>
-                <h3 class="settings-section-title">库设置</h3>
-                <p class="settings-section-desc">自定义库抽屉的停靠位置与条目排列布局</p>
-              </div>
+              <h3 class="settings-section-title">库</h3>
             </div>
 
-            <!-- 停靠位置 (左侧 / 右侧) -->
             <div class="settings-section">
               <div class="settings-section-header">
-                <div>
-                  <h4 class="settings-section-title" style="font-size: 12px;">停靠位置</h4>
-                  <p class="settings-section-desc">选择库抽屉贴靠在画布的左侧或右侧</p>
-                </div>
+                <h4 class="settings-section-title" style="font-size: 12px;">停靠位置</h4>
               </div>
               <div class="minimap-pos-grid">
                 <button class="minimap-pos-card library-pos-card is-active" data-lib-pos="left" type="button">
                   <div class="library-pos-mockup left"><span class="mockup-bar"></span></div>
-                  <span>左侧停靠 (默认)</span>
+                  <span>左侧</span>
                 </button>
                 <button class="minimap-pos-card library-pos-card" data-lib-pos="right" type="button">
                   <div class="library-pos-mockup right"><span class="mockup-bar"></span></div>
-                  <span>右侧停靠</span>
+                  <span>右侧</span>
                 </button>
               </div>
             </div>
 
-            <!-- 布局模式 (网格 / 单列) -->
             <div class="settings-section">
               <div class="settings-section-header">
-                <div>
-                  <h4 class="settings-section-title" style="font-size: 12px;">排列布局</h4>
-                  <p class="settings-section-desc">切换从左到右的多列图标网格或紧凑单列视图</p>
-                </div>
+                <h4 class="settings-section-title" style="font-size: 12px;">视图布局</h4>
               </div>
               <div class="minimap-pos-grid">
                 <button class="minimap-pos-card library-layout-card is-active" data-lib-layout="grid" type="button">
                   <div class="library-layout-mockup grid">
                     <span></span><span></span><span></span><span></span>
                   </div>
-                  <span>网格视图 (默认)</span>
+                  <span>网格</span>
                 </button>
                 <button class="minimap-pos-card library-layout-card" data-lib-layout="list" type="button">
                   <div class="library-layout-mockup list">
                     <span></span><span></span><span></span>
                   </div>
-                  <span>单列视图</span>
+                  <span>单列</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 保存配置 -->
+          <div class="settings-tab-panel" id="tab-panel-save">
+            <div class="settings-section-header">
+              <div class="settings-title-with-info">
+                <h3 class="settings-section-title">保存</h3>
+                <span class="info-hint" data-tooltip="保存按钮右上圆点：无圆点 = 已保存，橙点 = 未保存，红点 = 连接断开"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <h4 class="settings-section-title" style="font-size: 12px;">保存方式</h4>
+              </div>
+              <div class="minimap-pos-grid">
+                <button class="minimap-pos-card save-mode-card is-active" data-save-mode="auto" type="button">
+                  <div class="save-mode-badge auto">自动</div>
+                  <span>自动保存</span>
+                </button>
+                <button class="minimap-pos-card save-mode-card" data-save-mode="manual" type="button">
+                  <div class="save-mode-badge manual">手动</div>
+                  <span>手动保存</span>
                 </button>
               </div>
             </div>
 
-            <div class="settings-tip-box">
-              <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-              <span>也可以直接在库抽屉右上角切换「网格 / 单列」布局，并单击条目下方的名称直接重命名。</span>
+            <div class="settings-section" id="settings-save-interval-section">
+              <div class="settings-section-header">
+                <div class="settings-title-with-info">
+                  <h4 class="settings-section-title" style="font-size: 12px;">防抖窗口</h4>
+                  <span class="info-hint" data-tooltip="修改后等待设定时间无新操作再保存，期间继续操作会顺延窗口"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
+                </div>
+              </div>
+              <div class="minimap-size-controls">
+                <div class="minimap-size-presets">
+                  <button class="settings-size-btn save-interval-preset is-active" data-sec="1" type="button">1s</button>
+                  <button class="settings-size-btn save-interval-preset" data-sec="2" type="button">2s</button>
+                  <button class="settings-size-btn save-interval-preset" data-sec="5" type="button">5s</button>
+                  <button class="settings-size-btn save-interval-preset" data-sec="10" type="button">10s</button>
+                </div>
+                <div class="minimap-slider-row">
+                  <input type="range" class="settings-slider" id="save-interval-slider" min="1" max="30" step="1" value="1">
+                  <span class="settings-slider-val" id="save-interval-val">1 秒</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="palette-actions-row">
+              <button class="settings-action-btn" id="btn-settings-save-now" type="button">
+                <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                <span>立即保存</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 消息通知配置 -->
+          <div class="settings-tab-panel" id="tab-panel-toast">
+            <div class="settings-section-header">
+              <div class="settings-title-with-info">
+                <h3 class="settings-section-title">消息通知</h3>
+                <span class="info-hint" data-tooltip="设置提示消息的显示位置与停留时长，鼠标悬停时自动暂停计时"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <h4 class="settings-section-title" style="font-size: 12px;">显示位置</h4>
+              </div>
+              <div class="toast-pos-grid">
+                <button class="minimap-pos-card toast-pos-card" data-toast-pos="top-left" type="button">
+                  <div class="toast-pos-mockup top-left"><span class="mockup-toast"></span></div>
+                  <span>左上</span>
+                </button>
+                <button class="minimap-pos-card toast-pos-card" data-toast-pos="top-center" type="button">
+                  <div class="toast-pos-mockup top-center"><span class="mockup-toast"></span></div>
+                  <span>顶部居中</span>
+                </button>
+                <button class="minimap-pos-card toast-pos-card" data-toast-pos="top-right" type="button">
+                  <div class="toast-pos-mockup top-right"><span class="mockup-toast"></span></div>
+                  <span>右上</span>
+                </button>
+                <button class="minimap-pos-card toast-pos-card is-active" data-toast-pos="bottom-left" type="button">
+                  <div class="toast-pos-mockup bottom-left"><span class="mockup-toast"></span></div>
+                  <span>左下</span>
+                </button>
+                <button class="minimap-pos-card toast-pos-card" data-toast-pos="bottom-center" type="button">
+                  <div class="toast-pos-mockup bottom-center"><span class="mockup-toast"></span></div>
+                  <span>底部居中</span>
+                </button>
+                <button class="minimap-pos-card toast-pos-card" data-toast-pos="bottom-right" type="button">
+                  <div class="toast-pos-mockup bottom-right"><span class="mockup-toast"></span></div>
+                  <span>右下</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="settings-section" id="settings-toast-duration-section">
+              <div class="settings-section-header">
+                <div class="settings-title-with-info">
+                  <h4 class="settings-section-title" style="font-size: 12px;">停留时长</h4>
+                  <span class="info-hint" data-tooltip="提示自动关闭前的默认停留秒数 (2~30 秒)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
+                </div>
+              </div>
+              <div class="minimap-size-controls">
+                <div class="minimap-size-presets">
+                  <button class="settings-size-btn toast-duration-preset" data-sec="3" type="button">3s</button>
+                  <button class="settings-size-btn toast-duration-preset is-active" data-sec="5" type="button">5s</button>
+                  <button class="settings-size-btn toast-duration-preset" data-sec="8" type="button">8s</button>
+                  <button class="settings-size-btn toast-duration-preset" data-sec="12" type="button">12s</button>
+                </div>
+                <div class="minimap-slider-row">
+                  <input type="range" class="settings-slider" id="toast-duration-slider" min="2" max="15" step="1" value="5">
+                  <span class="settings-slider-val" id="toast-duration-val">5 秒</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="palette-actions-row">
+              <button class="settings-action-btn secondary" id="btn-settings-test-toast" type="button">
+                <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                <span>测试通知</span>
+              </button>
             </div>
           </div>
 
           <!-- 快捷键指南 -->
           <div class="settings-tab-panel" id="tab-panel-shortcuts">
             <div class="settings-section-header">
-              <div>
-                <h3 class="settings-section-title">快捷键速查</h3>
-                <p class="settings-section-desc">键盘与鼠标快捷操作指南，助你高效整理思路</p>
-              </div>
+              <h3 class="settings-section-title">快捷键</h3>
             </div>
 
             <div class="shortcuts-grid">
@@ -662,7 +849,15 @@
   <div id="library-canvas-drop-hint" class="library-canvas-drop-hint">释放鼠标即可在此位置插入节点模板</div>
 
   <!-- 浮动提示 Toast -->
-  <div id="app-toast" class="app-toast" role="status" aria-live="polite"></div>
+  <div id="app-toast" class="app-toast toast-pos-bottom-left" role="status" aria-live="polite">
+    <span class="app-toast-text" id="app-toast-text"></span>
+    <button type="button" class="app-toast-close" id="btn-close-toast" aria-label="关闭通知" title="关闭">
+      <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.2" fill="none">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </svg>
+    </button>
+  </div>
 
   <!-- 原生 ES 模块启动 -->
   <script type="module" src="js/main.js"></script>

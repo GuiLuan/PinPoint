@@ -1,48 +1,8 @@
 import { computeFocusExitLayout } from './focusLayout.js';
+import { idbCache } from './cache.js';
+import { computeLocalThumbnail } from './subcanvas.js';
 
-const STORAGE_KEY = 'pinpoint_workspace_data';
-const FILE_NAME_KEY = 'pinpoint_file_name';
-const FILE_SNAPSHOT_KEY = 'pinpoint_file_snapshot';
-const IDB_NAME = 'pinpoint_fs';
-const IDB_STORE = 'handles';
-
-function openIDB() {
-  return new Promise(resolve => {
-    if (typeof indexedDB === 'undefined') return resolve(null);
-    const req = indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => resolve(null);
-  });
-}
-
-async function persistHandle(handle) {
-  try {
-    const db = await openIDB();
-    if (!db) return;
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    if (handle) {
-      tx.objectStore(IDB_STORE).put(handle, 'active_handle');
-    } else {
-      tx.objectStore(IDB_STORE).delete('active_handle');
-    }
-  } catch (e) {}
-}
-
-async function retrieveHandle() {
-  try {
-    const db = await openIDB();
-    if (!db) return null;
-    return await new Promise(resolve => {
-      const tx = db.transaction(IDB_STORE, 'readonly');
-      const req = tx.objectStore(IDB_STORE).get('active_handle');
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => resolve(null);
-    });
-  } catch (e) {
-    return null;
-  }
-}
+const API_BASE = '/api/v1';
 
 export const DEFAULT_PALETTE = ['#30d158', '#0a84ff', '#bf5af2', '#ffd60a', '#ff9f0a'];
 export const PRESET_POOL = [
@@ -50,23 +10,43 @@ export const PRESET_POOL = [
   '#ff453a', '#64d2ff', '#ac8e68', '#ff375f', '#5e5ce6'
 ];
 
-const DEFAULT_STATE = {
-  viewport: { x: 0, y: 0, zoom: 1.0 },
-  settings: {
-    alignMode: false,
-    gridSnapMode: false,
-    palette: [...DEFAULT_PALETTE],
-    minimap: {
-      enabled: true,
-      position: 'bottom-right',
-      size: 220
-    },
-    library: {
-      position: 'left',
-      layout: 'grid',
-      width: 348
-    }
+export const DEFAULT_SAVE_SETTINGS = {
+  mode: 'auto',
+  intervalSec: 1
+};
+
+export const VALID_TOAST_POSITIONS = ['top-left', 'top-center', 'top-right', 'bottom-left', 'bottom-center', 'bottom-right'];
+
+export const DEFAULT_TOAST_SETTINGS = {
+  position: 'bottom-left',
+  durationSec: 5
+};
+
+export const DEFAULT_SETTINGS = {
+  alignMode: false,
+  gridSnapMode: false,
+  palette: [...DEFAULT_PALETTE],
+  minimap: {
+    enabled: true,
+    position: 'bottom-right',
+    size: 220
   },
+  library: {
+    position: 'left',
+    layout: 'grid',
+    width: 348
+  },
+  save: { ...DEFAULT_SAVE_SETTINGS },
+  toast: { ...DEFAULT_TOAST_SETTINGS }
+};
+
+const DEFAULT_ROOT_STATE = {
+  id: 'root',
+  parentCanvasId: null,
+  title: '主画布',
+  breadcrumbs: [{ id: 'root', title: '主画布' }],
+  viewport: { x: 0, y: 0, zoom: 1.0 },
+  settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
   cards: [
     {
       id: 'card-1',
@@ -91,26 +71,107 @@ const DEFAULT_STATE = {
   groups: []
 };
 
+function clone(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
+
 class StateManager {
   constructor() {
-    this.state = this.loadInitialState();
-    this.fileHandle = null;
-    this.fileName = '';
+    this.activeCanvasId = 'root';
+    this.activeCanvasTitle = '主画布';
+    this.parentCanvasId = null;
+    this.breadcrumbs = [{ id: 'root', title: '主画布' }];
+
+    this.state = {
+      viewport: { x: 0, y: 0, zoom: 1.0 },
+      settings: clone(DEFAULT_SETTINGS),
+      cards: clone(DEFAULT_ROOT_STATE.cards),
+      connections: clone(DEFAULT_ROOT_STATE.connections),
+      groups: []
+    };
+
+    this.canvasesCache = new Map();
+    this.dirtyCanvasIds = new Set();
+    this.pendingDeletedCanvasIds = new Set();
+    this.settingsDirty = false;
+    this.canvasTree = [{
+      id: 'root',
+      parentCanvasId: null,
+      title: '主画布',
+      depth: 0,
+      breadcrumbs: [{ id: 'root', title: '主画布' }],
+      cardCount: 2,
+      subcanvasCount: 0
+    }];
+
     this.listeners = new Set();
-    this.saveTimeout = null;
+    this.cacheTimeout = null;
     this.undoStack = [this.snapshot()];
     this.redoStack = [];
-    this.fileSavedSnapshot = null;
     this.focusSession = null;
+    this._idSeq = 0;
   }
 
   get isFocusMode() {
     return !!this.focusSession;
   }
 
+  _nextId(prefix) {
+    this._idSeq += 1;
+    return `${prefix}-${Date.now()}-${this._idSeq}-${Math.floor(Math.random() * 1000)}`;
+  }
+
+  normalizeSettings(raw) {
+    const s = raw || {};
+    const palette = Array.isArray(s.palette) && s.palette.length >= 2 && s.palette.length <= 10
+      ? [...s.palette]
+      : [...DEFAULT_PALETTE];
+    const mm = s.minimap || {};
+    const lib = s.library || {};
+    const sv = s.save || {};
+    const saveMode = sv.mode === 'manual' ? 'manual' : 'auto';
+    const intervalSec = typeof sv.intervalSec === 'number' && !Number.isNaN(sv.intervalSec)
+      ? Math.max(1, Math.min(300, Math.round(sv.intervalSec)))
+      : 1;
+    const ts = s.toast || {};
+    const toastPos = VALID_TOAST_POSITIONS.includes(ts.position) ? ts.position : 'bottom-left';
+    const toastDur = typeof ts.durationSec === 'number' && !Number.isNaN(ts.durationSec)
+      ? Math.max(2, Math.min(30, Math.round(ts.durationSec)))
+      : 5;
+    return {
+      alignMode: !!s.alignMode,
+      gridSnapMode: !!s.gridSnapMode,
+      palette,
+      minimap: {
+        enabled: mm.enabled ?? true,
+        position: ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(mm.position) ? mm.position : 'bottom-right',
+        size: typeof mm.size === 'number' ? Math.max(140, Math.min(320, Math.round(mm.size))) : 220
+      },
+      library: {
+        position: lib.position === 'right' ? 'right' : 'left',
+        layout: lib.layout === 'list' ? 'list' : 'grid',
+        width: typeof lib.width === 'number' ? Math.max(260, Math.min(800, Math.round(lib.width))) : 348
+      },
+      save: {
+        mode: saveMode,
+        intervalSec
+      },
+      toast: {
+        position: toastPos,
+        durationSec: toastDur
+      }
+    };
+  }
+
   snapshot() {
     return JSON.stringify({
-      cards: this.state.cards,
+      cards: this.state.cards.map(c => {
+        if (c.kind === 'subcanvas') {
+          const { thumbnail, ...rest } = c;
+          return rest;
+        }
+        return c;
+      }),
       connections: this.state.connections,
       groups: this.state.groups || []
     });
@@ -118,9 +179,174 @@ class StateManager {
 
   hasUnsavedChanges() {
     if (this.isFocusMode) return true;
-    if (!this.state.cards || this.state.cards.length === 0) return false;
-    if (!this.fileSavedSnapshot) return true;
-    return this.snapshot() !== this.fileSavedSnapshot;
+    return this.dirtyCanvasIds.size > 0 || this.pendingDeletedCanvasIds.size > 0 || this.settingsDirty;
+  }
+
+  isCanvasDirty(canvasId) {
+    return this.dirtyCanvasIds.has(canvasId);
+  }
+
+  markDirty(canvasId = this.activeCanvasId) {
+    if (this.isFocusMode) return;
+    if (canvasId) {
+      this.dirtyCanvasIds.add(canvasId);
+    }
+    this.scheduleCacheWrite();
+    this.listeners.forEach(fn => fn({ type: 'DIRTY_CHANGED', canvasId }, this.state));
+  }
+
+  markSettingsDirty() {
+    if (this.isFocusMode) return;
+    this.settingsDirty = true;
+    this.scheduleCacheWrite();
+    this.listeners.forEach(fn => fn({ type: 'DIRTY_CHANGED', settingsDirty: true }, this.state));
+  }
+
+  clearDirtyFor(canvasIds = [], clearedSettings = false) {
+    canvasIds.forEach(id => {
+      this.dirtyCanvasIds.delete(id);
+      const cached = this.canvasesCache.get(id);
+      if (cached) {
+        cached.dirty = false;
+        idbCache.putCanvas(cached);
+      }
+    });
+    if (clearedSettings) {
+      this.settingsDirty = false;
+    }
+    idbCache.setMeta('dirtyCanvasIds', [...this.dirtyCanvasIds]);
+    idbCache.setMeta('settingsDirty', this.settingsDirty);
+    idbCache.setMeta('pendingDeletedCanvasIds', [...this.pendingDeletedCanvasIds]);
+    this.listeners.forEach(fn => fn({ type: 'DIRTY_CHANGED' }, this.state));
+  }
+
+  async restoreFromIndexedDB() {
+    try {
+      const [cachedCanvases, activeId, cachedSettings, dirtyIds, deletedIds, settingsDirtyFlag] = await Promise.all([
+        idbCache.getAllCanvases(),
+        idbCache.getMeta('activeCanvasId'),
+        idbCache.getMeta('settings'),
+        idbCache.getMeta('dirtyCanvasIds'),
+        idbCache.getMeta('pendingDeletedCanvasIds'),
+        idbCache.getMeta('settingsDirty')
+      ]);
+
+      if (Array.isArray(cachedCanvases)) {
+        cachedCanvases.forEach(c => {
+          if (c?.id) this.canvasesCache.set(c.id, c);
+        });
+      }
+      if (Array.isArray(dirtyIds)) {
+        dirtyIds.forEach(id => this.dirtyCanvasIds.add(id));
+      }
+      if (Array.isArray(deletedIds)) {
+        deletedIds.forEach(id => this.pendingDeletedCanvasIds.add(id));
+      }
+      if (settingsDirtyFlag) {
+        this.settingsDirty = true;
+      }
+      if (cachedSettings) {
+        this.state.settings = this.normalizeSettings(cachedSettings);
+      }
+
+      const hashMatch = window.location.hash?.match(/canvas=([^&]+)/);
+      const targetId = (hashMatch ? decodeURIComponent(hashMatch[1]) : null) || activeId || 'root';
+      const targetCached = this.canvasesCache.get(targetId) || this.canvasesCache.get('root');
+      if (targetCached) {
+        this._loadCacheEntryIntoActive(targetCached);
+        return true;
+      }
+    } catch (e) {
+      console.warn('[PinPoint Cache] Failed to restore IndexedDB cache:', e);
+    }
+    return false;
+  }
+
+  _loadCacheEntryIntoActive(entry) {
+    this.activeCanvasId = entry.id || 'root';
+    this.activeCanvasTitle = entry.title || (this.activeCanvasId === 'root' ? '主画布' : '子画布');
+    this.parentCanvasId = entry.parentCanvasId ?? null;
+    this.breadcrumbs = Array.isArray(entry.breadcrumbs) && entry.breadcrumbs.length > 0
+      ? clone(entry.breadcrumbs)
+      : [{ id: this.activeCanvasId, title: this.activeCanvasTitle }];
+
+    this.state.viewport = clone(entry.viewport || { x: 0, y: 0, zoom: 1.0 });
+    this.state.cards = clone(entry.cards || []);
+    this.state.connections = (clone(entry.connections || [])).filter(c => this.validateConnection(c, this.state.cards, entry.groups || []));
+    this.state.groups = clone(entry.groups || []);
+    this._refreshSubcanvasThumbnailsOnActive();
+
+    this.undoStack = Array.isArray(entry.undoStack) && entry.undoStack.length > 0
+      ? [...entry.undoStack]
+      : [this.snapshot()];
+    this.redoStack = Array.isArray(entry.redoStack) ? [...entry.redoStack] : [];
+  }
+
+  _saveActiveToCacheMap(isDirty = this.dirtyCanvasIds.has(this.activeCanvasId)) {
+    const entry = {
+      id: this.activeCanvasId,
+      parentCanvasId: this.parentCanvasId,
+      title: this.activeCanvasTitle,
+      breadcrumbs: clone(this.breadcrumbs),
+      viewport: clone(this.state.viewport),
+      cards: clone(this.state.cards),
+      connections: clone(this.state.connections),
+      groups: clone(this.state.groups || []),
+      undoStack: [...this.undoStack],
+      redoStack: [...this.redoStack],
+      dirty: !!isDirty,
+      updatedAt: Date.now()
+    };
+    this.canvasesCache.set(this.activeCanvasId, entry);
+    return entry;
+  }
+
+  scheduleCacheWrite() {
+    if (this.isFocusMode) return;
+    clearTimeout(this.cacheTimeout);
+    this.cacheTimeout = setTimeout(() => {
+      this.flushCacheToIDBNow();
+    }, 220);
+  }
+
+  async flushCacheToIDBNow() {
+    if (this.isFocusMode) return;
+    const entry = this._saveActiveToCacheMap(this.dirtyCanvasIds.has(this.activeCanvasId));
+    await Promise.all([
+      idbCache.putCanvas(entry),
+      idbCache.setMeta('activeCanvasId', this.activeCanvasId),
+      idbCache.setMeta('settings', this.state.settings),
+      idbCache.setMeta('dirtyCanvasIds', [...this.dirtyCanvasIds]),
+      idbCache.setMeta('pendingDeletedCanvasIds', [...this.pendingDeletedCanvasIds]),
+      idbCache.setMeta('settingsDirty', this.settingsDirty)
+    ]);
+  }
+
+  scheduleAutoSave() {
+    this.markDirty(this.activeCanvasId);
+  }
+
+  _refreshSubcanvasThumbnailsOnActive() {
+    for (const card of this.state.cards) {
+      if (card.kind === 'subcanvas' && card.subcanvasId) {
+        const cachedSub = this.canvasesCache.get(card.subcanvasId);
+        if (cachedSub && (cachedSub.dirty || this.dirtyCanvasIds.has(card.subcanvasId) || !card.thumbnail)) {
+          card.thumbnail = computeLocalThumbnail(cachedSub);
+        }
+      }
+    }
+  }
+
+  getThumbnailForSubcanvas(card) {
+    if (!card || card.kind !== 'subcanvas') return null;
+    const subId = card.subcanvasId;
+    if (subId) {
+      const cached = this.canvasesCache.get(subId);
+      if (cached && (cached.dirty || this.dirtyCanvasIds.has(subId))) {
+        return computeLocalThumbnail(cached);
+      }
+    }
+    return card.thumbnail || computeLocalThumbnail({ id: subId, title: card.title, cards: [], groups: [], connections: [] });
   }
 
   commit() {
@@ -131,31 +357,8 @@ class StateManager {
     this.undoStack.push(snap);
     if (this.undoStack.length > 60) this.undoStack.shift();
     this.redoStack = [];
+    this.markDirty(this.activeCanvasId);
     this.notify({ type: 'HISTORY_CHANGED' });
-  }
-
-  async restoreFileHandle() {
-    try {
-      const fileName = localStorage.getItem(FILE_NAME_KEY);
-      if (!fileName) {
-        this.fileHandle = null;
-        this.fileName = '';
-        this.fileSavedSnapshot = null;
-        persistHandle(null);
-        return;
-      }
-      const handle = await retrieveHandle();
-      if (handle) {
-        this.fileHandle = handle;
-        this.fileName = handle.name || fileName;
-      } else {
-        this.fileName = fileName;
-      }
-      this.fileSavedSnapshot = localStorage.getItem(FILE_SNAPSHOT_KEY) || null;
-      if (this.fileName) {
-        this.notify({ type: 'HANDLE_RESTORED', fileName: this.fileName });
-      }
-    } catch (e) {}
   }
 
   canUndo() {
@@ -172,10 +375,11 @@ class StateManager {
     this.redoStack.push(current);
     const prevSnap = this.undoStack[this.undoStack.length - 1];
     const data = JSON.parse(prevSnap);
-    this.state.cards = JSON.parse(JSON.stringify(data.cards));
-    this.state.connections = JSON.parse(JSON.stringify(data.connections));
-    this.state.groups = JSON.parse(JSON.stringify(data.groups || []));
-    this.scheduleAutoSave();
+    this.state.cards = clone(data.cards);
+    this.state.connections = clone(data.connections);
+    this.state.groups = clone(data.groups || []);
+    this._refreshSubcanvasThumbnailsOnActive();
+    this.markDirty(this.activeCanvasId);
     this.notify({ type: 'STATE_RESTORED' });
     return true;
   }
@@ -185,70 +389,51 @@ class StateManager {
     const nextSnap = this.redoStack.pop();
     this.undoStack.push(nextSnap);
     const data = JSON.parse(nextSnap);
-    this.state.cards = JSON.parse(JSON.stringify(data.cards));
-    this.state.connections = JSON.parse(JSON.stringify(data.connections));
-    this.state.groups = JSON.parse(JSON.stringify(data.groups || []));
-    this.scheduleAutoSave();
+    this.state.cards = clone(data.cards);
+    this.state.connections = clone(data.connections);
+    this.state.groups = clone(data.groups || []);
+    this._refreshSubcanvasThumbnailsOnActive();
+    this.markDirty(this.activeCanvasId);
     this.notify({ type: 'STATE_RESTORED' });
     return true;
   }
 
-  hasLocalSavedState() {
-    try {
-      return !!localStorage.getItem(STORAGE_KEY);
-    } catch (e) {
-      return false;
-    }
-  }
+  applyRemoteCanvas(canvasPayload, sourceEvent = 'REMOTE_SYNCED') {
+    if (this.isFocusMode || !canvasPayload) return false;
+    const cid = canvasPayload.id || canvasPayload.canvasId || this.activeCanvasId;
+    if (cid !== this.activeCanvasId) return false;
+    if (!Array.isArray(canvasPayload.cards) || !Array.isArray(canvasPayload.connections)) return false;
 
-  applyRemoteState(remoteState, sourceEvent = 'REMOTE_SYNCED') {
-    if (this.isFocusMode) return false;
-    if (!remoteState || !Array.isArray(remoteState.cards) || !Array.isArray(remoteState.connections)) {
-      return false;
+    if (canvasPayload.title) this.activeCanvasTitle = canvasPayload.title;
+    if (canvasPayload.parentCanvasId !== undefined) this.parentCanvasId = canvasPayload.parentCanvasId;
+    if (Array.isArray(canvasPayload.breadcrumbs) && canvasPayload.breadcrumbs.length > 0) {
+      this.breadcrumbs = clone(canvasPayload.breadcrumbs);
     }
 
-    const cards = JSON.parse(JSON.stringify(remoteState.cards));
-    const groups = JSON.parse(JSON.stringify(remoteState.groups || []));
-    const connections = JSON.parse(JSON.stringify(remoteState.connections))
-      .filter(c => this.validateConnection(c, cards, groups));
+    const cards = clone(canvasPayload.cards);
+    const groups = clone(canvasPayload.groups || []);
+    const connections = clone(canvasPayload.connections).filter(c => this.validateConnection(c, cards, groups));
 
-    if (remoteState.viewport) {
+    if (canvasPayload.viewport) {
       this.state.viewport = {
-        x: Number(remoteState.viewport.x ?? this.state.viewport.x ?? 0),
-        y: Number(remoteState.viewport.y ?? this.state.viewport.y ?? 0),
-        zoom: Number(remoteState.viewport.zoom ?? this.state.viewport.zoom ?? 1.0)
+        x: Number(canvasPayload.viewport.x ?? this.state.viewport.x ?? 0),
+        y: Number(canvasPayload.viewport.y ?? this.state.viewport.y ?? 0),
+        zoom: Number(canvasPayload.viewport.zoom ?? this.state.viewport.zoom ?? 1.0)
       };
     }
 
-    if (remoteState.settings) {
-      this.state.settings = {
-        alignMode: remoteState.settings.alignMode ?? false,
-        gridSnapMode: remoteState.settings.gridSnapMode ?? false,
-        palette: Array.isArray(remoteState.settings.palette) && remoteState.settings.palette.length >= 2
-          ? [...remoteState.settings.palette]
-          : [...DEFAULT_PALETTE],
-        minimap: {
-          enabled: remoteState.settings.minimap?.enabled ?? true,
-          position: remoteState.settings.minimap?.position || 'bottom-right',
-          size: typeof remoteState.settings.minimap?.size === 'number' ? remoteState.settings.minimap.size : 220
-        },
-        library: {
-          position: remoteState.settings.library?.position === 'right' ? 'right' : 'left',
-          layout: remoteState.settings.library?.layout === 'list' ? 'list' : 'grid',
-          width: typeof remoteState.settings.library?.width === 'number'
-            ? Math.max(260, Math.min(800, Math.round(remoteState.settings.library.width)))
-            : 348
-        }
-      };
+    if (canvasPayload.settings && !this.settingsDirty) {
+      this.state.settings = this.normalizeSettings(canvasPayload.settings);
     }
 
     const prevSnap = this.snapshot();
     this.state.cards = cards;
     this.state.connections = connections;
     this.state.groups = groups;
+    this._refreshSubcanvasThumbnailsOnActive();
     const nextSnap = this.snapshot();
 
-    if (sourceEvent === 'GRAPH_REPLACED' || sourceEvent === 'STATE_RESET') {
+    if (sourceEvent === 'GRAPH_REPLACED' || sourceEvent === 'STATE_RESET' || sourceEvent === 'CONNECTED' || sourceEvent === 'CANVAS_LOADED') {
       this.undoStack = [nextSnap];
       this.redoStack = [];
     } else if (nextSnap !== prevSnap) {
@@ -257,49 +442,380 @@ class StateManager {
       this.redoStack = [];
     }
 
-    this.notify({ type: 'REMOTE_SYNCED', sourceEvent });
+    const entry = this._saveActiveToCacheMap(false);
+    idbCache.putCanvas(entry);
+    this.listeners.forEach(fn => fn({ type: 'REMOTE_SYNCED', sourceEvent }, this.state));
     return true;
   }
 
-  loadInitialState() {
+  applyRemoteState(remoteState, sourceEvent = 'REMOTE_SYNCED') {
+    return this.applyRemoteCanvas({ id: this.activeCanvasId, ...remoteState }, sourceEvent);
+  }
+
+  setCanvasTree(treeRows) {
+    if (Array.isArray(treeRows)) {
+      this.canvasTree = clone(treeRows);
+      this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.canvasTree }, this.state));
+    }
+  }
+
+  getCanvasHierarchy() {
+    const map = new Map();
+    for (const row of this.canvasTree || []) {
+      if (!this.pendingDeletedCanvasIds.has(row.id)) {
+        map.set(row.id, clone(row));
+      }
+    }
+
+    // Merge local unsaved canvases from cache
+    const ensureParentBreadcrumbs = (cid, visited = new Set()) => {
+      if (visited.has(cid)) return [];
+      visited.add(cid);
+      const item = map.get(cid);
+      if (!item) return [];
+      if (!item.parentCanvasId) return [{ id: item.id, title: item.title }];
+      const pCrumbs = ensureParentBreadcrumbs(item.parentCanvasId, visited);
+      return [...pCrumbs, { id: item.id, title: item.title }];
+    };
+
+    for (const [cid, entry] of this.canvasesCache.entries()) {
+      if (this.pendingDeletedCanvasIds.has(cid)) continue;
+      const cards = entry.cards || [];
+      const cardCount = cards.filter(c => c.kind !== 'subcanvas').length;
+      const subcanvasCount = cards.filter(c => c.kind === 'subcanvas').length;
+      const existing = map.get(cid) || {};
+      map.set(cid, {
+        ...existing,
+        id: cid,
+        parentCanvasId: entry.parentCanvasId !== undefined ? entry.parentCanvasId : (existing.parentCanvasId ?? null),
+        title: entry.title || existing.title || (cid === 'root' ? '主画布' : '子画布'),
+        cardCount,
+        subcanvasCount,
+        dirty: this.dirtyCanvasIds.has(cid)
+      });
+    }
+
+    const result = [...map.values()].map(node => {
+      const crumbs = ensureParentBreadcrumbs(node.id);
+      return {
+        ...node,
+        breadcrumbs: crumbs,
+        depth: Math.max(0, crumbs.length - 1),
+        dirty: this.dirtyCanvasIds.has(node.id)
+      };
+    });
+
+    // Tree DFS order for clean indentation display
+    const childrenByParent = new Map();
+    for (const node of result) {
+      const p = node.parentCanvasId || '__root_parent__';
+      if (!childrenByParent.has(p)) childrenByParent.set(p, []);
+      childrenByParent.get(p).push(node);
+    }
+    const ordered = [];
+    const walk = (pid) => {
+      const kids = childrenByParent.get(pid) || [];
+      for (const k of kids) {
+        ordered.push(k);
+        walk(k.id);
+      }
+    };
+    walk('__root_parent__');
+    // Append any orphans if parent wasn't loaded
+    for (const node of result) {
+      if (!ordered.some(o => o.id === node.id)) ordered.push(node);
+    }
+    return ordered;
+  }
+
+  async refreshCanvasTree() {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.cards && parsed.connections) {
-          const cards = parsed.cards;
-          const groups = parsed.groups || [];
-          return {
-            viewport: parsed.viewport || { x: 0, y: 0, zoom: 1.0 },
-            settings: {
-              alignMode: parsed.settings?.alignMode ?? false,
-              gridSnapMode: parsed.settings?.gridSnapMode ?? false,
-              palette: Array.isArray(parsed.settings?.palette) && parsed.settings.palette.length >= 2
-                ? parsed.settings.palette
-                : [...DEFAULT_PALETTE],
-              minimap: {
-                enabled: parsed.settings?.minimap?.enabled ?? true,
-                position: parsed.settings?.minimap?.position || 'bottom-right',
-                size: typeof parsed.settings?.minimap?.size === 'number' ? parsed.settings.minimap.size : 220
-              },
-              library: {
-                position: parsed.settings?.library?.position === 'right' ? 'right' : 'left',
-                layout: parsed.settings?.library?.layout === 'list' ? 'list' : 'grid',
-                width: typeof parsed.settings?.library?.width === 'number'
-                  ? Math.max(260, Math.min(800, Math.round(parsed.settings.library.width)))
-                  : 348
-              }
-            },
-            cards,
-            connections: parsed.connections.filter(c => this.validateConnection(c, cards, groups)),
-            groups
-          };
+      const res = await fetch(`${API_BASE}/canvases`);
+      if (res.ok) {
+        const body = await res.json();
+        if (body?.ok && Array.isArray(body.data)) {
+          this.setCanvasTree(body.data);
+          return body.data;
         }
       }
-    } catch (e) {
-      // Fallback to default
+    } catch (e) {}
+    return this.getCanvasHierarchy();
+  }
+
+  async renameCanvas(canvasId, newTitle) {
+    if (!canvasId) return false;
+    const cleanTitle = String(newTitle || '').trim() || (canvasId === 'root' ? '主画布' : '未命名子画布');
+
+    // 1. Update canvasTree
+    if (Array.isArray(this.canvasTree)) {
+      const row = this.canvasTree.find(r => r.id === canvasId);
+      if (row) row.title = cleanTitle;
     }
-    return JSON.parse(JSON.stringify(DEFAULT_STATE));
+
+    // 2. Update active canvas title & breadcrumbs
+    if (this.activeCanvasId === canvasId) {
+      this.activeCanvasTitle = cleanTitle;
+    }
+    this.breadcrumbs = (this.breadcrumbs || []).map(b =>
+      b.id === canvasId ? { ...b, title: cleanTitle } : b
+    );
+
+    // 3. Update active canvas subcanvas card if child is on current canvas
+    const activeSubCard = this.state.cards.find(c => c.kind === 'subcanvas' && c.subcanvasId === canvasId);
+    if (activeSubCard && activeSubCard.title !== cleanTitle) {
+      activeSubCard.title = cleanTitle;
+      this.markDirty(this.activeCanvasId);
+      this.notify({ type: 'CARD_UPDATED', cardId: activeSubCard.id });
+    }
+
+    // 4. Update cached canvases (title, breadcrumbs, and parent card title)
+    for (const entry of this.canvasesCache.values()) {
+      let changed = false;
+      if (entry.id === canvasId && entry.title !== cleanTitle) {
+        entry.title = cleanTitle;
+        changed = true;
+      }
+      if (Array.isArray(entry.breadcrumbs)) {
+        const idx = entry.breadcrumbs.findIndex(b => b.id === canvasId);
+        if (idx >= 0 && entry.breadcrumbs[idx].title !== cleanTitle) {
+          entry.breadcrumbs = entry.breadcrumbs.map(b => b.id === canvasId ? { ...b, title: cleanTitle } : b);
+          changed = true;
+        }
+      }
+      if (Array.isArray(entry.cards)) {
+        const card = entry.cards.find(c => c.kind === 'subcanvas' && c.subcanvasId === canvasId);
+        if (card && card.title !== cleanTitle) {
+          card.title = cleanTitle;
+          changed = true;
+        }
+      }
+      if (changed) {
+        idbCache.putCanvas(entry);
+      }
+    }
+
+    if (this.activeCanvasId === canvasId) {
+      const activeEntry = this._saveActiveToCacheMap(this.dirtyCanvasIds.has(canvasId));
+      idbCache.putCanvas(activeEntry);
+    }
+
+    // 5. Persist to backend when online, or mark dirty for later sync
+    let persistedOnline = false;
+    if (window.__sync?.connected) {
+      try {
+        const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(canvasId)}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-PinPoint-Client': window.__sync.clientId || ''
+          },
+          body: JSON.stringify({ title: cleanTitle })
+        });
+        if (res.ok) persistedOnline = true;
+      } catch (e) {}
+    }
+
+    if (!persistedOnline) {
+      this.markDirty(canvasId);
+      this.scheduleAutoSave();
+    }
+
+    this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+    return true;
+  }
+
+  async createSubcanvas({ x, y, title = '未命名子画布', headerColor = null, width = 300, height = 180, cardIds = null } = {}) {
+    if (this.isFocusMode) {
+      this.emitToast('请先退出专注模式后再新建子画布', 'warning');
+      return null;
+    }
+
+    const subcanvasId = this._nextId('canvas');
+    const cardId = this._nextId('card');
+    const cleanTitle = (title || '').trim() || '未命名子画布';
+
+    let movedCards = [];
+    let movedGroups = [];
+    let movedConns = [];
+    if (Array.isArray(cardIds) && cardIds.length > 0) {
+      const packSet = new Set(cardIds);
+      movedCards = clone(this.state.cards.filter(c => packSet.has(c.id)));
+      if (movedCards.length > 0) {
+        const minX = Math.min(...movedCards.map(c => c.x));
+        const minY = Math.min(...movedCards.map(c => c.y));
+        movedCards.forEach(mc => {
+          mc.x = Math.round(mc.x - minX + 140);
+          mc.y = Math.round(mc.y - minY + 180);
+          if (mc.kind === 'subcanvas' && mc.subcanvasId) {
+            const subEntry = this.canvasesCache.get(mc.subcanvasId);
+            if (subEntry) {
+              subEntry.parentCanvasId = subcanvasId;
+              idbCache.putCanvas(subEntry);
+            }
+          }
+        });
+        movedGroups = clone((this.state.groups || []).filter(g => g.cardIds?.length >= 2 && g.cardIds.every(id => packSet.has(id))));
+        const owners = new Set([...packSet, ...movedGroups.map(g => g.id)]);
+        movedConns = clone(this.state.connections.filter(cn => {
+          const o1 = this.findCardIdByPin(cn.fromPinId);
+          const o2 = this.findCardIdByPin(cn.toPinId);
+          return o1 && o2 && owners.has(o1) && owners.has(o2);
+        }));
+        this.removeCards(cardIds);
+      }
+    }
+
+    const childEntry = {
+      id: subcanvasId,
+      parentCanvasId: this.activeCanvasId,
+      title: cleanTitle,
+      breadcrumbs: [...this.breadcrumbs, { id: subcanvasId, title: cleanTitle }],
+      viewport: { x: 0, y: 0, zoom: 1.0 },
+      cards: movedCards,
+      connections: movedConns,
+      groups: movedGroups,
+      dirty: true,
+      updatedAt: Date.now()
+    };
+    this.canvasesCache.set(subcanvasId, childEntry);
+    this.dirtyCanvasIds.add(subcanvasId);
+    idbCache.putCanvas(childEntry);
+
+    const card = {
+      id: cardId,
+      kind: 'subcanvas',
+      subcanvasId,
+      title: cleanTitle,
+      x: Math.round(x ?? 140),
+      y: Math.round(y ?? 200),
+      width: Math.max(250, Math.round(width)),
+      height: Math.max(120, Math.round(height)),
+      contentHtml: '',
+      thumbnail: computeLocalThumbnail(childEntry)
+    };
+    if (headerColor) card.headerColor = headerColor;
+
+    this.state.cards.push(card);
+    this.commit();
+    this._saveActiveToCacheMap(true);
+    this.notify({ type: 'CARD_ADDED', card });
+    this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+    return card;
+  }
+
+  async navigateToCanvas(targetCanvasId) {
+    if (!targetCanvasId || targetCanvasId === this.activeCanvasId) return true;
+    if (this.isFocusMode) {
+      this.emitToast('当前处于专注模式，请先确认或取消专注模式后再切换画布', 'warning');
+      return false;
+    }
+
+    // Save current active canvas to memory + IndexedDB
+    const curEntry = this._saveActiveToCacheMap(this.dirtyCanvasIds.has(this.activeCanvasId));
+    await idbCache.putCanvas(curEntry);
+
+    let targetData = null;
+    const cached = this.canvasesCache.get(targetCanvasId);
+
+    if (cached && (cached.dirty || this.dirtyCanvasIds.has(targetCanvasId))) {
+      targetData = cached;
+    } else {
+      try {
+        const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(targetCanvasId)}`);
+        if (res.ok) {
+          const json = await res.json();
+          if (json?.ok && json.data) {
+            targetData = {
+              id: json.data.id || targetCanvasId,
+              parentCanvasId: json.data.parentCanvasId ?? null,
+              title: json.data.title || '子画布',
+              breadcrumbs: json.data.breadcrumbs || [{ id: targetCanvasId, title: json.data.title || '子画布' }],
+              viewport: json.data.viewport || { x: 0, y: 0, zoom: 1.0 },
+              cards: json.data.cards || [],
+              connections: json.data.connections || [],
+              groups: json.data.groups || [],
+              dirty: false,
+              updatedAt: Date.now()
+            };
+            this.canvasesCache.set(targetCanvasId, targetData);
+            await idbCache.putCanvas(targetData);
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!targetData && cached) {
+      targetData = cached;
+    }
+    if (!targetData) {
+      const idbFallback = await idbCache.getCanvas(targetCanvasId);
+      if (idbFallback) targetData = idbFallback;
+    }
+    if (!targetData) {
+      this.emitToast('无法加载目标子画布', 'warning');
+      return false;
+    }
+
+    // Ensure parent subcanvas card title stays synced into breadcrumbs/title
+    if (targetData.parentCanvasId) {
+      const parentCached = this.canvasesCache.get(targetData.parentCanvasId);
+      const parentCard = parentCached?.cards?.find(c => c.kind === 'subcanvas' && c.subcanvasId === targetCanvasId);
+      if (parentCard && parentCard.title) {
+        targetData.title = parentCard.title;
+      }
+      if (parentCached?.breadcrumbs) {
+        targetData.breadcrumbs = [...parentCached.breadcrumbs, { id: targetCanvasId, title: targetData.title }];
+      }
+    }
+
+    this._loadCacheEntryIntoActive(targetData);
+    await idbCache.setMeta('activeCanvasId', this.activeCanvasId);
+    try {
+      window.location.hash = this.activeCanvasId === 'root' ? '' : `canvas=${encodeURIComponent(this.activeCanvasId)}`;
+    } catch (e) {}
+
+    this.listeners.forEach(fn => fn({ type: 'CANVAS_SWITCHED', canvasId: this.activeCanvasId }, this.state));
+    return true;
+  }
+
+  _collectDescendantCanvasIdsLocal(canvasId) {
+    const out = [];
+    const queue = [canvasId];
+    const seen = new Set([canvasId]);
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      const entry = cur === this.activeCanvasId
+        ? { cards: this.state.cards }
+        : this.canvasesCache.get(cur);
+      if (entry?.cards) {
+        for (const c of entry.cards) {
+          if (c.kind === 'subcanvas' && c.subcanvasId && !seen.has(c.subcanvasId)) {
+            seen.add(c.subcanvasId);
+            out.push(c.subcanvasId);
+            queue.push(c.subcanvasId);
+          }
+        }
+      }
+      for (const row of this.canvasTree || []) {
+        if (row.parentCanvasId === cur && !seen.has(row.id)) {
+          seen.add(row.id);
+          out.push(row.id);
+          queue.push(row.id);
+        }
+      }
+    }
+    return out;
+  }
+
+  _markSubcanvasSubtreeDeleted(subcanvasId) {
+    if (!subcanvasId || subcanvasId === 'root') return;
+    const allIds = [subcanvasId, ...this._collectDescendantCanvasIdsLocal(subcanvasId)];
+    for (const id of allIds) {
+      this.pendingDeletedCanvasIds.add(id);
+      this.dirtyCanvasIds.delete(id);
+      this.canvasesCache.delete(id);
+      idbCache.deleteCanvas(id);
+    }
   }
 
   isPinValid(pinId, cards = this.state.cards, groups = this.state?.groups || []) {
@@ -355,7 +871,7 @@ class StateManager {
   }
 
   notify(event) {
-    this.scheduleAutoSave();
+    this.scheduleCacheWrite();
     this.listeners.forEach(fn => fn(event, this.state));
   }
 
@@ -363,42 +879,42 @@ class StateManager {
     this.listeners.forEach(fn => fn({ type: 'TOAST', message, variant }, this.state));
   }
 
-  scheduleAutoSave() {
-    if (this.isFocusMode) return;
-    clearTimeout(this.saveTimeout);
-    this.saveTimeout = setTimeout(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({
-          viewport: this.state.viewport,
-          settings: this.state.settings,
-          cards: this.state.cards,
-          connections: this.state.connections,
-          groups: this.state.groups || []
-        }));
-      } catch (e) {}
-    }, 400);
+  getSaveSettings() {
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
+    if (!this.state.settings.save) this.state.settings.save = { ...DEFAULT_SAVE_SETTINGS };
+    return this.state.settings.save;
+  }
+
+  setSaveSettings(patch) {
+    const sv = this.getSaveSettings();
+    if (patch.mode === 'auto' || patch.mode === 'manual') {
+      sv.mode = patch.mode;
+    }
+    if (typeof patch.intervalSec === 'number' && !Number.isNaN(patch.intervalSec)) {
+      sv.intervalSec = Math.max(1, Math.min(300, Math.round(patch.intervalSec)));
+    }
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
   }
 
   toggleAlignMode() {
-    if (!this.state.settings) this.state.settings = { alignMode: false, gridSnapMode: false };
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
     this.state.settings.alignMode = !this.state.settings.alignMode;
-    this.scheduleAutoSave();
+    this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
     return this.state.settings.alignMode;
   }
 
   toggleGridSnapMode() {
-    if (!this.state.settings) this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE], minimap: { enabled: true, position: 'bottom-right', size: 220 } };
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
     this.state.settings.gridSnapMode = !this.state.settings.gridSnapMode;
-    this.scheduleAutoSave();
+    this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
     return this.state.settings.gridSnapMode;
   }
 
   getMinimapSettings() {
-    if (!this.state.settings) {
-      this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE], minimap: { enabled: true, position: 'bottom-right', size: 220 } };
-    }
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
     if (!this.state.settings.minimap) {
       this.state.settings.minimap = { enabled: true, position: 'bottom-right', size: 220 };
     }
@@ -408,7 +924,7 @@ class StateManager {
   toggleMinimap() {
     const mm = this.getMinimapSettings();
     mm.enabled = !mm.enabled;
-    this.scheduleAutoSave();
+    this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
     return mm.enabled;
   }
@@ -416,20 +932,12 @@ class StateManager {
   setMinimapSettings(patch) {
     const mm = this.getMinimapSettings();
     Object.assign(mm, patch);
-    this.scheduleAutoSave();
+    this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
   }
 
   getLibrarySettings() {
-    if (!this.state.settings) {
-      this.state.settings = {
-        alignMode: false,
-        gridSnapMode: false,
-        palette: [...DEFAULT_PALETTE],
-        minimap: { enabled: true, position: 'bottom-right', size: 220 },
-        library: { position: 'left', layout: 'grid', width: 348 }
-      };
-    }
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
     if (!this.state.settings.library) {
       this.state.settings.library = { position: 'left', layout: 'grid', width: 348 };
     }
@@ -441,23 +949,37 @@ class StateManager {
 
   setLibrarySettings(patch) {
     const lib = this.getLibrarySettings();
-    if (patch.position === 'left' || patch.position === 'right') {
-      lib.position = patch.position;
-    }
-    if (patch.layout === 'grid' || patch.layout === 'list') {
-      lib.layout = patch.layout;
-    }
+    if (patch.position === 'left' || patch.position === 'right') lib.position = patch.position;
+    if (patch.layout === 'grid' || patch.layout === 'list') lib.layout = patch.layout;
     if (typeof patch.width === 'number' && !Number.isNaN(patch.width)) {
       lib.width = Math.max(260, Math.min(800, Math.round(patch.width)));
     }
-    this.scheduleAutoSave();
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+  }
+
+  getToastSettings() {
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
+    if (!this.state.settings.toast) {
+      this.state.settings.toast = { ...DEFAULT_TOAST_SETTINGS };
+    }
+    return this.state.settings.toast;
+  }
+
+  setToastSettings(patch) {
+    const ts = this.getToastSettings();
+    if (VALID_TOAST_POSITIONS.includes(patch.position)) {
+      ts.position = patch.position;
+    }
+    if (typeof patch.durationSec === 'number' && !Number.isNaN(patch.durationSec)) {
+      ts.durationSec = Math.max(2, Math.min(30, Math.round(patch.durationSec)));
+    }
+    this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
   }
 
   getPalette() {
-    if (!this.state.settings) {
-      this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE] };
-    }
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
     if (!Array.isArray(this.state.settings.palette) || this.state.settings.palette.length < 2) {
       this.state.settings.palette = [...DEFAULT_PALETTE];
     }
@@ -465,11 +987,9 @@ class StateManager {
   }
 
   setPalette(palette) {
-    if (!this.state.settings) {
-      this.state.settings = { alignMode: false, gridSnapMode: false, palette: [...DEFAULT_PALETTE] };
-    }
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
     this.state.settings.palette = [...palette];
-    this.scheduleAutoSave();
+    this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
   }
 
@@ -487,8 +1007,7 @@ class StateManager {
     if (targetCount === current.length) return;
 
     if (targetCount < current.length) {
-      const next = current.slice(0, targetCount);
-      this.setPalette(next);
+      this.setPalette(current.slice(0, targetCount));
     } else {
       const next = [...current];
       while (next.length < targetCount) {
@@ -521,21 +1040,25 @@ class StateManager {
     this.setPalette([...DEFAULT_PALETTE]);
   }
 
-  addCard(card) {
+  addCard(card, skipCommit = false) {
     this.state.cards.push(card);
-    this.commit();
+    if (!skipCommit) this.commit();
+    else this.markDirty(this.activeCanvasId);
     this.notify({ type: 'CARD_ADDED', card });
     return card;
   }
 
   removeCards(cardIds) {
     const idSet = new Set(cardIds);
+    const removedSubIds = this.state.cards
+      .filter(c => idSet.has(c.id) && c.kind === 'subcanvas' && c.subcanvasId)
+      .map(c => c.subcanvasId);
+
     this.state.cards = this.state.cards.filter(c => !idSet.has(c.id));
     if (this.state.groups) {
       this.state.groups.forEach(g => {
         g.cardIds = g.cardIds.filter(id => !idSet.has(id));
       });
-      // Remove groups with fewer than 2 cards
       const emptyGroups = this.state.groups.filter(g => g.cardIds.length < 2);
       emptyGroups.forEach(g => {
         const leftPinId = `pin-group-left-${g.id}`;
@@ -552,8 +1075,14 @@ class StateManager {
       const c2 = this.findCardIdByPin(c.toPinId);
       return (!c1 || !idSet.has(c1)) && (!c2 || !idSet.has(c2));
     });
+
+    removedSubIds.forEach(sid => this._markSubcanvasSubtreeDeleted(sid));
+
     this.commit();
     this.notify({ type: 'CARD_REMOVED', cardIds });
+    if (removedSubIds.length > 0) {
+      this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+    }
   }
 
   removeCard(cardId) {
@@ -564,6 +1093,15 @@ class StateManager {
     const card = this.state.cards.find(c => c.id === cardId);
     if (!card) return;
     Object.assign(card, patch);
+    if (card.kind === 'subcanvas' && card.subcanvasId && patch.title !== undefined) {
+      const subEntry = this.canvasesCache.get(card.subcanvasId);
+      if (subEntry) {
+        subEntry.title = card.title;
+        idbCache.putCanvas(subEntry);
+      }
+      this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+    }
+    this.markDirty(this.activeCanvasId);
     this.notify({ type: 'CARD_UPDATED', cardId });
   }
 
@@ -592,6 +1130,7 @@ class StateManager {
     const group = this.state.groups?.find(g => g.id === groupId);
     if (!group) return;
     Object.assign(group, patch);
+    this.markDirty(this.activeCanvasId);
     this.notify({ type: 'GROUP_UPDATED', groupId });
   }
 
@@ -619,7 +1158,6 @@ class StateManager {
 
   addConnection(fromPinId, toPinId, color) {
     if (!this.canConnect(fromPinId, toPinId)) return null;
-
     const exists = this.state.connections.some(c =>
       (c.fromPinId === fromPinId && c.toPinId === toPinId) ||
       (c.fromPinId === toPinId && c.toPinId === fromPinId)
@@ -661,11 +1199,11 @@ class StateManager {
     );
     if (focusIdSet.size === 0) return false;
 
-    clearTimeout(this.saveTimeout);
+    clearTimeout(this.cacheTimeout);
 
-    const fullCards = JSON.parse(JSON.stringify(this.state.cards));
-    const fullConnections = JSON.parse(JSON.stringify(this.state.connections));
-    const fullGroups = JSON.parse(JSON.stringify(this.state.groups || []));
+    const fullCards = clone(this.state.cards);
+    const fullConnections = clone(this.state.connections);
+    const fullGroups = clone(this.state.groups || []);
 
     const focusCards = fullCards.filter(c => focusIdSet.has(c.id));
     const outsideCards = fullCards
@@ -675,23 +1213,17 @@ class StateManager {
         return {
           ...c,
           _measuredWidth: rect ? rect.width : (c.width || 310),
-          _measuredHeight: rect ? rect.height : 140
+          _measuredHeight: rect ? rect.height : (c.height || 140)
         };
       });
 
     const preFocusCardRects = focusCards.map(c => {
       const rect = cardRectsMap?.get(c.id);
       const w = rect ? rect.width : (c.width || 310);
-      const h = rect ? rect.height : 140;
+      const h = rect ? rect.height : (c.height || 140);
       return {
-        left: c.x,
-        top: c.y,
-        right: c.x + w,
-        bottom: c.y + h,
-        width: w,
-        height: h,
-        cx: c.x + w / 2,
-        cy: c.y + h / 2
+        left: c.x, top: c.y, right: c.x + w, bottom: c.y + h,
+        width: w, height: h, cx: c.x + w / 2, cy: c.y + h / 2
       };
     });
 
@@ -702,20 +1234,12 @@ class StateManager {
     for (const g of fullGroups) {
       const members = Array.isArray(g.cardIds) ? g.cardIds : [];
       const inCount = members.filter(id => focusIdSet.has(id)).length;
-      if (inCount === members.length && members.length >= 2) {
-        insideGroups.push(g);
-      } else if (inCount === 0 && members.length >= 2) {
-        outsideGroups.push(g);
-      } else if (members.length >= 2) {
-        partialGroups.push(g);
-      }
+      if (inCount === members.length && members.length >= 2) insideGroups.push(g);
+      else if (inCount === 0 && members.length >= 2) outsideGroups.push(g);
+      else if (members.length >= 2) partialGroups.push(g);
     }
 
-    const insideEntityIds = new Set([
-      ...focusIdSet,
-      ...insideGroups.map(g => g.id)
-    ]);
-
+    const insideEntityIds = new Set([...focusIdSet, ...insideGroups.map(g => g.id)]);
     const internalConnections = [];
     const externalConnections = [];
 
@@ -739,24 +1263,17 @@ class StateManager {
       externalConnections,
       savedUndoStack: [...this.undoStack],
       savedRedoStack: [...this.redoStack],
-      fullPreFocusState: {
-        cards: fullCards,
-        connections: fullConnections,
-        groups: fullGroups
-      }
+      fullPreFocusState: { cards: fullCards, connections: fullConnections, groups: fullGroups }
     };
 
-    this.state.cards = JSON.parse(JSON.stringify(focusCards));
-    this.state.groups = JSON.parse(JSON.stringify(insideGroups));
-    this.state.connections = JSON.parse(JSON.stringify(internalConnections));
+    this.state.cards = clone(focusCards);
+    this.state.groups = clone(insideGroups);
+    this.state.connections = clone(internalConnections);
 
     this.undoStack = [this.snapshot()];
     this.redoStack = [];
 
-    this.listeners.forEach(fn => fn({
-      type: 'FOCUS_MODE_ENTERED',
-      focusCount: focusCards.length
-    }, this.state));
+    this.listeners.forEach(fn => fn({ type: 'FOCUS_MODE_ENTERED', focusCount: focusCards.length }, this.state));
     return true;
   }
 
@@ -764,16 +1281,16 @@ class StateManager {
     if (!this.isFocusMode) return null;
     const session = this.focusSession;
 
-    const editedCards = JSON.parse(JSON.stringify(this.state.cards));
-    const editedGroups = JSON.parse(JSON.stringify(this.state.groups || []));
-    const editedConnections = JSON.parse(JSON.stringify(this.state.connections));
+    const editedCards = clone(this.state.cards);
+    const editedGroups = clone(this.state.groups || []);
+    const editedConnections = clone(this.state.connections);
 
     const outsideLayoutInput = session.outsideCards.map(c => ({
       id: c.id,
       x: c.x,
       y: c.y,
       width: c._measuredWidth || c.width || 310,
-      height: c._measuredHeight || 140
+      height: c._measuredHeight || c.height || 140
     }));
 
     const { cardTargets } = computeFocusExitLayout({
@@ -786,7 +1303,7 @@ class StateManager {
     });
 
     const restoredOutsideCards = session.outsideCards.map(c => {
-      const clean = JSON.parse(JSON.stringify(c));
+      const clean = clone(c);
       delete clean._measuredWidth;
       delete clean._measuredHeight;
       const target = cardTargets.get(clean.id);
@@ -800,17 +1317,13 @@ class StateManager {
     const mergedCards = [...editedCards, ...restoredOutsideCards];
     const survivingCardIds = new Set(mergedCards.map(c => c.id));
 
-    const restoredOutsideGroups = JSON.parse(JSON.stringify(session.outsideGroups));
-    const restoredPartialGroups = JSON.parse(JSON.stringify(session.partialGroups))
-      .map(g => ({
-        ...g,
-        cardIds: (g.cardIds || []).filter(id => survivingCardIds.has(id))
-      }))
+    const restoredOutsideGroups = clone(session.outsideGroups);
+    const restoredPartialGroups = clone(session.partialGroups)
+      .map(g => ({ ...g, cardIds: (g.cardIds || []).filter(id => survivingCardIds.has(id)) }))
       .filter(g => g.cardIds.length >= 2);
 
     const mergedGroups = [...editedGroups, ...restoredOutsideGroups, ...restoredPartialGroups];
-
-    const validExternalConnections = JSON.parse(JSON.stringify(session.externalConnections))
+    const validExternalConnections = clone(session.externalConnections)
       .filter(conn => this.validateConnection(conn, mergedCards, mergedGroups));
 
     const seenConnIds = new Set(editedConnections.map(c => c.id));
@@ -840,6 +1353,7 @@ class StateManager {
       if (this.undoStack.length > 60) this.undoStack.shift();
     }
     this.redoStack = [];
+    this.markDirty(this.activeCanvasId);
 
     const outsideCardIds = restoredOutsideCards.map(c => c.id);
     const externalConnIds = validExternalConnections.map(c => c.id);
@@ -852,11 +1366,7 @@ class StateManager {
       externalConnIds
     });
 
-    return {
-      cardTargets,
-      outsideCardIds,
-      externalConnIds
-    };
+    return { cardTargets, outsideCardIds, externalConnIds };
   }
 
   cancelFocusMode() {
@@ -864,18 +1374,15 @@ class StateManager {
     const session = this.focusSession;
     const pre = session.fullPreFocusState;
 
-    this.state.cards = JSON.parse(JSON.stringify(pre.cards));
-    this.state.connections = JSON.parse(JSON.stringify(pre.connections));
-    this.state.groups = JSON.parse(JSON.stringify(pre.groups));
+    this.state.cards = clone(pre.cards);
+    this.state.connections = clone(pre.connections);
+    this.state.groups = clone(pre.groups);
 
     this.undoStack = [...(session.savedUndoStack || [this.snapshot()])];
     this.redoStack = [...(session.savedRedoStack || [])];
     this.focusSession = null;
 
-    this.listeners.forEach(fn => fn({
-      type: 'FOCUS_MODE_CANCELLED',
-      seedCardIds: session.seedCardIds
-    }, this.state));
+    this.listeners.forEach(fn => fn({ type: 'FOCUS_MODE_CANCELLED', seedCardIds: session.seedCardIds }, this.state));
     return true;
   }
 
@@ -884,70 +1391,160 @@ class StateManager {
       this.emitToast('当前处于专注模式，请先确认并退出专注模式后再重置画布', 'warning');
       return { blocked: true, reason: 'focus-mode' };
     }
-    this.state = JSON.parse(JSON.stringify(DEFAULT_STATE));
-    this.fileHandle = null;
-    this.fileName = '';
-    this.fileSavedSnapshot = null;
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(FILE_NAME_KEY);
-    localStorage.removeItem(FILE_SNAPSHOT_KEY);
-    persistHandle(null);
+
+    // Mark descendant subcanvases for deletion
+    const descIds = this._collectDescendantCanvasIdsLocal(this.activeCanvasId);
+    descIds.forEach(did => this._markSubcanvasSubtreeDeleted(did));
+
+    if (this.activeCanvasId === 'root') {
+      this.state.viewport = clone(DEFAULT_ROOT_STATE.viewport);
+      this.state.cards = clone(DEFAULT_ROOT_STATE.cards);
+      this.state.connections = clone(DEFAULT_ROOT_STATE.connections);
+      this.state.groups = [];
+    } else {
+      this.state.viewport = { x: 0, y: 0, zoom: 1.0 };
+      this.state.cards = [];
+      this.state.connections = [];
+      this.state.groups = [];
+    }
     this.undoStack = [this.snapshot()];
     this.redoStack = [];
+    this.markDirty(this.activeCanvasId);
     this.notify({ type: 'STATE_RESET' });
   }
 
-  async saveToFile() {
-    if (this.isFocusMode) {
-      this.emitToast('当前处于专注模式，请先确认并退出专注模式后再保存', 'warning');
-      return { blocked: true, reason: 'focus-mode' };
-    }
+  async _buildExportData(canvasId = this.activeCanvasId) {
+    let baseExport = null;
+    try {
+      const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(canvasId)}/export?includeSubcanvases=true`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.ok && json.data) baseExport = json.data;
+      }
+    } catch (e) {}
+
+    // Overlay any local dirty cache entries so export matches live state even before saving
+    const getLiveEntry = (cid) => {
+      if (cid === this.activeCanvasId) {
+        return {
+          id: this.activeCanvasId,
+          parentCanvasId: this.parentCanvasId,
+          title: this.activeCanvasTitle,
+          viewport: clone(this.state.viewport),
+          cards: clone(this.state.cards).map(c => {
+            if (c.kind === 'subcanvas') {
+              const { thumbnail, ...rest } = c;
+              return rest;
+            }
+            return c;
+          }),
+          connections: clone(this.state.connections),
+          groups: clone(this.state.groups || [])
+        };
+      }
+      const cached = this.canvasesCache.get(cid);
+      if (cached) {
+        return {
+          id: cached.id,
+          parentCanvasId: cached.parentCanvasId ?? null,
+          title: cached.title || '子画布',
+          viewport: clone(cached.viewport || { x: 0, y: 0, zoom: 1.0 }),
+          cards: clone(cached.cards || []).map(c => {
+            if (c.kind === 'subcanvas') {
+              const { thumbnail, ...rest } = c;
+              return rest;
+            }
+            return c;
+          }),
+          connections: clone(cached.connections || []),
+          groups: clone(cached.groups || [])
+        };
+      }
+      return null;
+    };
+
+    const rootData = getLiveEntry(canvasId) || baseExport;
+    if (!rootData) return null;
+
     const exportData = {
       version: 1,
       timestamp: Date.now(),
-      viewport: this.state.viewport,
-      settings: this.state.settings,
-      cards: this.state.cards,
-      connections: this.state.connections,
-      groups: this.state.groups || []
+      canvasId: rootData.id || canvasId,
+      title: rootData.title || (canvasId === 'root' ? '主画布' : '子画布'),
+      viewport: rootData.viewport || { x: 0, y: 0, zoom: 1.0 },
+      settings: clone(this.state.settings),
+      cards: rootData.cards || [],
+      connections: rootData.connections || [],
+      groups: rootData.groups || []
     };
+
+    const subcanvases = { ...(baseExport?.subcanvases || {}) };
+    const queue = [];
+    for (const c of exportData.cards) {
+      if (c.kind === 'subcanvas' && c.subcanvasId) queue.push(c.subcanvasId);
+    }
+    const seen = new Set([canvasId]);
+    while (queue.length > 0) {
+      const sid = queue.shift();
+      if (seen.has(sid) || this.pendingDeletedCanvasIds.has(sid)) continue;
+      seen.add(sid);
+      const liveSub = getLiveEntry(sid) || subcanvases[sid];
+      if (liveSub) {
+        subcanvases[sid] = liveSub;
+        for (const sc of liveSub.cards || []) {
+          if (sc.kind === 'subcanvas' && sc.subcanvasId && !seen.has(sc.subcanvasId)) {
+            queue.push(sc.subcanvasId);
+          }
+        }
+      }
+    }
+
+    // Remove deleted subcanvases from export map
+    for (const key of Object.keys(subcanvases)) {
+      if (!seen.has(key) || this.pendingDeletedCanvasIds.has(key)) {
+        delete subcanvases[key];
+      }
+    }
+
+    if (Object.keys(subcanvases).length > 0) {
+      exportData.subcanvases = subcanvases;
+    }
+
+    return exportData;
+  }
+
+  async exportCanvasToFile(canvasId = this.activeCanvasId) {
+    if (this.isFocusMode) {
+      this.emitToast('当前处于专注模式，请先确认并退出专注模式后再导出', 'warning');
+      return { blocked: true, reason: 'focus-mode' };
+    }
+
+    const exportData = await this._buildExportData(canvasId);
+    if (!exportData) {
+      this.emitToast('无法读取画布数据', 'warning');
+      return { error: new Error('Canvas not found') };
+    }
+
+    const safeBaseName = (exportData.title || 'graph').replace(/[\\/:*?"<>|]/g, '_');
+    const suggestedName = `${safeBaseName}.pinpoint`;
     const jsonStr = JSON.stringify(exportData, null, 2);
 
     if (window.showSaveFilePicker) {
       try {
-        if (this.fileHandle && this.fileHandle.queryPermission) {
-          let status = await this.fileHandle.queryPermission({ mode: 'readwrite' });
-          if (status !== 'granted') {
-            status = await this.fileHandle.requestPermission({ mode: 'readwrite' });
-          }
-          if (status !== 'granted') {
-            this.fileHandle = null;
-          }
-        }
-        if (!this.fileHandle) {
-          this.fileHandle = await window.showSaveFilePicker({
-            suggestedName: this.fileName || 'graph.pinpoint',
-            types: [{
-              description: 'PinPoint Graph',
-              accept: { 'application/json': ['.pinpoint', '.json'] }
-            }]
-          });
-          this.fileName = this.fileHandle.name;
-        }
-        const writable = await this.fileHandle.createWritable();
+        const handle = await window.showSaveFilePicker({
+          suggestedName,
+          types: [{
+            description: 'PinPoint Graph',
+            accept: { 'application/json': ['.pinpoint', '.json'] }
+          }]
+        });
+        const writable = await handle.createWritable();
         await writable.write(jsonStr);
         await writable.close();
-        persistHandle(this.fileHandle);
-        localStorage.setItem(FILE_NAME_KEY, this.fileName);
-        this.fileSavedSnapshot = this.snapshot();
-        localStorage.setItem(FILE_SNAPSHOT_KEY, this.fileSavedSnapshot);
-        this.notify({ type: 'FILE_SAVED', fileName: this.fileName });
-        return { success: true, fileName: this.fileName };
+        this.emitToast(`已导出「${handle.name}」`, 'success');
+        return { success: true, fileName: handle.name };
       } catch (err) {
         if (err.name === 'AbortError') return { aborted: true };
-        console.warn('Save with handle failed:', err);
-        this.fileHandle = null;
-        persistHandle(null);
       }
     }
 
@@ -955,14 +1552,11 @@ class StateManager {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = this.fileName || 'graph.pinpoint';
+    a.download = suggestedName;
     a.click();
     URL.revokeObjectURL(url);
-    this.fileSavedSnapshot = this.snapshot();
-    localStorage.setItem(FILE_NAME_KEY, a.download);
-    localStorage.setItem(FILE_SNAPSHOT_KEY, this.fileSavedSnapshot);
-    this.notify({ type: 'FILE_SAVED', fileName: a.download });
-    return { success: true, fileName: a.download };
+    this.emitToast(`已导出「${suggestedName}」`, 'success');
+    return { success: true, fileName: suggestedName };
   }
 
   async openFromFile() {
@@ -970,6 +1564,71 @@ class StateManager {
       this.emitToast('当前处于专注模式，请先确认并退出专注模式后再打开文件', 'warning');
       return { blocked: true, reason: 'focus-mode' };
     }
+
+    const applyImportedData = async (data, fileName) => {
+      if (!data || !Array.isArray(data.cards) || !Array.isArray(data.connections)) {
+        this.emitToast('无效的 .pinpoint 文件格式', 'warning');
+        return { error: new Error('Invalid format') };
+      }
+
+      // If backend is online, import via backend API so SQLite persists full subtree cleanly
+      try {
+        const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(this.activeCanvasId)}/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          const refreshed = await fetch(`${API_BASE}/canvases/${encodeURIComponent(this.activeCanvasId)}`);
+          if (refreshed.ok) {
+            const json = await refreshed.json();
+            if (json?.ok && json.data) {
+              this.dirtyCanvasIds.delete(this.activeCanvasId);
+              this.pendingDeletedCanvasIds.clear();
+              this.applyRemoteCanvas(json.data, 'GRAPH_REPLACED');
+              await this.refreshCanvasTree();
+              this.emitToast(`已导入「${fileName}」`, 'success');
+              return { success: true, fileName };
+            }
+          }
+        }
+      } catch (e) {}
+
+      // Fallback offline: import into cache and mark dirty
+      const cards = clone(data.cards);
+      const groups = clone(data.groups || []);
+      this.state.viewport = clone(data.viewport || { x: 0, y: 0, zoom: 1.0 });
+      this.state.cards = cards;
+      this.state.groups = groups;
+      this.state.connections = clone(data.connections).filter(c => this.validateConnection(c, cards, groups));
+      if (data.subcanvases && typeof data.subcanvases === 'object') {
+        for (const [sid, sub] of Object.entries(data.subcanvases)) {
+          if (sub && Array.isArray(sub.cards)) {
+            const entry = {
+              id: sid,
+              parentCanvasId: sub.parentCanvasId || this.activeCanvasId,
+              title: sub.title || '子画布',
+              viewport: sub.viewport || { x: 0, y: 0, zoom: 1.0 },
+              cards: sub.cards,
+              connections: sub.connections || [],
+              groups: sub.groups || [],
+              dirty: true,
+              updatedAt: Date.now()
+            };
+            this.canvasesCache.set(sid, entry);
+            this.dirtyCanvasIds.add(sid);
+            idbCache.putCanvas(entry);
+          }
+        }
+      }
+      this._refreshSubcanvasThumbnailsOnActive();
+      this.undoStack = [this.snapshot()];
+      this.redoStack = [];
+      this.markDirty(this.activeCanvasId);
+      this.notify({ type: 'FILE_OPENED', fileName });
+      return { success: true, fileName };
+    };
+
     if (window.showOpenFilePicker) {
       try {
         const [handle] = await window.showOpenFilePicker({
@@ -981,37 +1640,7 @@ class StateManager {
         });
         const file = await handle.getFile();
         const content = await file.text();
-        const data = JSON.parse(content);
-        if (data.cards && data.connections) {
-          this.fileHandle = handle;
-          this.fileName = handle.name;
-          persistHandle(this.fileHandle);
-          localStorage.setItem(FILE_NAME_KEY, this.fileName);
-          this.state = {
-            viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
-            settings: {
-              alignMode: data.settings?.alignMode ?? false,
-              gridSnapMode: data.settings?.gridSnapMode ?? false,
-              palette: Array.isArray(data.settings?.palette) && data.settings.palette.length >= 2
-                ? data.settings.palette
-                : [...DEFAULT_PALETTE],
-              minimap: {
-                enabled: data.settings?.minimap?.enabled ?? true,
-                position: data.settings?.minimap?.position || 'bottom-right',
-                size: typeof data.settings?.minimap?.size === 'number' ? data.settings.minimap.size : 220
-              }
-            },
-            cards: data.cards,
-            connections: data.connections.filter(c => this.validateConnection(c, data.cards, data.groups || [])),
-            groups: data.groups || []
-          };
-          this.undoStack = [this.snapshot()];
-          this.redoStack = [];
-          this.fileSavedSnapshot = this.snapshot();
-          localStorage.setItem(FILE_SNAPSHOT_KEY, this.fileSavedSnapshot);
-          this.notify({ type: 'FILE_OPENED', fileName: this.fileName });
-          return { success: true, fileName: this.fileName };
-        }
+        return await applyImportedData(JSON.parse(content), handle.name);
       } catch (err) {
         if (err.name === 'AbortError') return { aborted: true };
       }
@@ -1026,37 +1655,7 @@ class StateManager {
         if (!file) return resolve({ aborted: true });
         try {
           const content = await file.text();
-          const data = JSON.parse(content);
-          if (data.cards && data.connections) {
-            this.fileHandle = null;
-            this.fileName = file.name;
-            persistHandle(null);
-            localStorage.setItem(FILE_NAME_KEY, this.fileName);
-            this.state = {
-              viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
-              settings: {
-                alignMode: data.settings?.alignMode ?? false,
-                gridSnapMode: data.settings?.gridSnapMode ?? false,
-                palette: Array.isArray(data.settings?.palette) && data.settings.palette.length >= 2
-                  ? data.settings.palette
-                  : [...DEFAULT_PALETTE],
-                minimap: {
-                  enabled: data.settings?.minimap?.enabled ?? true,
-                  position: data.settings?.minimap?.position || 'bottom-right',
-                  size: typeof data.settings?.minimap?.size === 'number' ? data.settings.minimap.size : 220
-                }
-              },
-              cards: data.cards,
-              connections: data.connections.filter(c => this.validateConnection(c, data.cards, data.groups || [])),
-              groups: data.groups || []
-            };
-            this.undoStack = [this.snapshot()];
-            this.redoStack = [];
-            this.fileSavedSnapshot = this.snapshot();
-            localStorage.setItem(FILE_SNAPSHOT_KEY, this.fileSavedSnapshot);
-            this.notify({ type: 'FILE_OPENED', fileName: this.fileName });
-            resolve({ success: true, fileName: file.name });
-          }
+          resolve(await applyImportedData(JSON.parse(content), file.name));
         } catch (e) {
           resolve({ error: e });
         }

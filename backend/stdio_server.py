@@ -70,6 +70,12 @@ def main() -> None:
         help="Run with an in-process GraphStore instead of forwarding to server.py",
     )
     parser.add_argument(
+        "--db",
+        type=str,
+        default=os.environ.get("PINPOINT_DB"),
+        help="SQLite database path when running in --embedded mode",
+    )
+    parser.add_argument(
         "--workspace",
         type=str,
         default=os.environ.get("PINPOINT_WORKSPACE"),
@@ -78,7 +84,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.embedded:
-        store = GraphStore(workspace_file=args.workspace, base_dir=ROOT_DIR)
+        store = GraphStore(workspace_file=args.workspace, base_dir=ROOT_DIR, db_path=args.db)
         router = ApiRouter(store=store, openapi_path=OPENAPI_PATH)
         caller = make_router_rest_caller(router, client_id="pinpoint-mcp-embedded")
     else:

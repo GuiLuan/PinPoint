@@ -10,11 +10,12 @@ class SyncManager {
     this.clientId = `web-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
     this.eventSource = null;
     this.connected = false;
+    this.isSaving = false;
     this.lastRevision = -1;
     this.isApplyingRemote = false;
     this.pendingEvent = null;
-    this.syncTimer = null;
-    this.viewportTimer = null;
+    this.autoSaveTimer = null;
+    this.healthTimer = null;
     this.selectionTimer = null;
     this.statusDotEl = null;
   }
@@ -23,48 +24,51 @@ class SyncManager {
     this.statusDotEl = document.querySelector('.hud-title-dot');
 
     if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') {
-      this.setStatus('offline');
+      this.connected = false;
+      this.updateStatusDot();
       return;
     }
 
-    // Subscribe to local store mutations -> push to backend
     store.subscribe((event) => {
-      if (this.isApplyingRemote || !this.connected || store.isFocusMode) return;
-      if (event?.type === 'FOCUS_MODE_CANCELLED') {
-        setTimeout(() => this.flushPendingIfIdle(), 20);
-        return;
-      }
-      if (!event || event.type === 'REMOTE_SYNCED' || event.type === 'HANDLE_RESTORED' || event.type === 'FILE_SAVED' || event.type === 'TOAST' || event.type === 'FOCUS_MODE_ENTERED') {
+      if (!event) return;
+
+      if (event.type === 'DIRTY_CHANGED') {
+        this.updateStatusDot();
+        this.scheduleAutoSaveIfNeeded({ reset: true });
         return;
       }
 
       if (event.type === 'SETTINGS_CHANGED') {
-        this.scheduleGraphSync(80);
+        this.updateStatusDot();
+        this.rescheduleAutoSave();
+        // Persist settings changes promptly when online so save mode preference is remembered
+        if (this.connected && !this.isApplyingRemote && !store.isFocusMode) {
+          this.pushSettingsNow();
+        }
         return;
       }
 
-      if (event.type === 'FOCUS_MODE_EXITED') {
-        this.pendingEvent = null;
-        this.scheduleGraphSync(90);
+      if (event.type === 'CANVAS_SWITCHED') {
+        this.updateStatusDot();
         return;
       }
 
-      if (
-        event.type === 'HISTORY_CHANGED' ||
-        event.type === 'STATE_RESTORED' ||
-        event.type === 'STATE_RESET' ||
-        event.type === 'FILE_OPENED' ||
-        event.type === 'CONNECTION_ADDED' ||
-        event.type === 'CONNECTION_REMOVED' ||
-        event.type === 'CONNECTION_RECONNECTED' ||
-        event.type?.startsWith('CARD_') ||
-        event.type?.startsWith('GROUP_')
-      ) {
-        this.scheduleGraphSync(90);
+      if (event.type === 'FOCUS_MODE_CANCELLED') {
+        this.updateStatusDot();
+        setTimeout(() => this.flushPendingIfIdle(), 20);
+        return;
+      }
+
+      if (event.type === 'FOCUS_MODE_ENTERED' || event.type === 'FOCUS_MODE_EXITED') {
+        this.updateStatusDot();
+        if (event.type === 'FOCUS_MODE_EXITED') {
+          this.pendingEvent = null;
+          this.scheduleAutoSaveIfNeeded();
+        }
+        return;
       }
     });
 
-    // Flush deferred remote updates once user finishes dragging, editing, or leaves window
     window.addEventListener('mouseup', () => this.flushPendingIfIdle(), true);
     window.addEventListener('blur', () => this.flushPendingIfIdle());
     window.addEventListener('focusout', () => {
@@ -72,22 +76,101 @@ class SyncManager {
     }, true);
 
     this.connectSSE();
+    this.startHealthMonitor();
   }
 
-  setStatus(mode) {
-    if (!this.statusDotEl) return;
-    this.statusDotEl.classList.remove('sync-connected', 'sync-reconnecting', 'sync-offline');
-    this.statusDotEl.classList.add(`sync-${mode}`);
-    let normalTitle = '离线模式（仅本地存储）';
-    if (mode === 'connected') {
-      normalTitle = '实时同步已连接 (/api/v1/events)';
-    } else if (mode === 'reconnecting') {
-      normalTitle = '实时同步重连中...';
+  updateStatusDot() {
+    let statusClass = 'status-saved';
+    let label = '已保存 (Ctrl+S)';
+
+    if (!this.connected) {
+      statusClass = 'status-offline';
+      label = '服务已断开';
+    } else if (store.hasUnsavedChanges()) {
+      statusClass = 'status-unsaved';
+      label = '有未保存的更改 (Ctrl+S)';
     }
-    this.statusDotEl.dataset.normalTitle = normalTitle;
-    if (!store.isFocusMode) {
-      this.statusDotEl.title = normalTitle;
+
+    if (this.statusDotEl) {
+      this.statusDotEl.classList.remove('status-saved', 'status-unsaved', 'status-offline', 'sync-connected', 'sync-reconnecting', 'sync-offline');
+      this.statusDotEl.classList.add(statusClass);
+      this.statusDotEl.dataset.normalTitle = label;
+      if (!store.isFocusMode) {
+        this.statusDotEl.title = label;
+      }
     }
+
+    window.__updateSaveUI?.({
+      connected: this.connected,
+      dirty: store.hasUnsavedChanges(),
+      saving: this.isSaving,
+      statusClass,
+      label
+    });
+  }
+
+  startHealthMonitor() {
+    clearInterval(this.healthTimer);
+    this.healthTimer = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/health`, { cache: 'no-store' });
+        if (res.ok) {
+          if (!this.connected) {
+            this.connected = true;
+            this.updateStatusDot();
+            if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
+              this.connectSSE();
+            }
+          }
+        } else {
+          if (this.connected) {
+            this.connected = false;
+            this.updateStatusDot();
+          }
+        }
+      } catch (e) {
+        if (this.connected) {
+          this.connected = false;
+          this.updateStatusDot();
+        }
+      }
+    }, 8000);
+  }
+
+  scheduleAutoSaveIfNeeded({ reset = false } = {}) {
+    const sv = store.getSaveSettings();
+    if (sv.mode !== 'auto' || !store.hasUnsavedChanges() || store.isFocusMode) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+      return;
+    }
+
+    if (reset && this.autoSaveTimer) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+    if (this.autoSaveTimer) return;
+
+    const delayMs = Math.max(1, Math.min(300, sv.intervalSec || 1)) * 1000;
+    this.autoSaveTimer = setTimeout(async () => {
+      this.autoSaveTimer = null;
+      if (store.getSaveSettings().mode === 'auto' && store.hasUnsavedChanges() && !store.isFocusMode) {
+        if (this.isUserBusyForSave()) {
+          // Wait until active drag finishes, then re-arm trailing debounce
+          this.scheduleAutoSaveIfNeeded({ reset: true });
+        } else {
+          await this.saveAllToBackend({ manual: false });
+        }
+      }
+    }, delayMs);
+  }
+
+  rescheduleAutoSave() {
+    this.scheduleAutoSaveIfNeeded({ reset: true });
+  }
+
+  isUserBusyForSave() {
+    return Boolean(nodes.activeDrag || wires.activeDrag || canvas.dragAction);
   }
 
   connectSSE() {
@@ -99,44 +182,64 @@ class SyncManager {
     const es = new EventSource(`${API_BASE}/events`);
     this.eventSource = es;
 
-    es.addEventListener('connected', (msg) => {
+    es.addEventListener('connected', async (msg) => {
       this.connected = true;
-      this.setStatus('connected');
       try {
         const data = JSON.parse(msg.data);
         const rev = typeof data.revision === 'number' ? data.revision : 0;
-        const hasWorkspaceFile = !!data.hasWorkspaceFile;
+        this.lastRevision = rev;
 
-        if (store.isFocusMode) {
-          this.lastRevision = rev;
-          return;
-        }
-
-        if (rev > 0 || hasWorkspaceFile) {
-          this.lastRevision = rev;
-          this.applyRemote(data.state, 'CONNECTED');
-          if (data.selection) {
-            this.applyRemoteSelection(data.selection);
-          }
-        } else if (store.hasLocalSavedState()) {
-          // Backend is pristine; seed backend from browser localStorage
-          this.lastRevision = rev;
-          this.pushGraphNow().then(() => {
-            const sel = nodes.getSelectionState();
-            if (sel.cardIds.length > 0 || sel.capsulePinId) {
-              this.pushSelectionNow();
-            }
-          });
-        } else {
-          this.lastRevision = rev;
+        if (Array.isArray(data.canvases)) {
+          store.setCanvasTree(data.canvases);
         }
 
         if (Array.isArray(data.library)) {
           window.__library?.syncFromBackendBootstrap?.(data.library);
         }
+
+        if (store.isFocusMode) {
+          this.updateStatusDot();
+          return;
+        }
+
+        if (data.settings && !store.settingsDirty) {
+          this.isApplyingRemote = true;
+          try {
+            store.state.settings = store.normalizeSettings(data.settings);
+            store.notify({ type: 'SETTINGS_CHANGED', settings: store.state.settings });
+          } finally {
+            this.isApplyingRemote = false;
+          }
+          // normalize/notify above might mark settingsDirty, clear if it came from server
+          store.settingsDirty = false;
+        }
+
+        // Load active canvas from SQLite unless local cache has unsaved edits for it
+        const activeId = store.activeCanvasId || 'root';
+        if (!store.isCanvasDirty(activeId)) {
+          let loadedPayload = activeId === 'root' ? data.state : null;
+          if (!loadedPayload || activeId !== 'root') {
+            try {
+              const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(activeId)}`);
+              if (res.ok) {
+                const json = await res.json();
+                if (json?.ok && json.data) loadedPayload = json.data;
+              }
+            } catch (e) {}
+          }
+          if (loadedPayload) {
+            this.applyRemote(loadedPayload, 'CONNECTED');
+            if (activeId === 'root' && data.selection) {
+              this.applyRemoteSelection(data.selection);
+            }
+          }
+        }
       } catch (e) {
         console.warn('[PinPoint Sync] Failed to parse connected payload:', e);
       }
+
+      this.updateStatusDot();
+      this.scheduleAutoSaveIfNeeded();
     });
 
     es.onmessage = (msg) => {
@@ -151,7 +254,8 @@ class SyncManager {
         this.lastRevision = evt.revision;
 
         if (evt.type === 'SELECTION_CHANGED') {
-          if (!store.isFocusMode) {
+          const targetCid = evt.canvasId || evt.payload?.canvasId || 'root';
+          if (!store.isFocusMode && targetCid === store.activeCanvasId) {
             this.applyRemoteSelection(evt.payload);
           }
           return;
@@ -161,6 +265,36 @@ class SyncManager {
           if (Array.isArray(evt.library)) {
             window.__library?.applyRemoteLibrary?.(evt.library);
           }
+          return;
+        }
+
+        if (evt.type === 'CANVAS_CREATED' || evt.type === 'CANVAS_DELETED' || evt.type === 'CANVAS_UPDATED') {
+          store.refreshCanvasTree();
+        }
+
+        const evtCanvasId = evt.canvasId || evt.state?.id || 'root';
+        if (evtCanvasId !== store.activeCanvasId) {
+          // If it's a child subcanvas on the active canvas, refresh active thumbnail
+          const hasSubCard = store.state.cards.some(c => c.kind === 'subcanvas' && c.subcanvasId === evtCanvasId);
+          if (hasSubCard && !store.isCanvasDirty(evtCanvasId)) {
+            fetch(`${API_BASE}/canvases/${encodeURIComponent(evtCanvasId)}/thumbnail`)
+              .then(r => r.ok ? r.json() : null)
+              .then(json => {
+                if (json?.ok && json.data) {
+                  const card = store.state.cards.find(c => c.kind === 'subcanvas' && c.subcanvasId === evtCanvasId);
+                  if (card) {
+                    card.thumbnail = json.data;
+                    nodes.render();
+                    wires.render();
+                  }
+                }
+              }).catch(() => {});
+          }
+          return;
+        }
+
+        // Do not overwrite locally modified unsaved work automatically
+        if (store.isCanvasDirty(store.activeCanvasId)) {
           return;
         }
 
@@ -176,7 +310,7 @@ class SyncManager {
 
     es.onerror = () => {
       this.connected = false;
-      this.setStatus('reconnecting');
+      this.updateStatusDot();
     };
   }
 
@@ -199,7 +333,7 @@ class SyncManager {
 
   flushPendingIfIdle() {
     if (!this.pendingEvent || store.isFocusMode) return;
-    if (this.isUserBusyForEvent(this.pendingEvent.type)) return;
+    if (this.isUserBusyForSave() || this.isUserBusyForEvent(this.pendingEvent.type)) return;
     const evt = this.pendingEvent;
     this.pendingEvent = null;
     this.applyRemote(evt.state, evt.type);
@@ -209,7 +343,7 @@ class SyncManager {
     if (!remoteState) return;
     this.isApplyingRemote = true;
     try {
-      store.applyRemoteState(remoteState, sourceEvent);
+      store.applyRemoteCanvas(remoteState, sourceEvent);
     } finally {
       this.isApplyingRemote = false;
     }
@@ -230,75 +364,179 @@ class SyncManager {
     clearTimeout(this.selectionTimer);
     this.selectionTimer = setTimeout(() => {
       this.pushSelectionNow();
-    }, 60);
+    }, 80);
   }
 
   notifyViewportChanged() {
-    if (this.isApplyingRemote || !this.connected || store.isFocusMode) return;
-    clearTimeout(this.viewportTimer);
-    this.viewportTimer = setTimeout(() => {
-      this.pushViewportNow();
-    }, 220);
+    // Viewport panning/zooming stays cached in IndexedDB and syncs on save/auto-save
+    store.scheduleCacheWrite();
   }
 
-  scheduleGraphSync(delay = 90) {
-    if (store.isFocusMode) return;
-    clearTimeout(this.syncTimer);
-    this.syncTimer = setTimeout(() => {
-      this.pushGraphNow();
-    }, delay);
-  }
-
-  async pushGraphNow() {
-    if (!this.connected || store.isFocusMode) return;
+  async pushSettingsNow() {
+    if (!this.connected || store.isFocusMode) return false;
     try {
-      const payload = {
-        viewport: store.state.viewport,
-        settings: store.state.settings,
-        cards: store.state.cards,
-        connections: store.state.connections,
-        groups: store.state.groups || []
-      };
-      const res = await fetch(`${API_BASE}/graph?mode=sync`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-PinPoint-Client': this.clientId
-        },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) {
-        console.warn('[PinPoint Sync] Graph sync rejected:', res.status);
-      }
-    } catch (e) {
-      // Network offline or server restarting; SSE will recover
-    }
-  }
-
-  async pushViewportNow() {
-    if (!this.connected || store.isFocusMode) return;
-    try {
-      await fetch(`${API_BASE}/viewport`, {
+      const res = await fetch(`${API_BASE}/settings`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           'X-PinPoint-Client': this.clientId
         },
-        body: JSON.stringify(store.state.viewport)
+        body: JSON.stringify(store.state.settings)
       });
+      if (res.ok) {
+        store.settingsDirty = false;
+        this.updateStatusDot();
+        return true;
+      }
     } catch (e) {}
+    return false;
+  }
+
+  _sortCanvasIdsTopDown(ids) {
+    const depthOf = (cid, seen = new Set()) => {
+      if (!cid || cid === 'root') return 0;
+      if (seen.has(cid)) return 999;
+      seen.add(cid);
+      const entry = cid === store.activeCanvasId ? { parentCanvasId: store.parentCanvasId } : store.canvasesCache.get(cid);
+      if (entry?.parentCanvasId) return 1 + depthOf(entry.parentCanvasId, seen);
+      const row = (store.canvasTree || []).find(r => r.id === cid);
+      if (row?.parentCanvasId) return 1 + depthOf(row.parentCanvasId, seen);
+      return 1;
+    };
+    return [...ids].sort((a, b) => depthOf(a) - depthOf(b));
+  }
+
+  async saveAllToBackend({ manual = false } = {}) {
+    if (store.isFocusMode) {
+      if (manual) store.emitToast('请先退出专注模式后再保存', 'warning');
+      return { ok: false, reason: 'focus-mode' };
+    }
+    if (!this.connected) {
+      this.updateStatusDot();
+      if (manual) store.emitToast('服务未连接，暂无法保存', 'warning');
+      return { ok: false, reason: 'offline' };
+    }
+    if (this.isSaving) return { ok: false, reason: 'busy' };
+
+    clearTimeout(this.autoSaveTimer);
+    this.autoSaveTimer = null;
+    this.isSaving = true;
+    this.updateStatusDot();
+
+    try {
+      nodes.flushActiveDOMEdits();
+      await store.flushCacheToIDBNow();
+
+      // 1. Delete pending removed subcanvases
+      const deletedIds = [...store.pendingDeletedCanvasIds];
+      for (const delId of deletedIds) {
+        try {
+          const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(delId)}`, {
+            method: 'DELETE',
+            headers: { 'X-PinPoint-Client': this.clientId }
+          });
+          if (res.ok || res.status === 404) {
+            store.pendingDeletedCanvasIds.delete(delId);
+          }
+        } catch (e) {
+          throw e;
+        }
+      }
+
+      // 2. Sync dirty canvases top-down (parent before child)
+      const dirtyIds = this._sortCanvasIdsTopDown(store.dirtyCanvasIds);
+      const savedIds = [];
+
+      for (const cid of dirtyIds) {
+        const entry = cid === store.activeCanvasId
+          ? store._saveActiveToCacheMap(true)
+          : store.canvasesCache.get(cid);
+        if (!entry) {
+          savedIds.push(cid);
+          continue;
+        }
+
+        const cleanCards = (entry.cards || []).map(c => {
+          if (c.kind === 'subcanvas') {
+            const { thumbnail, ...rest } = c;
+            return rest;
+          }
+          return c;
+        });
+
+        const payload = {
+          id: cid,
+          parentCanvasId: entry.parentCanvasId ?? null,
+          title: entry.title || (cid === 'root' ? '主画布' : '子画布'),
+          viewport: entry.viewport || { x: 0, y: 0, zoom: 1.0 },
+          settings: store.state.settings,
+          cards: cleanCards,
+          connections: entry.connections || [],
+          groups: entry.groups || []
+        };
+
+        const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(cid)}?mode=sync`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-PinPoint-Client': this.clientId
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          throw new Error(`Save canvas ${cid} failed with HTTP ${res.status}`);
+        }
+        const json = await res.json();
+        if (typeof json?.revision === 'number') {
+          this.lastRevision = Math.max(this.lastRevision, json.revision);
+        }
+        savedIds.push(cid);
+      }
+
+      // 3. Sync settings if dirty (and no canvases pushed it already)
+      let clearedSettings = false;
+      if (store.settingsDirty) {
+        const okSettings = await this.pushSettingsNow();
+        clearedSettings = okSettings;
+      }
+
+      store.clearDirtyFor(savedIds, clearedSettings || savedIds.length > 0);
+      await store.refreshCanvasTree();
+
+      if (manual) {
+        store.emitToast('已保存', 'success');
+      }
+      this.updateStatusDot();
+      return { ok: true, savedCount: savedIds.length };
+    } catch (e) {
+      console.warn('[PinPoint Sync] Save failed:', e);
+      // Re-verify health in case server went down
+      try {
+        const h = await fetch(`${API_BASE}/health`, { cache: 'no-store' });
+        this.connected = h.ok;
+      } catch (_) {
+        this.connected = false;
+      }
+      this.updateStatusDot();
+      if (manual) {
+        store.emitToast(this.connected ? '保存失败，请重试' : '服务已断开，暂无法保存', 'warning');
+      }
+      return { ok: false, error: e };
+    } finally {
+      this.isSaving = false;
+      this.updateStatusDot();
+      if (store.hasUnsavedChanges()) {
+        this.scheduleAutoSaveIfNeeded();
+      }
+    }
   }
 
   async pushSelectionNow() {
     if (!this.connected || store.isFocusMode) return;
     try {
-      if (this.syncTimer) {
-        clearTimeout(this.syncTimer);
-        this.syncTimer = null;
-        await this.pushGraphNow();
-      }
       const sel = nodes.getSelectionState();
-      await fetch(`${API_BASE}/selection`, {
+      await fetch(`${API_BASE}/selection?canvasId=${encodeURIComponent(store.activeCanvasId)}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

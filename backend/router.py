@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .models import ApiError
+from .models import ROOT_CANVAS_ID, ApiError
 from .store import GraphStore
 
 API_PREFIX = "/api/v1"
@@ -32,88 +32,153 @@ class ApiRouter:
 
         return decorator
 
+    def _cid(self, query: dict[str, list[str]]) -> str:
+        return query.get("canvasId", [ROOT_CANVAS_ID])[0] or ROOT_CANVAS_ID
+
     def _register_routes(self) -> None:
         # System
         @self._route("GET", "/health")
         def get_health(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, {"status": "ok", "service": "pinpoint-api", "version": "1.0.0"}
+            return 200, {
+                "status": "ok",
+                "service": "pinpoint-api",
+                "version": "2.3.0",
+                "storage": "sqlite",
+                "revision": self.store.revision,
+            }
+
+        # Canvases & Subcanvases
+        @self._route("GET", "/canvases")
+        def list_canvases(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.list_canvases()
+
+        @self._route("GET", "/canvases/{canvasId}")
+        def get_canvas(query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
+            inc_raw = query.get("include", [None])[0]
+            include = {s.strip() for s in inc_raw.split(",") if s.strip()} if inc_raw else None
+            return 200, self.store.get_canvas(canvas_id=canvasId, include=include)
+
+        @self._route("PUT", "/canvases/{canvasId}")
+        def replace_or_sync_canvas(query: dict[str, list[str]], body: Any, canvasId: str) -> tuple[int, Any]:
+            mode = query.get("mode", ["replace"])[0]
+            if mode == "sync":
+                return 200, self.store.sync_from_client(body, canvas_id=canvasId)
+            return 200, self.store.replace_graph(body, canvas_id=canvasId)
+
+        @self._route("PUT", "/canvases/{canvasId}/graph")
+        def replace_or_sync_canvas_graph(query: dict[str, list[str]], body: Any, canvasId: str) -> tuple[int, Any]:
+            return replace_or_sync_canvas(query, body, canvasId)
+
+        @self._route("PATCH", "/canvases/{canvasId}")
+        def update_canvas(_query: dict[str, list[str]], body: Any, canvasId: str) -> tuple[int, Any]:
+            return 200, self.store.update_canvas(canvasId, body)
+
+        @self._route("DELETE", "/canvases/{canvasId}")
+        def delete_canvas(_query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
+            return 200, self.store.delete_canvas(canvasId)
+
+        @self._route("POST", "/canvases/{canvasId}/subcanvases")
+        def create_subcanvas(_query: dict[str, list[str]], body: Any, canvasId: str) -> tuple[int, Any]:
+            return 201, self.store.create_subcanvas(parent_canvas_id=canvasId, payload=body)
+
+        @self._route("GET", "/canvases/{canvasId}/thumbnail")
+        def get_canvas_thumbnail(_query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
+            return 200, self.store.get_canvas_thumbnail(canvasId)
+
+        @self._route("GET", "/canvases/{canvasId}/export")
+        def export_canvas(query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
+            inc_sub = query.get("includeSubcanvases", ["true"])[0].lower() != "false"
+            return 200, self.store.export_canvas(canvas_id=canvasId, include_subcanvases=inc_sub)
+
+        @self._route("POST", "/canvases/{canvasId}/import")
+        def import_canvas(_query: dict[str, list[str]], body: Any, canvasId: str) -> tuple[int, Any]:
+            return 200, self.store.import_canvas(canvasId, body)
+
+        @self._route("POST", "/canvases/{canvasId}/reset")
+        def reset_canvas(_query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
+            return 200, self.store.reset(canvas_id=canvasId)
+
+        @self._route("GET", "/canvases/{canvasId}/summary")
+        def get_canvas_summary(_query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
+            return 200, self.store.get_summary(canvas_id=canvasId)
 
         # Graph & Workspace
         @self._route("GET", "/graph")
         def get_graph(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
             inc_raw = query.get("include", [None])[0]
             include = {s.strip() for s in inc_raw.split(",") if s.strip()} if inc_raw else None
-            return 200, self.store.get_graph(include=include)
+            return 200, self.store.get_graph(include=include, canvas_id=self._cid(query))
 
         @self._route("PUT", "/graph")
         def replace_graph(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            cid = self._cid(query)
             mode = query.get("mode", ["replace"])[0]
             if mode == "sync":
-                return 200, self.store.sync_from_client(body)
-            return 200, self.store.replace_graph(body)
+                return 200, self.store.sync_from_client(body, canvas_id=cid)
+            return 200, self.store.replace_graph(body, canvas_id=cid)
 
         @self._route("GET", "/graph/summary")
-        def get_graph_summary(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, self.store.get_summary()
+        def get_graph_summary(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.get_summary(canvas_id=self._cid(query))
 
         @self._route("POST", "/graph/reset")
-        def reset_graph(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, self.store.reset()
+        def reset_graph(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.reset(canvas_id=self._cid(query))
 
         @self._route("POST", "/graph/save")
-        def save_graph(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+        def save_graph(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
             path_str = body.get("path") if isinstance(body, dict) else None
-            return 200, self.store.save_to_file(path_str)
+            return 200, self.store.save_to_file(path_str, canvas_id=self._cid(query))
 
         # Cards
         @self._route("GET", "/cards")
         def list_cards(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
             q = query.get("q", [None])[0]
             group_id = query.get("groupId", [None])[0]
-            return 200, self.store.list_cards(q=q, group_id=group_id)
+            return 200, self.store.list_cards(q=q, group_id=group_id, canvas_id=self._cid(query))
 
         @self._route("POST", "/cards")
-        def create_card(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
-            return 201, self.store.create_card(body)
+        def create_card(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            return 201, self.store.create_card(body, canvas_id=self._cid(query))
 
         @self._route("POST", "/cards/batch")
-        def batch_cards(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
-            return 200, self.store.batch_cards(body)
+        def batch_cards(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            return 200, self.store.batch_cards(body, canvas_id=self._cid(query))
 
         @self._route("GET", "/cards/{cardId}")
-        def get_card(_query: dict[str, list[str]], _body: Any, cardId: str) -> tuple[int, Any]:
-            return 200, self.store.get_card(cardId)
+        def get_card(query: dict[str, list[str]], _body: Any, cardId: str) -> tuple[int, Any]:
+            return 200, self.store.get_card(cardId, canvas_id=self._cid(query))
 
         @self._route("PATCH", "/cards/{cardId}")
-        def update_card(_query: dict[str, list[str]], body: Any, cardId: str) -> tuple[int, Any]:
-            return 200, self.store.update_card(cardId, body)
+        def update_card(query: dict[str, list[str]], body: Any, cardId: str) -> tuple[int, Any]:
+            return 200, self.store.update_card(cardId, body, canvas_id=self._cid(query))
 
         @self._route("DELETE", "/cards/{cardId}")
-        def delete_card(_query: dict[str, list[str]], _body: Any, cardId: str) -> tuple[int, Any]:
-            return 200, self.store.delete_card(cardId)
+        def delete_card(query: dict[str, list[str]], _body: Any, cardId: str) -> tuple[int, Any]:
+            return 200, self.store.delete_card(cardId, canvas_id=self._cid(query))
 
         @self._route("POST", "/cards/{cardId}/clone")
-        def clone_card(_query: dict[str, list[str]], body: Any, cardId: str) -> tuple[int, Any]:
+        def clone_card(query: dict[str, list[str]], body: Any, cardId: str) -> tuple[int, Any]:
             ox = float(body.get("offsetX", 32)) if isinstance(body, dict) else 32.0
             oy = float(body.get("offsetY", 32)) if isinstance(body, dict) else 32.0
-            return 201, self.store.clone_card(cardId, offset_x=ox, offset_y=oy)
+            return 201, self.store.clone_card(cardId, offset_x=ox, offset_y=oy, canvas_id=self._cid(query))
 
         # Capsules
         @self._route("GET", "/cards/{cardId}/capsules")
-        def list_capsules(_query: dict[str, list[str]], _body: Any, cardId: str) -> tuple[int, Any]:
-            return 200, self.store.list_capsules(cardId)
+        def list_capsules(query: dict[str, list[str]], _body: Any, cardId: str) -> tuple[int, Any]:
+            return 200, self.store.list_capsules(cardId, canvas_id=self._cid(query))
 
         @self._route("POST", "/cards/{cardId}/capsules")
-        def create_capsule(_query: dict[str, list[str]], body: Any, cardId: str) -> tuple[int, Any]:
-            return 201, self.store.create_capsule(cardId, body)
+        def create_capsule(query: dict[str, list[str]], body: Any, cardId: str) -> tuple[int, Any]:
+            return 201, self.store.create_capsule(cardId, body, canvas_id=self._cid(query))
 
         @self._route("PATCH", "/capsules/{pinId}")
-        def update_capsule(_query: dict[str, list[str]], body: Any, pinId: str) -> tuple[int, Any]:
-            return 200, self.store.update_capsule(pinId, body)
+        def update_capsule(query: dict[str, list[str]], body: Any, pinId: str) -> tuple[int, Any]:
+            return 200, self.store.update_capsule(pinId, body, canvas_id=self._cid(query))
 
         @self._route("DELETE", "/capsules/{pinId}")
-        def delete_capsule(_query: dict[str, list[str]], _body: Any, pinId: str) -> tuple[int, Any]:
-            return 200, self.store.delete_capsule(pinId)
+        def delete_capsule(query: dict[str, list[str]], _body: Any, pinId: str) -> tuple[int, Any]:
+            return 200, self.store.delete_capsule(pinId, canvas_id=self._cid(query))
 
         # Connections
         @self._route("GET", "/connections")
@@ -122,96 +187,99 @@ class ApiRouter:
                 card_id=query.get("cardId", [None])[0],
                 group_id=query.get("groupId", [None])[0],
                 pin_id=query.get("pinId", [None])[0],
+                canvas_id=self._cid(query),
             )
 
         @self._route("POST", "/connections")
-        def create_connection(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
-            return 201, self.store.create_connection(body)
+        def create_connection(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            return 201, self.store.create_connection(body, canvas_id=self._cid(query))
 
         @self._route("PATCH", "/connections/{connId}")
-        def update_connection(_query: dict[str, list[str]], body: Any, connId: str) -> tuple[int, Any]:
-            return 200, self.store.update_connection(connId, body)
+        def update_connection(query: dict[str, list[str]], body: Any, connId: str) -> tuple[int, Any]:
+            return 200, self.store.update_connection(connId, body, canvas_id=self._cid(query))
 
         @self._route("DELETE", "/connections/{connId}")
-        def delete_connection(_query: dict[str, list[str]], _body: Any, connId: str) -> tuple[int, Any]:
-            return 200, self.store.delete_connection(connId)
+        def delete_connection(query: dict[str, list[str]], _body: Any, connId: str) -> tuple[int, Any]:
+            return 200, self.store.delete_connection(connId, canvas_id=self._cid(query))
 
         # Groups
         @self._route("GET", "/groups")
-        def list_groups(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, self.store.list_groups()
+        def list_groups(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.list_groups(canvas_id=self._cid(query))
 
         @self._route("POST", "/groups")
-        def create_group(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
-            return 201, self.store.create_group(body)
+        def create_group(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            return 201, self.store.create_group(body, canvas_id=self._cid(query))
 
         @self._route("PATCH", "/groups/{groupId}")
-        def update_group(_query: dict[str, list[str]], body: Any, groupId: str) -> tuple[int, Any]:
-            return 200, self.store.update_group(groupId, body)
+        def update_group(query: dict[str, list[str]], body: Any, groupId: str) -> tuple[int, Any]:
+            return 200, self.store.update_group(groupId, body, canvas_id=self._cid(query))
 
         @self._route("DELETE", "/groups/{groupId}")
-        def delete_group(_query: dict[str, list[str]], _body: Any, groupId: str) -> tuple[int, Any]:
-            return 200, self.store.delete_group(groupId)
+        def delete_group(query: dict[str, list[str]], _body: Any, groupId: str) -> tuple[int, Any]:
+            return 200, self.store.delete_group(groupId, canvas_id=self._cid(query))
 
         @self._route("POST", "/groups/{groupId}/members")
-        def add_group_member(_query: dict[str, list[str]], body: Any, groupId: str) -> tuple[int, Any]:
+        def add_group_member(query: dict[str, list[str]], body: Any, groupId: str) -> tuple[int, Any]:
             if not isinstance(body, dict) or not body.get("cardId"):
                 raise ApiError(400, "MISSING_CARD_ID", "'cardId' is required.")
-            return 200, self.store.add_card_to_group(groupId, str(body["cardId"]))
+            return 200, self.store.add_card_to_group(groupId, str(body["cardId"]), canvas_id=self._cid(query))
 
         @self._route("DELETE", "/groups/{groupId}/members/{cardId}")
-        def remove_group_member(_query: dict[str, list[str]], _body: Any, groupId: str, cardId: str) -> tuple[int, Any]:
-            return 200, self.store.remove_card_from_group(groupId, cardId)
+        def remove_group_member(query: dict[str, list[str]], _body: Any, groupId: str, cardId: str) -> tuple[int, Any]:
+            return 200, self.store.remove_card_from_group(groupId, cardId, canvas_id=self._cid(query))
 
         # Layout
         @self._route("POST", "/layout/align")
-        def align_cards(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+        def align_cards(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
             if not isinstance(body, dict):
                 raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
-            return 200, self.store.align_cards(body.get("cardIds") or [], body.get("type") or "")
+            return 200, self.store.align_cards(body.get("cardIds") or [], body.get("type") or "", canvas_id=self._cid(query))
 
         @self._route("POST", "/layout/auto")
-        def auto_layout(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+        def auto_layout(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
             b = body if isinstance(body, dict) else {}
             return 200, self.store.auto_layout(
                 strategy=b.get("strategy", "layered"),
                 card_ids=b.get("cardIds"),
                 spacing_x=float(b.get("spacingX", 96)),
                 spacing_y=float(b.get("spacingY", 64)),
+                canvas_id=self._cid(query),
             )
 
         # History
         @self._route("GET", "/history")
-        def get_history(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, self.store.get_history()
+        def get_history(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.get_history(canvas_id=self._cid(query))
 
         @self._route("POST", "/history/undo")
-        def undo_history(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, self.store.undo()
+        def undo_history(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.undo(canvas_id=self._cid(query))
 
         @self._route("POST", "/history/redo")
-        def redo_history(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, self.store.redo()
+        def redo_history(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.redo(canvas_id=self._cid(query))
 
         # Viewport
         @self._route("GET", "/viewport")
-        def get_viewport(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, self.store.get_viewport()
+        def get_viewport(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.get_viewport(canvas_id=self._cid(query))
 
         @self._route("PATCH", "/viewport")
-        def update_viewport(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
-            return 200, self.store.update_viewport(body)
+        def update_viewport(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            return 200, self.store.update_viewport(body, canvas_id=self._cid(query))
 
         @self._route("POST", "/viewport/fit")
-        def fit_viewport(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+        def fit_viewport(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
             b = body if isinstance(body, dict) else {}
             return 200, self.store.fit_viewport(
                 viewport_width=float(b.get("viewportWidth", 1440)),
                 viewport_height=float(b.get("viewportHeight", 900)),
+                canvas_id=self._cid(query),
             )
 
         @self._route("POST", "/viewport/focus")
-        def focus_viewport(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+        def focus_viewport(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
             if not isinstance(body, dict):
                 raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
             return 200, self.store.focus_viewport(
@@ -219,6 +287,7 @@ class ApiRouter:
                 group_id=body.get("groupId"),
                 viewport_width=float(body.get("viewportWidth", 1440)),
                 viewport_height=float(body.get("viewportHeight", 900)),
+                canvas_id=self._cid(query),
             )
 
         # Settings
@@ -236,18 +305,21 @@ class ApiRouter:
 
         # Live Selection (Transient UI <-> MCP)
         @self._route("GET", "/selection")
-        def get_selection(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
-            return 200, self.store.get_selection()
+        def get_selection(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            cid = query.get("canvasId", [None])[0]
+            return 200, self.store.get_selection(canvas_id=cid)
 
         @self._route("PUT", "/selection")
-        def put_selection(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+        def put_selection(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
             strict = bool(isinstance(body, dict) and body.get("strict"))
-            return 200, self.store.update_selection(body, strict=strict)
+            cid = query.get("canvasId", [None])[0]
+            return 200, self.store.update_selection(body, strict=strict, canvas_id=cid)
 
         @self._route("PATCH", "/selection")
-        def patch_selection(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+        def patch_selection(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
             strict = bool(isinstance(body, dict) and body.get("strict"))
-            return 200, self.store.update_selection(body, strict=strict)
+            cid = query.get("canvasId", [None])[0]
+            return 200, self.store.update_selection(body, strict=strict, canvas_id=cid)
 
         # Reusable Node Library
         @self._route("GET", "/library")
@@ -255,8 +327,8 @@ class ApiRouter:
             return 200, self.store.list_library(q=query.get("q", [None])[0])
 
         @self._route("POST", "/library")
-        def create_library_item(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
-            return 201, self.store.create_library_item(body)
+        def create_library_item(query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            return 201, self.store.create_library_item(body, canvas_id=self._cid(query))
 
         @self._route("GET", "/library/{itemId}")
         def get_library_item(_query: dict[str, list[str]], _body: Any, itemId: str) -> tuple[int, Any]:
@@ -271,8 +343,8 @@ class ApiRouter:
             return 200, self.store.delete_library_item(itemId)
 
         @self._route("POST", "/library/{itemId}/instantiate")
-        def instantiate_library_item(_query: dict[str, list[str]], body: Any, itemId: str) -> tuple[int, Any]:
-            return 201, self.store.instantiate_library_item(itemId, body)
+        def instantiate_library_item(query: dict[str, list[str]], body: Any, itemId: str) -> tuple[int, Any]:
+            return 201, self.store.instantiate_library_item(itemId, body, canvas_id=self._cid(query))
 
     def is_api_path(self, raw_path: str) -> bool:
         path = urlparse(raw_path).path
@@ -352,6 +424,8 @@ class ApiRouter:
                     "revision": self.store.revision,
                     "hasWorkspaceFile": self.store.has_workspace_file,
                     "state": self.store.get_graph(),
+                    "settings": self.store.get_settings(),
+                    "canvases": self.store.list_canvases(),
                     "selection": self.store.get_selection(),
                     "library": self.store.list_library(),
                 },

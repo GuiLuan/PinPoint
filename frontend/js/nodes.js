@@ -2,6 +2,7 @@ import { store } from './state.js';
 import { canvas } from './canvas.js';
 import { wires } from './wires.js';
 import { computeRectsBoundingBox } from './focusLayout.js';
+import { renderThumbnailCanvas, computeLocalThumbnail } from './subcanvas.js';
 
 export function hexToRgba(hex, alpha = 1) {
   if (!hex) return `rgba(48, 209, 88, ${alpha})`;
@@ -59,7 +60,10 @@ class NodeManager {
     this.capsuleActionBarEl = capsuleActionBarEl || document.getElementById('capsule-action-bar');
     this.canvasContextMenuEl = canvasContextMenuEl || document.getElementById('canvas-context-menu');
     this.groupContextMenuEl = document.getElementById('group-context-menu');
+    this.subcanvasContextMenuEl = document.getElementById('subcanvas-context-menu');
     this.activeContextGroup = null;
+    this.activeContextSubcanvas = null;
+    this.contextMenuBoardPos = null;
     this.marqueeBoxEl = marqueeBoxEl;
     this.alignmentBarEl = alignmentBarEl;
     this.viewportEl = viewportEl;
@@ -76,6 +80,7 @@ class NodeManager {
     this.bindCapsuleActionEvents();
     this.bindCanvasContextMenuEvents();
     this.bindGroupContextMenuEvents();
+    this.bindSubcanvasContextMenuEvents();
     this.bindCanvasShortcuts();
     this.bindSelectionEvents();
     this.bindAlignmentEvents();
@@ -107,6 +112,48 @@ class NodeManager {
     return card;
   }
 
+  async spawnSubcanvas(pos, title = '未命名子画布', headerColor = null, cardIds = null) {
+    let x = Math.round((pos?.x ?? 160) - 20);
+    let y = Math.round((pos?.y ?? 200) - 20);
+    if (store.state.settings?.gridSnapMode) {
+      const GRID_SIZE = 24;
+      x = Math.round(x / GRID_SIZE) * GRID_SIZE;
+      y = Math.round(y / GRID_SIZE) * GRID_SIZE;
+    }
+    const card = await store.createSubcanvas({ x, y, title, headerColor, cardIds });
+    if (!card) return null;
+    this.filterSelectionAfterRestore();
+    this.render();
+    wires.render();
+    this.updateAlignmentBar();
+    return card;
+  }
+
+  async packSelectionToSubcanvas() {
+    if (this.selectedCardIds.size === 0) return null;
+    this.flushActiveDOMEdits();
+    const ids = [...this.selectedCardIds];
+    const selected = store.state.cards.filter(c => ids.includes(c.id));
+    if (selected.length === 0) return null;
+    const minX = Math.min(...selected.map(c => c.x));
+    const minY = Math.min(...selected.map(c => c.y));
+    const maxX = Math.max(...selected.map(c => c.x + (c.width || 310)));
+    const maxY = Math.max(...selected.map(c => c.y + (c.height || 140)));
+    const centerPos = {
+      x: (minX + maxX) / 2 - 130,
+      y: (minY + maxY) / 2 - 70
+    };
+    const title = selected.length === 1
+      ? `${selected[0].title || '未命名'} (子画布)`
+      : `子画布 (${selected.length} 节点)`;
+    const card = await this.spawnSubcanvas(centerPos, title, null, ids);
+    if (card) {
+      this.selectCard(card.id, false);
+      setTimeout(() => this.editCardTitle(card.id), 40);
+    }
+    return card;
+  }
+
   editCardTitle(cardId) {
     const cardEl = document.getElementById(`card-dom-${cardId}`);
     if (!cardEl) return;
@@ -122,12 +169,12 @@ class NodeManager {
     this.containerEl.innerHTML = '';
 
     store.state.cards.forEach(card => {
+      const isSubcanvas = card.kind === 'subcanvas';
       const cardEl = document.createElement('div');
-      cardEl.className = 'note-card' + (this.selectedCardIds.has(card.id) ? ' selected' : '');
       cardEl.id = `card-dom-${card.id}`;
       cardEl.style.left = `${card.x}px`;
       cardEl.style.top = `${card.y}px`;
-      cardEl.style.width = `${card.width || 310}px`;
+      cardEl.style.width = `${card.width || (isSubcanvas ? 300 : 310)}px`;
 
       const leftPinId = `pin-head-left-${card.id}`;
       const rightPinId = `pin-head-right-${card.id}`;
@@ -142,36 +189,250 @@ class NodeManager {
       const leftColor = card.headerColor || leftConn?.color || '#98989d';
       const rightColor = card.headerColor || rightConn?.color || '#98989d';
 
-      let headerStyle = '';
       if (card.headerColor) {
         cardEl.style.setProperty('--card-theme-border', hexToRgba(card.headerColor, 0.75));
         cardEl.style.setProperty('--card-theme-glow', hexToRgba(card.headerColor, 0.45));
-        const bg1 = hexToRgba(card.headerColor, 0.24);
-        const bg2 = hexToRgba(card.headerColor, 0.10);
-        const borderOutline = hexToRgba(card.headerColor, 0.70);
-        const borderDivider = hexToRgba(card.headerColor, 0.35);
-        headerStyle = `style="background: linear-gradient(180deg, ${bg1} 0%, ${bg2} 100%); border-color: ${borderOutline}; border-top-color: ${card.headerColor}; border-bottom-color: ${borderDivider};"`;
       } else {
         cardEl.style.removeProperty('--card-theme-border');
         cardEl.style.removeProperty('--card-theme-glow');
       }
 
+      if (isSubcanvas) {
+        cardEl.className = 'note-card subcanvas-portal' + (this.selectedCardIds.has(card.id) ? ' selected' : '');
+        const portalH = Math.max(120, card.height || 180);
+        cardEl.style.height = `${portalH}px`;
+        if (card.headerColor) {
+          cardEl.style.setProperty('--portal-accent', card.headerColor);
+          cardEl.style.setProperty('--portal-border', hexToRgba(card.headerColor, 0.6));
+          cardEl.style.setProperty('--portal-tint', hexToRgba(card.headerColor, 0.08));
+        }
+
+        const thumb = store.getThumbnailForSubcanvas(card);
+        const totalItems = (thumb?.cardCount || 0) + (thumb?.subcanvasCount || 0);
+        const isEmpty = totalItems === 0;
+        const countBadgeHtml = totalItems > 0
+          ? `<span class="subcanvas-portal-count">${totalItems}</span>`
+          : '';
+
+        cardEl.innerHTML = `
+          <div class="subcanvas-portal-stage">
+            <canvas class="subcanvas-thumbnail-canvas"></canvas>
+            ${isEmpty ? `<div class="subcanvas-portal-empty"><svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="1.5" fill="none"><rect x="4" y="4" width="16" height="16" rx="4"></rect><line x1="12" y1="9" x2="12" y2="15"></line><line x1="9" y1="12" x2="15" y2="12"></line></svg></div>` : ''}
+            <div class="subcanvas-portal-caption">
+              <svg class="subcanvas-portal-icon" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
+                <rect x="3" y="3" width="18" height="18" rx="4"></rect>
+                <rect x="7.5" y="7.5" width="4" height="4" rx="1"></rect>
+                <rect x="12.5" y="12.5" width="4" height="4" rx="1"></rect>
+              </svg>
+              <span class="header-title subcanvas-portal-title" title="双击重命名"></span>
+              <input class="header-title-input subcanvas-portal-title-input" placeholder="未命名子画布" style="display: none;" />
+              ${countBadgeHtml}
+            </div>
+          </div>
+          <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-left" title="连接端口 (左)">
+            <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}"
+               data-header-pin-id="${leftPinId}"
+               style="background-color: ${leftColor}; color: ${leftColor};"></i>
+          </div>
+          <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-right" title="连接端口 (右)">
+            <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}"
+               data-header-pin-id="${rightPinId}"
+               style="background-color: ${rightColor}; color: ${rightColor};"></i>
+          </div>
+          <div class="card-resize-handle card-resize-handle-left" data-side="left"></div>
+          <div class="card-resize-handle card-resize-handle-right" data-side="right"></div>
+          <div class="subcanvas-resize-bottom"></div>
+        `;
+
+        const titleSpan = cardEl.querySelector('.header-title');
+        const titleInput = cardEl.querySelector('.header-title-input');
+        titleSpan.textContent = card.title || '未命名子画布';
+        titleInput.value = card.title || '';
+
+        let prevTitle = card.title || '';
+        const syncInputWidth = () => {
+          const len = (titleInput.value || '').length;
+          const approx = Math.min(Math.max(len * 11 + 28, 96), 185);
+          titleInput.style.width = `${approx}px`;
+        };
+        const startTitleEdit = () => {
+          prevTitle = card.title || '';
+          const spanW = titleSpan.offsetWidth || 0;
+          titleSpan.style.display = 'none';
+          titleInput.style.display = 'inline-block';
+          titleInput.value = card.title || '';
+          titleInput.style.width = `${Math.min(Math.max(spanW + 24, 96), 185)}px`;
+          titleInput.focus();
+          titleInput.select();
+        };
+        cardEl._startTitleEdit = startTitleEdit;
+        titleInput.addEventListener('input', syncInputWidth);
+
+        const finishTitleEdit = () => {
+          if (titleInput.style.display === 'none') return;
+          const newTitle = titleInput.value.trim() || '未命名子画布';
+          const changed = newTitle !== prevTitle;
+          card.title = newTitle;
+          prevTitle = newTitle;
+          titleSpan.textContent = newTitle;
+          titleInput.style.display = 'none';
+          titleSpan.style.display = '';
+          if (changed) {
+            if (card.subcanvasId) {
+              store.updateCard(card.id, { title: newTitle });
+            }
+            store.commit();
+          }
+          store.scheduleAutoSave();
+        };
+
+        titleSpan.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          startTitleEdit();
+        });
+        titleInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            finishTitleEdit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            titleInput.value = card.title || '';
+            finishTitleEdit();
+          }
+        });
+        titleInput.addEventListener('blur', finishTitleEdit);
+        titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        // Drag portal anywhere on its surface
+        cardEl.addEventListener('mousedown', (e) => {
+          if (e.target.closest('.header-pin, .header-port-slot, .card-resize-handle, .subcanvas-resize-bottom') || e.target === titleInput) return;
+          if (e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          wires.clearFocus();
+          wires.dismissDropMenu(true);
+          this.clearCapsuleSelection();
+          window.getSelection()?.removeAllRanges();
+          this.hideSelectionPopover();
+          this.hideCanvasContextMenu();
+          this.hideGroupContextMenu();
+          this.hideSubcanvasContextMenu();
+
+          if (e.shiftKey) {
+            this.selectCard(card.id, true);
+          } else if (!this.selectedCardIds.has(card.id)) {
+            this.selectCard(card.id, false);
+          }
+
+          this.activeDrag = {
+            type: 'MOVE_CARDS',
+            leadCardId: card.id,
+            startX: e.clientX,
+            startY: e.clientY,
+            isAlt: e.altKey,
+            cloned: false,
+            initialPositions: new Map(
+              [...this.selectedCardIds].map(id => {
+                const c = store.state.cards.find(x => x.id === id);
+                return [id, { x: c.x, y: c.y, width: c.width || 300 }];
+              })
+            )
+          };
+          this.selectedCardIds.forEach(id => {
+            document.getElementById(`card-dom-${id}`)?.classList.add('active');
+          });
+        });
+
+        // Double click portal stage to enter subcanvas
+        cardEl.addEventListener('dblclick', (e) => {
+          if (e.target.closest('.header-pin, .header-port-slot, .subcanvas-portal-title, .subcanvas-portal-title-input, .card-resize-handle, .subcanvas-resize-bottom')) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (card.subcanvasId) {
+            store.navigateToCanvas(card.subcanvasId);
+          }
+        });
+
+        cardEl.addEventListener('contextmenu', (e) => {
+          if (e.target.closest('.header-pin, .header-port-slot')) return;
+          e.preventDefault();
+          e.stopPropagation();
+          this.showSubcanvasContextMenu(card, cardEl, startTitleEdit, e.clientX, e.clientY);
+        });
+
+        cardEl.querySelectorAll('.card-resize-handle').forEach(resizeHandle => {
+          resizeHandle.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this.hideAllMenus();
+            const side = resizeHandle.getAttribute('data-side') || 'right';
+            this.activeDrag = {
+              type: 'RESIZE_CARD',
+              side,
+              cardId: card.id,
+              startX: e.clientX,
+              initX: card.x,
+              initWidth: cardEl.offsetWidth
+            };
+            resizeHandle.classList.add('active');
+          });
+        });
+
+        const bottomResizeEl = cardEl.querySelector('.subcanvas-resize-bottom');
+        bottomResizeEl?.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          this.hideAllMenus();
+          this.activeDrag = {
+            type: 'RESIZE_SUBCANVAS_HEIGHT',
+            cardId: card.id,
+            startY: e.clientY,
+            initHeight: card.height || 180
+          };
+          bottomResizeEl.classList.add('active');
+        });
+
+        this.bindPinEvents(cardEl.querySelector('.header-pin-left'), leftPinId);
+        this.bindPinEvents(cardEl.querySelector('.header-pin-right'), rightPinId);
+
+        this.containerEl.appendChild(cardEl);
+        const thumbCanvas = cardEl.querySelector('.subcanvas-thumbnail-canvas');
+        if (thumbCanvas) {
+          renderThumbnailCanvas(thumbCanvas, thumb, store.getPalette());
+        }
+        return;
+      }
+
+      // Normal Card Node
+      cardEl.className = 'note-card' + (this.selectedCardIds.has(card.id) ? ' selected' : '');
+
+      let headerStyle = '';
+      if (card.headerColor) {
+        const bg1 = hexToRgba(card.headerColor, 0.24);
+        const bg2 = hexToRgba(card.headerColor, 0.10);
+        const borderOutline = hexToRgba(card.headerColor, 0.70);
+        const borderDivider = hexToRgba(card.headerColor, 0.35);
+        headerStyle = `style="background: linear-gradient(180deg, ${bg1} 0%, ${bg2} 100%); border-color: ${borderOutline}; border-top-color: ${card.headerColor}; border-bottom-color: ${borderDivider};"`;
+      }
+
       cardEl.innerHTML = `
         <div class="note-header" ${headerStyle}>
           <div class="header-port-slot header-port-slot-left" title="连接端口 (左)">
-            <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}" 
-               data-header-pin-id="${leftPinId}" 
+            <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}"
+               data-header-pin-id="${leftPinId}"
                style="background-color: ${leftColor}; color: ${leftColor};"></i>
           </div>
 
           <div class="header-content">
-            <span class="header-title" title="双击重命名">${card.title || '未命名节点'}</span>
-            <input class="header-title-input" value="${card.title || ''}" placeholder="未命名节点" style="display: none;" />
+            <span class="header-title" title="双击重命名"></span>
+            <input class="header-title-input" placeholder="未命名节点" style="display: none;" />
           </div>
 
           <div class="header-port-slot header-port-slot-right" title="连接端口 (右)">
-            <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}" 
-               data-header-pin-id="${rightPinId}" 
+            <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}"
+               data-header-pin-id="${rightPinId}"
                style="background-color: ${rightColor}; color: ${rightColor};"></i>
           </div>
         </div>
@@ -183,6 +444,8 @@ class NodeManager {
       // Title editing (double click to edit, enter/blur/escape to commit)
       const titleSpan = cardEl.querySelector('.header-title');
       const titleInput = cardEl.querySelector('.header-title-input');
+      titleSpan.textContent = card.title || '未命名节点';
+      titleInput.value = card.title || '';
 
       let prevTitle = card.title || '';
       const startTitleEdit = () => {
@@ -261,6 +524,7 @@ class NodeManager {
         this.hideSelectionPopover();
         this.hideCanvasContextMenu();
         this.hideGroupContextMenu();
+        this.hideSubcanvasContextMenu();
 
         if (e.shiftKey) {
           this.selectCard(card.id, true);
@@ -327,7 +591,7 @@ class NodeManager {
       const bodyEl = cardEl.querySelector('.note-body');
       let bodyTypingTimeout = null;
 
-      bodyEl.addEventListener('input', () => {
+      bodyEl?.addEventListener('input', () => {
         card.contentHtml = bodyEl.innerHTML;
         wires.render();
         store.scheduleAutoSave();
@@ -338,12 +602,12 @@ class NodeManager {
         }, 700);
       });
 
-      bodyEl.addEventListener('blur', () => {
+      bodyEl?.addEventListener('blur', () => {
         clearTimeout(bodyTypingTimeout);
         store.commit();
       });
 
-      bodyEl.addEventListener('keydown', (e) => {
+      bodyEl?.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
           e.preventDefault();
           document.execCommand('redo');
@@ -551,6 +815,29 @@ class NodeManager {
       e.stopPropagation();
     });
 
+    const btnNewNode = this.canvasContextMenuEl.querySelector('#menu-new-node');
+    btnNewNode?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const pos = this.contextMenuBoardPos || { x: 160, y: 200 };
+      this.hideCanvasContextMenu();
+      const node = this.spawnNode(pos);
+      wires.render();
+      setTimeout(() => this.editCardTitle(node.id), 30);
+    });
+
+    const btnNewSub = this.canvasContextMenuEl.querySelector('#menu-new-subcanvas');
+    btnNewSub?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const pos = this.contextMenuBoardPos || { x: 160, y: 200 };
+      this.hideCanvasContextMenu();
+      const card = await this.spawnSubcanvas(pos);
+      if (card) {
+        setTimeout(() => this.editCardTitle(card.id), 30);
+      }
+    });
+
     const btnAlign = this.canvasContextMenuEl.querySelector('#menu-toggle-align');
     btnAlign?.addEventListener('click', (e) => {
       e.preventDefault();
@@ -576,6 +863,92 @@ class NodeManager {
       store.toggleMinimap();
       this.updateContextMenuToggles();
     });
+  }
+
+  bindSubcanvasContextMenuEvents() {
+    if (!this.subcanvasContextMenuEl) return;
+    this.subcanvasContextMenuEl.addEventListener('mousedown', (e) => e.stopPropagation());
+    this.subcanvasContextMenuEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    this.subcanvasContextMenuEl.querySelector('#subcanvas-menu-enter')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextSubcanvas;
+      this.hideSubcanvasContextMenu();
+      if (ctx?.card?.subcanvasId) {
+        store.navigateToCanvas(ctx.card.subcanvasId);
+      }
+    });
+
+    this.subcanvasContextMenuEl.querySelector('#subcanvas-menu-export')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextSubcanvas;
+      this.hideSubcanvasContextMenu();
+      if (ctx?.card?.subcanvasId) {
+        store.exportCanvasToFile(ctx.card.subcanvasId);
+      }
+    });
+
+    this.subcanvasContextMenuEl.querySelector('#subcanvas-menu-rename')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextSubcanvas;
+      this.hideSubcanvasContextMenu();
+      ctx?.startRename?.();
+    });
+
+    this.subcanvasContextMenuEl.querySelector('#subcanvas-menu-color')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextSubcanvas;
+      this.hideSubcanvasContextMenu();
+      const anchorEl = ctx?.cardEl?.querySelector('.note-header') || ctx?.cardEl;
+      if (ctx?.card && anchorEl) {
+        this.openPopoverForHeader(ctx.card, anchorEl);
+      }
+    });
+
+    this.subcanvasContextMenuEl.querySelector('#subcanvas-menu-delete')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextSubcanvas;
+      this.hideSubcanvasContextMenu();
+      if (ctx?.card) {
+        store.removeCard(ctx.card.id);
+        this.filterSelectionAfterRestore();
+        this.render();
+        wires.render();
+      }
+    });
+  }
+
+  showSubcanvasContextMenu(card, cardEl, startRename, screenX, screenY) {
+    if (!this.subcanvasContextMenuEl) return;
+    this.hideAllMenus();
+    this.activeContextSubcanvas = { card, cardEl, startRename };
+    const menu = this.subcanvasContextMenuEl;
+    menu.style.display = 'flex';
+    const menuWidth = menu.offsetWidth || 195;
+    const menuHeight = menu.offsetHeight || 210;
+    let left = screenX + 2;
+    let top = screenY + 2;
+    if (left + menuWidth > window.innerWidth - 10) left = screenX - menuWidth - 2;
+    if (top + menuHeight > window.innerHeight - 10) top = screenY - menuHeight - 2;
+    if (left < 10) left = 10;
+    if (top < 10) top = 10;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  hideSubcanvasContextMenu() {
+    if (this.subcanvasContextMenuEl) {
+      this.subcanvasContextMenuEl.style.display = 'none';
+    }
+    this.activeContextSubcanvas = null;
   }
 
   bindGroupContextMenuEvents() {
@@ -707,12 +1080,13 @@ class NodeManager {
     if (!this.canvasContextMenuEl) return;
     this.hideAllMenus();
     this.updateContextMenuToggles();
+    this.contextMenuBoardPos = canvas.screenToBoard(screenX, screenY);
 
     const menu = this.canvasContextMenuEl;
     menu.style.display = 'flex';
 
-    const menuWidth = 185;
-    const menuHeight = 155;
+    const menuWidth = 196;
+    const menuHeight = 240;
     let left = screenX + 2;
     let top = screenY + 2;
 
@@ -752,6 +1126,7 @@ class NodeManager {
     this.hideSelectionPopover();
     this.hideCanvasContextMenu();
     this.hideGroupContextMenu();
+    this.hideSubcanvasContextMenu();
     wires.dismissDropMenu(true);
   }
 
@@ -1017,13 +1392,16 @@ class NodeManager {
       if (this.groupContextMenuEl && this.groupContextMenuEl.contains(e.target)) return;
       this.hideGroupContextMenu();
 
+      if (this.subcanvasContextMenuEl && this.subcanvasContextMenuEl.contains(e.target)) return;
+      this.hideSubcanvasContextMenu();
+
       if (this.capsuleActionBarEl && this.capsuleActionBarEl.contains(e.target)) return;
       if (!e.target.closest('.text-capsule')) {
         this.clearCapsuleSelection();
       }
 
       if (this.selectionPopoverEl && this.selectionPopoverEl.contains(e.target)) return;
-      if (e.target.closest('.text-capsule, .note-header, .group-label, #group-menu-color')) return;
+      if (e.target.closest('.text-capsule, .note-header, .group-label, #group-menu-color, #subcanvas-menu-color')) return;
       this.hideSelectionPopover();
     });
 
@@ -1031,6 +1409,7 @@ class NodeManager {
       if (e.key === 'Escape') {
         this.hideGroupContextMenu();
         this.hideCanvasContextMenu();
+        this.hideSubcanvasContextMenu();
       }
       if (this.selectionPopoverEl && this.selectionPopoverEl.style.display === 'flex') {
         if (e.key === 'Escape') {
@@ -1313,6 +1692,28 @@ class NodeManager {
       const newCardId = cardIdMap.get(c.id);
       const cloned = JSON.parse(JSON.stringify(c));
       cloned.id = newCardId;
+
+      if (cloned.kind === 'subcanvas') {
+        const newSubId = this._nextCloneId('canvas');
+        const oldSubId = cloned.subcanvasId;
+        const cachedOld = oldSubId ? store.canvasesCache.get(oldSubId) : null;
+        const childEntry = {
+          id: newSubId,
+          parentCanvasId: store.activeCanvasId,
+          title: cloned.title || '未命名子画布',
+          breadcrumbs: [...store.breadcrumbs, { id: newSubId, title: cloned.title || '未命名子画布' }],
+          viewport: cachedOld?.viewport ? JSON.parse(JSON.stringify(cachedOld.viewport)) : { x: 0, y: 0, zoom: 1.0 },
+          cards: cachedOld?.cards ? JSON.parse(JSON.stringify(cachedOld.cards)) : [],
+          connections: cachedOld?.connections ? JSON.parse(JSON.stringify(cachedOld.connections)) : [],
+          groups: cachedOld?.groups ? JSON.parse(JSON.stringify(cachedOld.groups)) : [],
+          dirty: true,
+          updatedAt: Date.now()
+        };
+        store.canvasesCache.set(newSubId, childEntry);
+        store.dirtyCanvasIds.add(newSubId);
+        cloned.subcanvasId = newSubId;
+        cloned.thumbnail = computeLocalThumbnail(childEntry);
+      }
 
       if (cloned.contentHtml) {
         const tempDiv = document.createElement('div');
@@ -1805,6 +2206,12 @@ class NodeManager {
       this.createGroupFromSelected();
     });
 
+    const btnPackSubcanvas = this.alignmentBarEl.querySelector('#btn-pack-subcanvas');
+    btnPackSubcanvas?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.packSelectionToSubcanvas();
+    });
+
     const btnSaveToLibrary = this.alignmentBarEl.querySelector('#btn-save-to-library');
     btnSaveToLibrary?.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1825,7 +2232,7 @@ class NodeManager {
       const titleInput = cardEl.querySelector('.header-title-input');
       const titleSpan = cardEl.querySelector('.header-title');
       if (titleInput && titleInput.style.display !== 'none') {
-        const newTitle = titleInput.value.trim() || '未命名节点';
+        const newTitle = titleInput.value.trim() || (card.kind === 'subcanvas' ? '未命名子画布' : '未命名节点');
         card.title = newTitle;
         if (titleSpan) {
           titleSpan.textContent = newTitle;
@@ -1833,9 +2240,11 @@ class NodeManager {
         }
         titleInput.style.display = 'none';
       }
-      const bodyEl = cardEl.querySelector('.note-body');
-      if (bodyEl) {
-        card.contentHtml = bodyEl.innerHTML;
+      if (card.kind !== 'subcanvas') {
+        const bodyEl = cardEl.querySelector('.note-body');
+        if (bodyEl) {
+          card.contentHtml = bodyEl.innerHTML;
+        }
       }
     });
 
@@ -1903,9 +2312,11 @@ class NodeManager {
     if (saveBtn) {
       saveBtn.setAttribute(
         'data-tooltip',
-        isFocus ? '专注模式下不可保存，请先退出' : '保存图谱 (Ctrl+S)'
+        isFocus ? '专注模式下不可保存，请先退出' : '保存到后端 (Ctrl+S)'
       );
     }
+
+    window.__sync?.updateStatusDot?.();
   }
 
   enterFocusMode(cardIdsOverride = null) {
@@ -2547,6 +2958,34 @@ class NodeManager {
                 cardEl.style.width = `${newWidth}px`;
               }
             }
+            if (card.kind === 'subcanvas') {
+              const thumbCanvas = cardEl?.querySelector('.subcanvas-thumbnail-canvas');
+              if (thumbCanvas) renderThumbnailCanvas(thumbCanvas, store.getThumbnailForSubcanvas(card), store.getPalette());
+            }
+            if (store.state.groups) {
+              store.state.groups.forEach(g => {
+                if (g.cardIds.includes(card.id)) {
+                  this.updateGroupDOMBounds(g.id);
+                }
+              });
+            }
+            wires.render();
+          }
+        } else if (this.activeDrag.type === 'RESIZE_SUBCANVAS_HEIGHT') {
+          const dy = (e.clientY - this.activeDrag.startY) / zoom;
+          const card = store.state.cards.find(c => c.id === this.activeDrag.cardId);
+          if (card) {
+            let newH = Math.max(120, Math.round(this.activeDrag.initHeight + dy));
+            if (store.state.settings?.gridSnapMode) {
+              newH = Math.max(120, Math.round(newH / 24) * 24);
+            }
+            card.height = newH;
+            const cardEl = document.getElementById(`card-dom-${card.id}`);
+            if (cardEl) {
+              cardEl.style.height = `${newH}px`;
+              const thumbCanvas = cardEl.querySelector('.subcanvas-thumbnail-canvas');
+              if (thumbCanvas) renderThumbnailCanvas(thumbCanvas, store.getThumbnailForSubcanvas(card), store.getPalette());
+            }
             if (store.state.groups) {
               store.state.groups.forEach(g => {
                 if (g.cardIds.includes(card.id)) {
@@ -2616,6 +3055,8 @@ class NodeManager {
           this.updateGroupDOMBounds(this.activeDrag.groupId);
         } else if (this.activeDrag.type === 'RESIZE_CARD') {
           document.querySelectorAll('.card-resize-handle.active').forEach(h => h.classList.remove('active'));
+        } else if (this.activeDrag.type === 'RESIZE_SUBCANVAS_HEIGHT') {
+          document.querySelectorAll('.subcanvas-resize-bottom.active').forEach(h => h.classList.remove('active'));
         }
         this.activeDrag = null;
         store.commit();

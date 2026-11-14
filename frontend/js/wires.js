@@ -81,7 +81,10 @@ class WireManager {
 
   createBezierPath(p1, p2, fromDir = 'right', toDir = 'left') {
     const dx = p2.x - p1.x;
-    const tension = Math.min(Math.max(Math.abs(dx) * 0.45, 45), 140);
+    const dy = p2.y - p1.y;
+    const dist = Math.hypot(dx, dy);
+    const minTension = Math.min(45, dist * 0.65);
+    const tension = Math.min(Math.max(Math.abs(dx) * 0.45, minTension), 140);
     const c1x = fromDir === 'left' ? p1.x - tension : p1.x + tension;
     const c1y = p1.y;
     const c2x = toDir === 'right' ? p2.x + tension : p2.x - tension;
@@ -218,9 +221,12 @@ class WireManager {
         };
 
         g.classList.add('wire-reconnecting');
-        this.tempWireEl.style.display = 'block';
+        const fromDir = conn.fromPinId.includes('left') ? 'left' : 'right';
+        const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
+        const toDir = boardPos.x < startPos.x ? 'right' : 'left';
+        this.updateTempWire(startPos, boardPos, fromDir, toDir);
         this.tempWireEl.style.stroke = color;
-        this.updateTempWire(startPos, canvas.screenToBoard(e.clientX, e.clientY));
+        this.tempWireEl.style.display = 'block';
       });
 
       hitZone.addEventListener('contextmenu', (e) => {
@@ -337,8 +343,12 @@ class WireManager {
       startClientY: clientY,
       moved: false
     };
-    this.tempWireEl.style.display = 'block';
+    const fromDir = fromPinId.includes('left') ? 'left' : 'right';
+    const boardPos = (clientX || clientY) ? canvas.screenToBoard(clientX, clientY) : startPos;
+    const toDir = boardPos.x < startPos.x ? 'right' : 'left';
+    this.updateTempWire(startPos, boardPos, fromDir, toDir);
     this.tempWireEl.style.stroke = color;
+    this.tempWireEl.style.display = 'block';
   }
 
   showDropMenu(clientX, clientY, dropBoardPos, dragInfo) {
@@ -424,6 +434,7 @@ class WireManager {
       this.wireDropMenuEl.style.display = 'none';
     }
     this.tempWireEl.style.display = 'none';
+    this.tempWireEl.setAttribute('d', '');
     this.render();
   }
 
@@ -488,7 +499,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .node-group') : null;
+      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .node-group, .subcanvas-portal') : null;
 
       let targetId = null;
       let activePinEl = null;
@@ -553,6 +564,7 @@ class WireManager {
       document.body.classList.remove('is-wire-dragging');
       document.body.style.cursor = '';
       this.tempWireEl.style.display = 'none';
+      this.tempWireEl.setAttribute('d', '');
       document.querySelectorAll('.pin-active').forEach(el => el.classList.remove('pin-active'));
       document.querySelectorAll('.pin-ghost').forEach(el => {
         el.classList.remove('pin-ghost');
@@ -571,7 +583,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .node-group') : null;
+      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .node-group, .subcanvas-portal') : null;
       let targetPinId = null;
 
       if (targetSlot) {
