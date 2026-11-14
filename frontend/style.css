@@ -237,6 +237,7 @@ html, body {
   top: 18px;
   left: 50%;
   transform: translateX(-50%);
+  max-width: calc(100vw - 24px);
   background: rgba(28, 28, 30, 0.82);
   backdrop-filter: blur(24px) saturate(190%);
   -webkit-backdrop-filter: blur(24px) saturate(190%);
@@ -248,6 +249,16 @@ html, body {
   gap: 12px;
   z-index: 100;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+@media (max-width: 720px) {
+  .hud-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+    border-radius: 20px;
+    padding: 6px 10px;
+    gap: 8px;
+  }
 }
 
 .hud-title {
@@ -2254,4 +2265,157 @@ body.is-wire-dragging .group-header {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   text-align: right;
 }
+
+/* =========================================================
+   Focus Mode (专注模式) & Toast
+   ========================================================= */
+.hud-focus-session {
+  display: none;
+  align-items: center;
+  gap: 4px;
+}
+
+body.is-focus-session .hud-focus-session {
+  display: flex;
+}
+
+body.is-focus-session .hud-normal-only,
+body.is-focus-session .hud-focus-entry-btn,
+body.is-focus-session #btn-align-focus {
+  display: none !important;
+}
+
+body.is-focus-session .hud-title-dot {
+  background: var(--accent-blue);
+  box-shadow: 0 0 10px var(--accent-blue);
+}
+
+body.is-focus-session #btn-save {
+  opacity: 0.45;
+  color: var(--accent-orange);
+}
+
+body.is-focus-session #btn-save:hover {
+  opacity: 0.85;
+  background: rgba(255, 159, 10, 0.16);
+}
+
+body.is-focus-session #viewport {
+  box-shadow: inset 0 0 0 2px rgba(10, 132, 255, 0.25), inset 0 0 90px rgba(10, 132, 255, 0.06);
+}
+
+.hud-focus-entry-btn.is-ready {
+  color: var(--accent-blue);
+  background: rgba(10, 132, 255, 0.14);
+}
+
+.hud-focus-entry-btn.is-ready:hover {
+  background: rgba(10, 132, 255, 0.24);
+}
+
+.hud-focus-confirm-btn {
+  color: var(--accent-green);
+}
+
+.hud-focus-confirm-btn:hover {
+  background: rgba(48, 209, 88, 0.18);
+  color: #46e26f;
+}
+
+.hud-focus-cancel-btn {
+  color: var(--text-secondary);
+}
+
+.hud-focus-cancel-btn:hover {
+  background: rgba(255, 69, 58, 0.16);
+  color: #ff6961;
+}
+
+.group-focus-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(10, 132, 255, 0.12);
+  border: 1px solid rgba(10, 132, 255, 0.32);
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: #64b5ff;
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.group-focus-btn svg {
+  width: 11px;
+  height: 11px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+
+.group-focus-btn:hover {
+  background: rgba(10, 132, 255, 0.24);
+  border-color: rgba(10, 132, 255, 0.6);
+  color: #ffffff;
+}
+
+body.is-focus-session .group-focus-btn {
+  display: none;
+}
+
+body.focus-animating .note-card,
+body.focus-animating .node-group,
+body.focus-animating .wire-group {
+  transition: none !important;
+}
+
+/* App Toast */
+.app-toast {
+  position: fixed;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-10px);
+  max-width: calc(100vw - 24px);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: rgba(28, 28, 30, 0.94);
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: center;
+}
+
+.app-toast.is-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.app-toast.toast-warning {
+  border-color: rgba(255, 159, 10, 0.5);
+  color: #ffd080;
+}
+
+.app-toast.toast-success {
+  border-color: rgba(48, 209, 88, 0.45);
+  color: #7ee898;
+}
+
+.app-toast.toast-info {
+  border-color: rgba(10, 132, 255, 0.45);
+  color: #8cc8ff;
+}
+
 

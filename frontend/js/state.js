@@ -1,3 +1,5 @@
+import { computeFocusExitLayout } from './focusLayout.js';
+
 const STORAGE_KEY = 'pinpoint_workspace_data';
 const FILE_NAME_KEY = 'pinpoint_file_name';
 const FILE_SNAPSHOT_KEY = 'pinpoint_file_snapshot';
@@ -94,6 +96,11 @@ class StateManager {
     this.undoStack = [this.snapshot()];
     this.redoStack = [];
     this.fileSavedSnapshot = null;
+    this.focusSession = null;
+  }
+
+  get isFocusMode() {
+    return !!this.focusSession;
   }
 
   snapshot() {
@@ -105,6 +112,7 @@ class StateManager {
   }
 
   hasUnsavedChanges() {
+    if (this.isFocusMode) return true;
     if (!this.state.cards || this.state.cards.length === 0) return false;
     if (!this.fileSavedSnapshot) return true;
     return this.snapshot() !== this.fileSavedSnapshot;
@@ -189,6 +197,7 @@ class StateManager {
   }
 
   applyRemoteState(remoteState, sourceEvent = 'REMOTE_SYNCED') {
+    if (this.isFocusMode) return false;
     if (!remoteState || !Array.isArray(remoteState.cards) || !Array.isArray(remoteState.connections)) {
       return false;
     }
@@ -274,8 +283,29 @@ class StateManager {
     return JSON.parse(JSON.stringify(DEFAULT_STATE));
   }
 
+  isPinValid(pinId, cards = this.state.cards, groups = this.state?.groups || []) {
+    if (!pinId) return false;
+    if (pinId.startsWith('pin-group-')) {
+      const groupId = this.findCardIdByPin(pinId, cards, groups);
+      return !!groupId && groups.some(g => g.id === groupId);
+    }
+    if (pinId.startsWith('pin-head-')) {
+      const cardId = this.findCardIdByPin(pinId, cards, groups);
+      return !!cardId && cards.some(c => c.id === cardId);
+    }
+    return cards.some(c =>
+      c.contentHtml && (
+        c.contentHtml.includes(`data-pin-id="${pinId}"`) ||
+        c.contentHtml.includes(pinId)
+      )
+    );
+  }
+
   validateConnection(conn, cards, groups = this.state.groups || []) {
     if (!conn.fromPinId || !conn.toPinId || conn.fromPinId === conn.toPinId) return false;
+    if (!this.isPinValid(conn.fromPinId, cards, groups) || !this.isPinValid(conn.toPinId, cards, groups)) {
+      return false;
+    }
     const c1 = this.findCardIdByPin(conn.fromPinId, cards, groups);
     const c2 = this.findCardIdByPin(conn.toPinId, cards, groups);
     return c1 && c2 && c1 !== c2;
@@ -310,7 +340,12 @@ class StateManager {
     this.listeners.forEach(fn => fn(event, this.state));
   }
 
+  emitToast(message, variant = 'info') {
+    this.listeners.forEach(fn => fn({ type: 'TOAST', message, variant }, this.state));
+  }
+
   scheduleAutoSave() {
+    if (this.isFocusMode) return;
     clearTimeout(this.saveTimeout);
     this.saveTimeout = setTimeout(() => {
       try {
@@ -566,7 +601,236 @@ class StateManager {
     return true;
   }
 
+  enterFocusMode(selectedCardIds, beforeBox, cardRectsMap) {
+    if (this.isFocusMode) return false;
+    const focusIdSet = new Set(
+      [...(selectedCardIds || [])].filter(id => this.state.cards.some(c => c.id === id))
+    );
+    if (focusIdSet.size === 0) return false;
+
+    clearTimeout(this.saveTimeout);
+
+    const fullCards = JSON.parse(JSON.stringify(this.state.cards));
+    const fullConnections = JSON.parse(JSON.stringify(this.state.connections));
+    const fullGroups = JSON.parse(JSON.stringify(this.state.groups || []));
+
+    const focusCards = fullCards.filter(c => focusIdSet.has(c.id));
+    const outsideCards = fullCards
+      .filter(c => !focusIdSet.has(c.id))
+      .map(c => {
+        const rect = cardRectsMap?.get(c.id);
+        return {
+          ...c,
+          _measuredWidth: rect ? rect.width : (c.width || 310),
+          _measuredHeight: rect ? rect.height : 140
+        };
+      });
+
+    const preFocusCardRects = focusCards.map(c => {
+      const rect = cardRectsMap?.get(c.id);
+      const w = rect ? rect.width : (c.width || 310);
+      const h = rect ? rect.height : 140;
+      return {
+        left: c.x,
+        top: c.y,
+        right: c.x + w,
+        bottom: c.y + h,
+        width: w,
+        height: h,
+        cx: c.x + w / 2,
+        cy: c.y + h / 2
+      };
+    });
+
+    const insideGroups = [];
+    const outsideGroups = [];
+    const partialGroups = [];
+
+    for (const g of fullGroups) {
+      const members = Array.isArray(g.cardIds) ? g.cardIds : [];
+      const inCount = members.filter(id => focusIdSet.has(id)).length;
+      if (inCount === members.length && members.length >= 2) {
+        insideGroups.push(g);
+      } else if (inCount === 0 && members.length >= 2) {
+        outsideGroups.push(g);
+      } else if (members.length >= 2) {
+        partialGroups.push(g);
+      }
+    }
+
+    const insideEntityIds = new Set([
+      ...focusIdSet,
+      ...insideGroups.map(g => g.id)
+    ]);
+
+    const internalConnections = [];
+    const externalConnections = [];
+
+    for (const conn of fullConnections) {
+      const o1 = this.findCardIdByPin(conn.fromPinId, fullCards, fullGroups);
+      const o2 = this.findCardIdByPin(conn.toPinId, fullCards, fullGroups);
+      if (o1 && o2 && insideEntityIds.has(o1) && insideEntityIds.has(o2)) {
+        internalConnections.push(conn);
+      } else {
+        externalConnections.push(conn);
+      }
+    }
+
+    this.focusSession = {
+      seedCardIds: [...focusIdSet],
+      beforeBox: beforeBox ? { ...beforeBox } : null,
+      preFocusCardRects,
+      outsideCards,
+      outsideGroups,
+      partialGroups,
+      externalConnections,
+      savedUndoStack: [...this.undoStack],
+      savedRedoStack: [...this.redoStack],
+      fullPreFocusState: {
+        cards: fullCards,
+        connections: fullConnections,
+        groups: fullGroups
+      }
+    };
+
+    this.state.cards = JSON.parse(JSON.stringify(focusCards));
+    this.state.groups = JSON.parse(JSON.stringify(insideGroups));
+    this.state.connections = JSON.parse(JSON.stringify(internalConnections));
+
+    this.undoStack = [this.snapshot()];
+    this.redoStack = [];
+
+    this.listeners.forEach(fn => fn({
+      type: 'FOCUS_MODE_ENTERED',
+      focusCount: focusCards.length
+    }, this.state));
+    return true;
+  }
+
+  confirmFocusMode(afterBox, focusCardRects) {
+    if (!this.isFocusMode) return null;
+    const session = this.focusSession;
+
+    const editedCards = JSON.parse(JSON.stringify(this.state.cards));
+    const editedGroups = JSON.parse(JSON.stringify(this.state.groups || []));
+    const editedConnections = JSON.parse(JSON.stringify(this.state.connections));
+
+    const outsideLayoutInput = session.outsideCards.map(c => ({
+      id: c.id,
+      x: c.x,
+      y: c.y,
+      width: c._measuredWidth || c.width || 310,
+      height: c._measuredHeight || 140
+    }));
+
+    const { cardTargets } = computeFocusExitLayout({
+      beforeBox: session.beforeBox,
+      afterBox,
+      preFocusCardRects: session.preFocusCardRects,
+      focusCardRects: focusCardRects || [],
+      outsideCards: outsideLayoutInput,
+      outsideGroups: session.outsideGroups
+    });
+
+    const restoredOutsideCards = session.outsideCards.map(c => {
+      const clean = JSON.parse(JSON.stringify(c));
+      delete clean._measuredWidth;
+      delete clean._measuredHeight;
+      const target = cardTargets.get(clean.id);
+      if (target) {
+        clean.x = target.x;
+        clean.y = target.y;
+      }
+      return clean;
+    });
+
+    const mergedCards = [...editedCards, ...restoredOutsideCards];
+    const survivingCardIds = new Set(mergedCards.map(c => c.id));
+
+    const restoredOutsideGroups = JSON.parse(JSON.stringify(session.outsideGroups));
+    const restoredPartialGroups = JSON.parse(JSON.stringify(session.partialGroups))
+      .map(g => ({
+        ...g,
+        cardIds: (g.cardIds || []).filter(id => survivingCardIds.has(id))
+      }))
+      .filter(g => g.cardIds.length >= 2);
+
+    const mergedGroups = [...editedGroups, ...restoredOutsideGroups, ...restoredPartialGroups];
+
+    const validExternalConnections = JSON.parse(JSON.stringify(session.externalConnections))
+      .filter(conn => this.validateConnection(conn, mergedCards, mergedGroups));
+
+    const seenConnIds = new Set(editedConnections.map(c => c.id));
+    const seenPairs = new Set(editedConnections.map(c => [c.fromPinId, c.toPinId].sort().join('::')));
+    const mergedConnections = [...editedConnections];
+
+    for (const conn of validExternalConnections) {
+      const pairKey = [conn.fromPinId, conn.toPinId].sort().join('::');
+      if (!seenConnIds.has(conn.id) && !seenPairs.has(pairKey)) {
+        seenConnIds.add(conn.id);
+        seenPairs.add(pairKey);
+        mergedConnections.push(conn);
+      }
+    }
+
+    this.state.cards = mergedCards;
+    this.state.groups = mergedGroups;
+    this.state.connections = mergedConnections;
+
+    const savedUndo = session.savedUndoStack || [];
+    this.focusSession = null;
+
+    this.undoStack = [...savedUndo];
+    const finalSnap = this.snapshot();
+    if (this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1] !== finalSnap) {
+      this.undoStack.push(finalSnap);
+      if (this.undoStack.length > 60) this.undoStack.shift();
+    }
+    this.redoStack = [];
+
+    const outsideCardIds = restoredOutsideCards.map(c => c.id);
+    const externalConnIds = validExternalConnections.map(c => c.id);
+
+    this.notify({
+      type: 'FOCUS_MODE_EXITED',
+      confirmed: true,
+      cardTargets,
+      outsideCardIds,
+      externalConnIds
+    });
+
+    return {
+      cardTargets,
+      outsideCardIds,
+      externalConnIds
+    };
+  }
+
+  cancelFocusMode() {
+    if (!this.isFocusMode) return false;
+    const session = this.focusSession;
+    const pre = session.fullPreFocusState;
+
+    this.state.cards = JSON.parse(JSON.stringify(pre.cards));
+    this.state.connections = JSON.parse(JSON.stringify(pre.connections));
+    this.state.groups = JSON.parse(JSON.stringify(pre.groups));
+
+    this.undoStack = [...(session.savedUndoStack || [this.snapshot()])];
+    this.redoStack = [...(session.savedRedoStack || [])];
+    this.focusSession = null;
+
+    this.listeners.forEach(fn => fn({
+      type: 'FOCUS_MODE_CANCELLED',
+      seedCardIds: session.seedCardIds
+    }, this.state));
+    return true;
+  }
+
   reset() {
+    if (this.isFocusMode) {
+      this.emitToast('当前处于专注模式，请先确认并退出专注模式后再重置画布', 'warning');
+      return { blocked: true, reason: 'focus-mode' };
+    }
     this.state = JSON.parse(JSON.stringify(DEFAULT_STATE));
     this.fileHandle = null;
     this.fileName = '';
@@ -581,6 +845,10 @@ class StateManager {
   }
 
   async saveToFile() {
+    if (this.isFocusMode) {
+      this.emitToast('当前处于专注模式，请先确认并退出专注模式后再保存', 'warning');
+      return { blocked: true, reason: 'focus-mode' };
+    }
     const exportData = {
       version: 1,
       timestamp: Date.now(),
@@ -645,6 +913,10 @@ class StateManager {
   }
 
   async openFromFile() {
+    if (this.isFocusMode) {
+      this.emitToast('当前处于专注模式，请先确认并退出专注模式后再打开文件', 'warning');
+      return { blocked: true, reason: 'focus-mode' };
+    }
     if (window.showOpenFilePicker) {
       try {
         const [handle] = await window.showOpenFilePicker({

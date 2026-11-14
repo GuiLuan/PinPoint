@@ -1,6 +1,7 @@
 import { store } from './state.js';
 import { canvas } from './canvas.js';
 import { wires } from './wires.js';
+import { computeRectsBoundingBox } from './focusLayout.js';
 
 export function hexToRgba(hex, alpha = 1) {
   if (!hex) return `rgba(48, 209, 88, ${alpha})`;
@@ -36,6 +37,7 @@ class NodeManager {
     this.clipboard = null;
     this.pasteCount = 0;
     this.mouseBoardPos = { x: 0, y: 0 };
+    this.focusExitAnimId = null;
   }
 
   init(containerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl) {
@@ -1057,6 +1059,10 @@ class NodeManager {
       const cardId = cardEl.id.replace('card-dom-', '');
       cardEl.classList.toggle('selected', this.selectedCardIds.has(cardId));
     });
+    const focusEntryBtn = document.getElementById('btn-focus-mode');
+    if (focusEntryBtn) {
+      focusEntryBtn.classList.toggle('is-ready', this.selectedCardIds.size > 0 && !store.isFocusMode);
+    }
     if (!silent && this.onSelectionChange) this.onSelectionChange();
   }
 
@@ -1320,10 +1326,12 @@ class NodeManager {
       const el = document.getElementById(`card-dom-${c.id}`);
       const w = el?.offsetWidth || c.width || 310;
       const h = el?.offsetHeight || 140;
-      if (c.x < minX) minX = c.x;
-      if (c.x + w > maxX) maxX = c.x + w;
-      if (c.y < minY) minY = c.y;
-      if (c.y + h > maxY) maxY = c.y + h;
+      const cx = (el && el.style.left) ? parseFloat(el.style.left) : c.x;
+      const cy = (el && el.style.top) ? parseFloat(el.style.top) : c.y;
+      if (cx < minX) minX = cx;
+      if (cx + w > maxX) maxX = cx + w;
+      if (cy < minY) minY = cy;
+      if (cy + h > maxY) maxY = cy + h;
     });
 
     const x = minX - PADDING_X;
@@ -1389,6 +1397,10 @@ class NodeManager {
           </div>
 
           <div class="group-actions">
+            <button class="group-focus-btn" title="专注此组">
+              <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2"></circle></svg>
+              专注
+            </button>
             <button class="group-ungroup-btn" title="解散组 (Ctrl+Shift+G)">
               <svg viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1"></path><rect x="9" y="3" width="12" height="12" rx="2"></rect></svg>
               解散
@@ -1439,6 +1451,16 @@ class NodeManager {
       });
       titleInput.addEventListener('blur', finishRename);
       titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
+
+      // Focus button
+      const groupFocusBtn = groupEl.querySelector('.group-focus-btn');
+      groupFocusBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.selectedCardIds = new Set(group.cardIds.filter(id => store.state.cards.some(c => c.id === id)));
+        this.updateSelectionVisuals();
+        this.updateAlignmentBar();
+        this.enterFocusMode(group.cardIds);
+      });
 
       // Ungroup button
       const ungroupBtn = groupEl.querySelector('.group-ungroup-btn');
@@ -1610,6 +1632,277 @@ class NodeManager {
       e.stopPropagation();
       this.createGroupFromSelected();
     });
+
+    const btnAlignFocus = this.alignmentBarEl.querySelector('#btn-align-focus');
+    btnAlignFocus?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.enterFocusMode();
+    });
+  }
+
+  flushActiveDOMEdits() {
+    store.state.cards.forEach(card => {
+      const cardEl = document.getElementById(`card-dom-${card.id}`);
+      if (!cardEl) return;
+      const titleInput = cardEl.querySelector('.header-title-input');
+      const titleSpan = cardEl.querySelector('.header-title');
+      if (titleInput && titleInput.style.display !== 'none') {
+        const newTitle = titleInput.value.trim() || '未命名节点';
+        card.title = newTitle;
+        if (titleSpan) {
+          titleSpan.textContent = newTitle;
+          titleSpan.style.display = '';
+        }
+        titleInput.style.display = 'none';
+      }
+      const bodyEl = cardEl.querySelector('.note-body');
+      if (bodyEl) {
+        card.contentHtml = bodyEl.innerHTML;
+      }
+    });
+
+    (store.state.groups || []).forEach(group => {
+      const groupEl = document.getElementById(`group-dom-${group.id}`);
+      if (!groupEl) return;
+      const titleInput = groupEl.querySelector('.group-title-input');
+      const titleSpan = groupEl.querySelector('.group-title');
+      if (titleInput && titleInput.style.display !== 'none') {
+        const newTitle = titleInput.value.trim() || '节点组';
+        group.title = newTitle;
+        if (titleSpan) {
+          titleSpan.textContent = newTitle;
+          titleSpan.style.display = '';
+        }
+        titleInput.style.display = 'none';
+      }
+    });
+  }
+
+  measureCardRects() {
+    const rectMap = new Map();
+    store.state.cards.forEach(card => {
+      const el = document.getElementById(`card-dom-${card.id}`);
+      const w = el?.offsetWidth || card.width || 310;
+      const h = el?.offsetHeight || 140;
+      rectMap.set(card.id, {
+        left: card.x,
+        top: card.y,
+        right: card.x + w,
+        bottom: card.y + h,
+        width: w,
+        height: h,
+        cx: card.x + w / 2,
+        cy: card.y + h / 2
+      });
+    });
+    return rectMap;
+  }
+
+  updateFocusModeUI() {
+    const isFocus = store.isFocusMode;
+    document.body.classList.toggle('is-focus-session', isFocus);
+
+    const statusDot = document.querySelector('.hud-title-dot');
+    if (statusDot) {
+      if (isFocus) {
+        if (!statusDot.dataset.normalTitle && statusDot.title) {
+          statusDot.dataset.normalTitle = statusDot.title;
+        }
+        statusDot.title = '专注模式进行中';
+      } else if (statusDot.dataset.normalTitle) {
+        statusDot.title = statusDot.dataset.normalTitle;
+      }
+    }
+
+    const focusEntryBtn = document.getElementById('btn-focus-mode');
+    if (focusEntryBtn) {
+      focusEntryBtn.classList.toggle('is-ready', !isFocus && this.selectedCardIds.size > 0);
+    }
+
+    const saveBtn = document.getElementById('btn-save');
+    if (saveBtn) {
+      saveBtn.setAttribute(
+        'data-tooltip',
+        isFocus ? '专注模式下不可保存，请先退出' : '保存图谱 (Ctrl+S)'
+      );
+    }
+  }
+
+  enterFocusMode(cardIdsOverride = null) {
+    if (store.isFocusMode) return false;
+    if (this.focusExitAnimId) {
+      cancelAnimationFrame(this.focusExitAnimId);
+      this.focusExitAnimId = null;
+      document.body.classList.remove('focus-animating');
+    }
+
+    this.flushActiveDOMEdits();
+    this.hideAllMenus();
+    wires.clearFocus();
+
+    const targetIds = cardIdsOverride
+      ? [...new Set(cardIdsOverride)].filter(id => store.state.cards.some(c => c.id === id))
+      : [...this.selectedCardIds].filter(id => store.state.cards.some(c => c.id === id));
+
+    if (targetIds.length === 0) {
+      store.emitToast('请先选中至少一个节点或组，再进入专注模式', 'info');
+      return false;
+    }
+
+    const rectMap = this.measureCardRects();
+    const beforeRects = targetIds.map(id => rectMap.get(id)).filter(Boolean);
+    const beforeBox = computeRectsBoundingBox(beforeRects);
+
+    const ok = store.enterFocusMode(targetIds, beforeBox, rectMap);
+    if (!ok) return false;
+
+    this.filterSelectionAfterRestore();
+    this.render();
+    wires.render();
+    this.updateSelectionVisuals(true);
+    this.updateAlignmentBar();
+    this.updateFocusModeUI();
+    if (this.onSelectionChange) this.onSelectionChange();
+    return true;
+  }
+
+  confirmFocusMode() {
+    if (!store.isFocusMode) return false;
+    this.flushActiveDOMEdits();
+    this.hideAllMenus();
+    wires.clearFocus();
+
+    const rectMap = this.measureCardRects();
+    const focusCardRects = store.state.cards.map(c => rectMap.get(c.id)).filter(Boolean);
+    const afterBox = computeRectsBoundingBox(focusCardRects);
+
+    const result = store.confirmFocusMode(afterBox, focusCardRects);
+    if (!result) return false;
+
+    this.updateFocusModeUI();
+    this.animateFocusExit(result);
+    return true;
+  }
+
+  cancelFocusMode() {
+    if (!store.isFocusMode) return false;
+    this.flushActiveDOMEdits();
+    this.hideAllMenus();
+    wires.clearFocus();
+
+    const ok = store.cancelFocusMode();
+    if (!ok) return false;
+
+    this.filterSelectionAfterRestore();
+    this.render();
+    wires.render();
+    this.updateSelectionVisuals(true);
+    this.updateAlignmentBar();
+    this.updateFocusModeUI();
+    if (this.onSelectionChange) this.onSelectionChange();
+    store.emitToast('已退出专注模式，临时修改已放弃', 'info');
+    return true;
+  }
+
+  animateFocusExit({ cardTargets, outsideCardIds, externalConnIds }) {
+    if (this.focusExitAnimId) {
+      cancelAnimationFrame(this.focusExitAnimId);
+      this.focusExitAnimId = null;
+    }
+
+    this.filterSelectionAfterRestore();
+    this.render();
+    this.updateSelectionVisuals(true);
+    this.updateAlignmentBar();
+
+    if (!outsideCardIds || outsideCardIds.length === 0) {
+      wires.render();
+      window.__minimap?.requestRender?.();
+      return;
+    }
+
+    const outsideIdSet = new Set(outsideCardIds);
+    const affectedGroupIds = [];
+    const whollyOutsideGroupIds = [];
+
+    (store.state.groups || []).forEach(g => {
+      const hasOutside = g.cardIds.some(id => outsideIdSet.has(id));
+      if (hasOutside) {
+        affectedGroupIds.push(g.id);
+        if (g.cardIds.every(id => outsideIdSet.has(id))) {
+          whollyOutsideGroupIds.push(g.id);
+        }
+      }
+    });
+
+    document.body.classList.add('focus-animating');
+
+    const applyFrame = (eased, fade) => {
+      outsideCardIds.forEach(id => {
+        const target = cardTargets.get(id);
+        const el = document.getElementById(`card-dom-${id}`);
+        if (!target || !el) return;
+        const curX = target.origX + target.dx * eased;
+        const curY = target.origY + target.dy * eased;
+        el.style.left = `${curX}px`;
+        el.style.top = `${curY}px`;
+        el.style.opacity = `${fade}`;
+      });
+
+      affectedGroupIds.forEach(gid => this.updateGroupDOMBounds(gid));
+      whollyOutsideGroupIds.forEach(gid => {
+        const gEl = document.getElementById(`group-dom-${gid}`);
+        if (gEl) gEl.style.opacity = `${fade}`;
+      });
+
+      wires.render();
+      (externalConnIds || []).forEach(connId => {
+        const wEl = document.getElementById(`wire-group-${connId}`);
+        if (wEl) wEl.style.opacity = `${fade}`;
+      });
+    };
+
+    // Frame 0: outside cards appear at pre-focus positions at opacity 0
+    applyFrame(0, 0);
+
+    const DURATION = 460;
+    const startTime = performance.now();
+
+    const step = (now) => {
+      const p = Math.min(1, (now - startTime) / DURATION);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const fade = Math.min(1, p / 0.65);
+
+      applyFrame(eased, fade);
+
+      if (p < 1) {
+        this.focusExitAnimId = requestAnimationFrame(step);
+      } else {
+        this.focusExitAnimId = null;
+        document.body.classList.remove('focus-animating');
+
+        outsideCardIds.forEach(id => {
+          const card = store.state.cards.find(c => c.id === id);
+          const el = document.getElementById(`card-dom-${id}`);
+          if (card && el) {
+            el.style.left = `${card.x}px`;
+            el.style.top = `${card.y}px`;
+            el.style.opacity = '';
+          }
+        });
+
+        whollyOutsideGroupIds.forEach(gid => {
+          const gEl = document.getElementById(`group-dom-${gid}`);
+          if (gEl) gEl.style.opacity = '';
+        });
+
+        this.renderGroups();
+        wires.render();
+        window.__minimap?.requestRender?.();
+      }
+    };
+
+    this.focusExitAnimId = requestAnimationFrame(step);
   }
 
   align(type) {
@@ -2210,6 +2503,15 @@ class NodeManager {
         if (this.clipboard && this.clipboard.cards?.length > 0) {
           e.preventDefault();
           this.pasteCards();
+          return;
+        }
+      }
+
+      // Focus Mode: F (when cards selected and not in focus mode)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'f' && !isEditingText) {
+        if (!store.isFocusMode && this.selectedCardIds.size > 0) {
+          e.preventDefault();
+          this.enterFocusMode();
           return;
         }
       }

@@ -33,19 +33,31 @@
       <button class="hud-btn" id="btn-redo" data-tooltip="重做 (Ctrl+Y)">
         <svg viewBox="0 0 24 24"><path d="M21 7v6h-6"></path><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"></path></svg>
       </button>
-      <div class="hud-divider"></div>
-      <button class="hud-btn" id="btn-open" data-tooltip="打开文件">
+      <button class="hud-btn hud-focus-entry-btn" id="btn-focus-mode" data-tooltip="专注模式 (F)">
+        <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+      </button>
+      <div class="hud-divider hud-normal-only"></div>
+      <button class="hud-btn hud-normal-only" id="btn-open" data-tooltip="打开文件">
         <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
       </button>
       <button class="hud-btn" id="btn-save" data-tooltip="保存图谱 (Ctrl+S)">
         <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
       </button>
-      <button class="hud-btn" id="btn-reset" data-tooltip="重置画布">
+      <button class="hud-btn hud-normal-only" id="btn-reset" data-tooltip="重置画布">
         <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
       </button>
       <div class="hud-divider"></div>
       <button class="hud-btn" id="btn-settings" data-tooltip="偏好设置 (Ctrl+,)">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </button>
+    </div>
+    <div class="hud-focus-session" id="focus-session-controls">
+      <div class="hud-divider"></div>
+      <button class="hud-btn hud-focus-confirm-btn" id="btn-focus-confirm" data-tooltip="确认并退出专注模式">
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+      </button>
+      <button class="hud-btn hud-focus-cancel-btn" id="btn-focus-cancel" data-tooltip="取消修改并退出">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
       </button>
     </div>
   </header>
@@ -81,6 +93,9 @@
     <div class="hud-divider"></div>
     <button class="hud-btn" id="btn-create-group" data-tooltip="创建组 (Ctrl+G)">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>
+    </button>
+    <button class="hud-btn" id="btn-align-focus" data-tooltip="进入专注模式 (F)">
+      <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
     </button>
   </div>
 
@@ -430,6 +445,7 @@
               <div class="shortcut-item"><kbd>Delete</kbd><span>删除选中节点/胶囊</span></div>
               <div class="shortcut-item"><kbd>Ctrl + Z / Y</kbd><span>撤销 / 重做</span></div>
               <div class="shortcut-item"><kbd>Ctrl + S</kbd><span>保存图谱文件</span></div>
+              <div class="shortcut-item"><kbd>F</kbd><span>进入专注模式 (需选中节点)</span></div>
             </div>
           </div>
         </main>
@@ -462,6 +478,9 @@
       <div id="minimap-viewport-indicator" class="minimap-viewport-indicator" title="拖拽平移视口"></div>
     </div>
   </aside>
+
+  <!-- 浮动提示 Toast -->
+  <div id="app-toast" class="app-toast" role="status" aria-live="polite"></div>
 
   <!-- 原生 ES 模块启动 -->
   <script type="module" src="js/main.js"></script>

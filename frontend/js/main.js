@@ -56,6 +56,34 @@ async function initApp() {
     if (fileStatusEl) fileStatusEl.textContent = text;
   }
 
+  let toastTimer = null;
+  function showToast(message, variant = 'info') {
+    const toastEl = document.getElementById('app-toast');
+    if (!toastEl || !message) return;
+    toastEl.textContent = message;
+    toastEl.classList.remove('toast-info', 'toast-warning', 'toast-success', 'is-visible');
+    toastEl.classList.add(`toast-${variant}`);
+    void toastEl.offsetWidth;
+    toastEl.classList.add('is-visible');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastEl.classList.remove('is-visible');
+    }, 3600);
+  }
+
+  // HUD Button: Focus Mode
+  document.getElementById('btn-focus-mode')?.addEventListener('click', () => {
+    nodes.enterFocusMode();
+  });
+
+  document.getElementById('btn-focus-confirm')?.addEventListener('click', () => {
+    nodes.confirmFocusMode();
+  });
+
+  document.getElementById('btn-focus-cancel')?.addEventListener('click', () => {
+    nodes.cancelFocusMode();
+  });
+
   // HUD Button: Add Node
   document.getElementById('btn-add-node')?.addEventListener('click', () => {
     const { x, y, zoom } = store.state.viewport;
@@ -98,6 +126,10 @@ async function initApp() {
 
   // HUD Button: Open File
   document.getElementById('btn-open')?.addEventListener('click', async () => {
+    if (store.isFocusMode) {
+      showToast('当前处于专注模式，请先确认并退出专注模式后再打开文件', 'warning');
+      return;
+    }
     if (document.activeElement && typeof document.activeElement.blur === 'function') {
       document.activeElement.blur();
     }
@@ -108,9 +140,9 @@ async function initApp() {
     const res = await store.openFromFile();
     if (res?.success) {
       updateStatus(res.fileName);
+      canvas.applyTransform();
       nodes.render();
       wires.render();
-      canvas.applyTransform();
     }
   });
 
@@ -125,12 +157,16 @@ async function initApp() {
 
   // HUD Button: Reset Canvas
   document.getElementById('btn-reset')?.addEventListener('click', () => {
+    if (store.isFocusMode) {
+      showToast('当前处于专注模式，请先确认并退出专注模式后再重置画布', 'warning');
+      return;
+    }
     if (confirm('确定要清空画布并重置图谱吗？')) {
       store.reset();
       updateStatus('');
+      canvas.applyTransform();
       nodes.render();
       wires.render();
-      canvas.applyTransform();
     }
   });
 
@@ -149,12 +185,19 @@ async function initApp() {
 
   store.subscribe((event) => {
     updateUndoRedoButtons();
-    if (event.type === 'FILE_OPENED') {
+    if (event.type === 'TOAST') {
+      showToast(event.message, event.variant);
+      return;
+    } else if (event.type === 'FOCUS_MODE_ENTERED' || event.type === 'FOCUS_MODE_EXITED' || event.type === 'FOCUS_MODE_CANCELLED') {
+      nodes.updateFocusModeUI();
+      minimap.requestRender();
+      return;
+    } else if (event.type === 'FILE_OPENED') {
       updateStatus(store.fileName);
       nodes.filterSelectionAfterRestore();
+      canvas.applyTransform();
       nodes.render();
       wires.render();
-      canvas.applyTransform();
     } else if (event.type === 'FILE_SAVED') {
       updateStatus(`已保存: ${store.fileName}`);
       setTimeout(() => updateStatus(store.fileName || ''), 2500);
@@ -163,14 +206,16 @@ async function initApp() {
     } else if (event.type === 'STATE_RESET') {
       updateStatus('');
       nodes.filterSelectionAfterRestore();
+      canvas.applyTransform();
       nodes.render();
       wires.render();
-      canvas.applyTransform();
     } else if (event.type === 'STATE_RESTORED') {
       nodes.filterSelectionAfterRestore();
+      canvas.applyTransform();
       nodes.render();
       wires.render();
       nodes.updateAlignmentBar();
+      if (store.isFocusMode) nodes.updateFocusModeUI();
     } else if (event.type === 'SETTINGS_CHANGED') {
       settings.syncUI();
       nodes.renderPopoverPalette();
@@ -186,10 +231,10 @@ async function initApp() {
         minimap.applySettings();
       } else {
         nodes.filterSelectionAfterRestore();
+        canvas.applyTransform();
         nodes.render();
         wires.render();
         nodes.updateAlignmentBar();
-        canvas.applyTransform();
         settings.syncUI();
         nodes.renderPopoverPalette();
         nodes.updateContextMenuToggles();
@@ -200,6 +245,7 @@ async function initApp() {
       nodes.render();
       wires.render();
       minimap.requestRender();
+      if (store.isFocusMode) nodes.updateFocusModeUI();
     }
   });
 
@@ -208,6 +254,11 @@ async function initApp() {
   wires.render();
   updateUndoRedoButtons();
   sync.init();
+  document.fonts?.ready?.then(() => {
+    if (!store.isFocusMode) {
+      wires.render();
+    }
+  });
   await store.restoreFileHandle();
   if (store.fileName) updateStatus(store.fileName);
 

@@ -29,13 +29,23 @@ class SyncManager {
 
     // Subscribe to local store mutations -> push to backend
     store.subscribe((event) => {
-      if (this.isApplyingRemote || !this.connected) return;
-      if (!event || event.type === 'REMOTE_SYNCED' || event.type === 'HANDLE_RESTORED' || event.type === 'FILE_SAVED') {
+      if (this.isApplyingRemote || !this.connected || store.isFocusMode) return;
+      if (event?.type === 'FOCUS_MODE_CANCELLED') {
+        setTimeout(() => this.flushPendingIfIdle(), 20);
+        return;
+      }
+      if (!event || event.type === 'REMOTE_SYNCED' || event.type === 'HANDLE_RESTORED' || event.type === 'FILE_SAVED' || event.type === 'TOAST' || event.type === 'FOCUS_MODE_ENTERED') {
         return;
       }
 
       if (event.type === 'SETTINGS_CHANGED') {
         this.scheduleGraphSync(80);
+        return;
+      }
+
+      if (event.type === 'FOCUS_MODE_EXITED') {
+        this.pendingEvent = null;
+        this.scheduleGraphSync(90);
         return;
       }
 
@@ -68,12 +78,15 @@ class SyncManager {
     if (!this.statusDotEl) return;
     this.statusDotEl.classList.remove('sync-connected', 'sync-reconnecting', 'sync-offline');
     this.statusDotEl.classList.add(`sync-${mode}`);
+    let normalTitle = '离线模式（仅本地存储）';
     if (mode === 'connected') {
-      this.statusDotEl.title = '实时同步已连接 (/api/v1/events)';
+      normalTitle = '实时同步已连接 (/api/v1/events)';
     } else if (mode === 'reconnecting') {
-      this.statusDotEl.title = '实时同步重连中...';
-    } else {
-      this.statusDotEl.title = '离线模式（仅本地存储）';
+      normalTitle = '实时同步重连中...';
+    }
+    this.statusDotEl.dataset.normalTitle = normalTitle;
+    if (!store.isFocusMode) {
+      this.statusDotEl.title = normalTitle;
     }
   }
 
@@ -93,6 +106,11 @@ class SyncManager {
         const data = JSON.parse(msg.data);
         const rev = typeof data.revision === 'number' ? data.revision : 0;
         const hasWorkspaceFile = !!data.hasWorkspaceFile;
+
+        if (store.isFocusMode) {
+          this.lastRevision = rev;
+          return;
+        }
 
         if (rev > 0 || hasWorkspaceFile) {
           this.lastRevision = rev;
@@ -129,11 +147,13 @@ class SyncManager {
         this.lastRevision = evt.revision;
 
         if (evt.type === 'SELECTION_CHANGED') {
-          this.applyRemoteSelection(evt.payload);
+          if (!store.isFocusMode) {
+            this.applyRemoteSelection(evt.payload);
+          }
           return;
         }
 
-        if (this.isUserBusyForEvent(evt.type)) {
+        if (store.isFocusMode || this.isUserBusyForEvent(evt.type)) {
           this.pendingEvent = evt;
           return;
         }
@@ -167,7 +187,7 @@ class SyncManager {
   }
 
   flushPendingIfIdle() {
-    if (!this.pendingEvent) return;
+    if (!this.pendingEvent || store.isFocusMode) return;
     if (this.isUserBusyForEvent(this.pendingEvent.type)) return;
     const evt = this.pendingEvent;
     this.pendingEvent = null;
@@ -195,7 +215,7 @@ class SyncManager {
   }
 
   notifySelectionChanged() {
-    if (this.isApplyingRemote || !this.connected) return;
+    if (this.isApplyingRemote || !this.connected || store.isFocusMode) return;
     clearTimeout(this.selectionTimer);
     this.selectionTimer = setTimeout(() => {
       this.pushSelectionNow();
@@ -203,7 +223,7 @@ class SyncManager {
   }
 
   notifyViewportChanged() {
-    if (this.isApplyingRemote || !this.connected) return;
+    if (this.isApplyingRemote || !this.connected || store.isFocusMode) return;
     clearTimeout(this.viewportTimer);
     this.viewportTimer = setTimeout(() => {
       this.pushViewportNow();
@@ -211,6 +231,7 @@ class SyncManager {
   }
 
   scheduleGraphSync(delay = 90) {
+    if (store.isFocusMode) return;
     clearTimeout(this.syncTimer);
     this.syncTimer = setTimeout(() => {
       this.pushGraphNow();
@@ -218,7 +239,7 @@ class SyncManager {
   }
 
   async pushGraphNow() {
-    if (!this.connected) return;
+    if (!this.connected || store.isFocusMode) return;
     try {
       const payload = {
         viewport: store.state.viewport,
@@ -244,7 +265,7 @@ class SyncManager {
   }
 
   async pushViewportNow() {
-    if (!this.connected) return;
+    if (!this.connected || store.isFocusMode) return;
     try {
       await fetch(`${API_BASE}/viewport`, {
         method: 'PATCH',
@@ -258,7 +279,7 @@ class SyncManager {
   }
 
   async pushSelectionNow() {
-    if (!this.connected) return;
+    if (!this.connected || store.isFocusMode) return;
     try {
       if (this.syncTimer) {
         clearTimeout(this.syncTimer);

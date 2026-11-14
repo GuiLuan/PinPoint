@@ -57,8 +57,22 @@ class WireManager {
     if (!pinEl) return null;
 
     const rect = pinEl.getBoundingClientRect();
-    const { x, y, zoom } = store.state.viewport;
+    const boardEl = canvas.boardEl;
+    if (boardEl) {
+      const boardRect = boardEl.getBoundingClientRect();
+      const transform = window.getComputedStyle(boardEl).transform;
+      let scale = store.state.viewport.zoom || 1;
+      if (transform && transform !== 'none') {
+        const matrix = new DOMMatrixReadOnly(transform);
+        if (matrix.a > 0) scale = matrix.a;
+      }
+      return {
+        x: (rect.left + rect.width / 2 - boardRect.left) / scale,
+        y: (rect.top + rect.height / 2 - boardRect.top) / scale
+      };
+    }
 
+    const { x, y, zoom } = store.state.viewport;
     return {
       x: (rect.left + rect.width / 2 - x) / zoom,
       y: (rect.top + rect.height / 2 - y) / zoom
