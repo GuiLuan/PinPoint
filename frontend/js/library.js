@@ -724,11 +724,12 @@ class LibraryManager {
         if (!grp) return null;
         const members = grp.cardIds.map(id => cardRects.get(id)).filter(Boolean);
         if (members.length === 0) return null;
-        const gx1 = Math.min(...members.map(m => m.x)) - 20;
-        const gy1 = Math.min(...members.map(m => m.y)) - 36;
-        const gx2 = Math.max(...members.map(m => m.x + m.w)) + 20;
+        const gx1 = Math.min(...members.map(m => m.x)) - 18;
+        const gy1 = Math.min(...members.map(m => m.y)) - 18;
+        const gx2 = Math.max(...members.map(m => m.x + m.w)) + 18;
+        const gy2 = Math.max(...members.map(m => m.y + m.h)) + 18;
         const isRight = pinId.startsWith('pin-group-right-');
-        return { x: isRight ? gx2 : gx1, y: gy1 + 14 };
+        return { x: isRight ? gx2 : gx1, y: (gy1 + gy2) / 2 };
       }
       for (const prefix of ['pin-head-left-', 'pin-head-right-', 'pin-head-']) {
         if (pinId.startsWith(prefix)) {
@@ -754,11 +755,12 @@ class LibraryManager {
       const members = (g.cardIds || []).map(id => cardRects.get(id)).filter(Boolean);
       if (members.length < 2) return '';
       const gx = Math.min(...members.map(m => m.x)) - 18;
-      const gy = Math.min(...members.map(m => m.y)) - 32;
+      const gy = Math.min(...members.map(m => m.y)) - 18;
       const gw = Math.max(...members.map(m => m.x + m.w)) - gx + 18;
       const gh = Math.max(...members.map(m => m.y + m.h)) - gy + 18;
-      const col = escapeHtml(g.headerColor || '#0a84ff');
-      return `<rect x="${mapX(gx)}" y="${mapY(gy)}" width="${(gw * scale).toFixed(1)}" height="${(gh * scale).toFixed(1)}" rx="5" fill="${escapeHtml(hexToRgba(g.headerColor || '#0a84ff', 0.09))}" stroke="${col}" stroke-opacity="0.55" stroke-width="1" stroke-dasharray="3 2" />`;
+      const baseCol = g.headerColor || '#98989d';
+      const col = escapeHtml(baseCol);
+      return `<rect x="${mapX(gx)}" y="${mapY(gy)}" width="${(gw * scale).toFixed(1)}" height="${(gh * scale).toFixed(1)}" rx="5" fill="${escapeHtml(hexToRgba(baseCol, 0.08))}" stroke="${col}" stroke-opacity="0.55" stroke-width="1" />`;
     }).join('');
 
     const wireMarkup = connections.map(conn => {

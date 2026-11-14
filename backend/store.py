@@ -351,16 +351,28 @@ class GraphStore:
         if not members:
             return None
         pad_x = 24
-        pad_top = 52
+        pad_top = 24
         pad_bottom = 24
+        min_width = 288
         min_x = min(c["x"] for c in members)
         max_x = max(c["x"] + (c.get("width") or DEFAULT_CARD_WIDTH) for c in members)
         min_y = min(c["y"] for c in members)
         max_y = max(c["y"] + DEFAULT_CARD_HEIGHT for c in members)
+        if (self.state.get("settings") or {}).get("gridSnapMode"):
+            x = math.floor((min_x - pad_x) / GRID_SIZE) * GRID_SIZE
+            y = math.floor((min_y - pad_top) / GRID_SIZE) * GRID_SIZE
+            right = math.ceil((max_x + 16) / GRID_SIZE) * GRID_SIZE
+            bottom = math.ceil((max_y + 16) / GRID_SIZE) * GRID_SIZE
+            return {
+                "x": x,
+                "y": y,
+                "width": max(min_width, right - x),
+                "height": max(GRID_SIZE * 2, bottom - y),
+            }
         return {
             "x": min_x - pad_x,
             "y": min_y - pad_top,
-            "width": max(340, (max_x - min_x) + pad_x * 2),
+            "width": max(min_width, (max_x - min_x) + pad_x * 2),
             "height": (max_y - min_y) + pad_top + pad_bottom,
         }
 

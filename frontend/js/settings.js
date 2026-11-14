@@ -77,6 +77,8 @@ class SettingsManager {
       e.preventDefault();
       store.toggleGridSnapMode();
       this.syncAssistanceToggles();
+      window.__nodes?.renderGroups?.();
+      window.__wires?.render?.();
     });
 
     // Minimap settings listeners

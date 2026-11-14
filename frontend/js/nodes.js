@@ -15,6 +15,18 @@ export function hexToRgba(hex, alpha = 1) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+export function blendHexOnDark(hex, alpha = 0.16, base = [22, 22, 26]) {
+  if (!hex) return `rgb(${base[0]}, ${base[1]}, ${base[2]})`;
+  let c = hex.replace('#', '');
+  if (c.length === 3) c = c.split('').map(x => x + x).join('');
+  const num = parseInt(c, 16);
+  if (isNaN(num)) return `rgb(${base[0]}, ${base[1]}, ${base[2]})`;
+  const r = Math.round(((num >> 16) & 255) * alpha + base[0] * (1 - alpha));
+  const g = Math.round(((num >> 8) & 255) * alpha + base[1] * (1 - alpha));
+  const b = Math.round((num & 255) * alpha + base[2] * (1 - alpha));
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
 class NodeManager {
   constructor() {
     this.containerEl = null;
@@ -46,6 +58,8 @@ class NodeManager {
     this.selectionPopoverEl = selectionPopoverEl;
     this.capsuleActionBarEl = capsuleActionBarEl || document.getElementById('capsule-action-bar');
     this.canvasContextMenuEl = canvasContextMenuEl || document.getElementById('canvas-context-menu');
+    this.groupContextMenuEl = document.getElementById('group-context-menu');
+    this.activeContextGroup = null;
     this.marqueeBoxEl = marqueeBoxEl;
     this.alignmentBarEl = alignmentBarEl;
     this.viewportEl = viewportEl;
@@ -61,6 +75,7 @@ class NodeManager {
     this.renderPopoverPalette();
     this.bindCapsuleActionEvents();
     this.bindCanvasContextMenuEvents();
+    this.bindGroupContextMenuEvents();
     this.bindCanvasShortcuts();
     this.bindSelectionEvents();
     this.bindAlignmentEvents();
@@ -244,6 +259,8 @@ class NodeManager {
         this.clearCapsuleSelection();
         window.getSelection()?.removeAllRanges();
         this.hideSelectionPopover();
+        this.hideCanvasContextMenu();
+        this.hideGroupContextMenu();
 
         if (e.shiftKey) {
           this.selectCard(card.id, true);
@@ -368,12 +385,17 @@ class NodeManager {
       const cardEl = pinEl.closest('.note-card');
       const cardId = cardEl?.id.replace('card-dom-', '');
       const card = cardId ? store.state.cards.find(c => c.id === cardId) : null;
+      const groupEl = pinEl.closest('.node-group');
+      const groupId = groupEl?.id.replace('group-dom-', '');
+      const group = groupId ? store.state.groups?.find(g => g.id === groupId) : null;
 
       let color = '#98989d';
       if (capsule) {
         color = window.getComputedStyle(capsule).getPropertyValue('--capsule-pin').trim() || '#30d158';
       } else if (card?.headerColor) {
         color = card.headerColor;
+      } else if (group?.headerColor) {
+        color = group.headerColor;
       }
 
       wires.startConnect(pinId, startPos, color, e.clientX, e.clientY);
@@ -543,6 +565,8 @@ class NodeManager {
       e.stopPropagation();
       store.toggleGridSnapMode();
       this.updateContextMenuToggles();
+      this.renderGroups();
+      wires.render();
     });
 
     const btnMinimap = this.canvasContextMenuEl.querySelector('#menu-toggle-minimap');
@@ -554,6 +578,92 @@ class NodeManager {
     });
   }
 
+  bindGroupContextMenuEvents() {
+    if (!this.groupContextMenuEl) return;
+    this.groupContextMenuEl.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+    });
+    this.groupContextMenuEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    const btnRename = this.groupContextMenuEl.querySelector('#group-menu-rename');
+    btnRename?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextGroup;
+      this.hideGroupContextMenu();
+      ctx?.startRename?.();
+    });
+
+    const btnColor = this.groupContextMenuEl.querySelector('#group-menu-color');
+    btnColor?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextGroup;
+      this.hideGroupContextMenu();
+      if (ctx?.group && ctx?.labelEl) {
+        this.openPopoverForGroup(ctx.group, ctx.labelEl, { x: e.clientX, y: e.clientY });
+      }
+    });
+
+    const btnFocus = this.groupContextMenuEl.querySelector('#group-menu-focus');
+    btnFocus?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextGroup;
+      this.hideGroupContextMenu();
+      if (ctx?.group) {
+        this.enterFocusMode(ctx.group.cardIds);
+      }
+    });
+
+    const btnUngroup = this.groupContextMenuEl.querySelector('#group-menu-ungroup');
+    btnUngroup?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextGroup;
+      this.hideGroupContextMenu();
+      if (ctx?.group) {
+        this.ungroup(ctx.group.id);
+      }
+    });
+  }
+
+  showGroupContextMenu(group, labelEl, startRename, screenX, screenY) {
+    if (!this.groupContextMenuEl) return;
+    this.hideAllMenus();
+    this.activeContextGroup = { group, labelEl, startRename };
+
+    const menu = this.groupContextMenuEl;
+    menu.style.display = 'flex';
+
+    const menuWidth = menu.offsetWidth || 190;
+    const menuHeight = menu.offsetHeight || 190;
+    let left = screenX + 2;
+    let top = screenY + 2;
+
+    if (left + menuWidth > window.innerWidth - 10) {
+      left = screenX - menuWidth - 2;
+    }
+    if (top + menuHeight > window.innerHeight - 10) {
+      top = screenY - menuHeight - 2;
+    }
+    if (left < 10) left = 10;
+    if (top < 10) top = 10;
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  hideGroupContextMenu() {
+    if (this.groupContextMenuEl) {
+      this.groupContextMenuEl.style.display = 'none';
+    }
+    this.activeContextGroup = null;
+  }
+
   bindCanvasShortcuts() {
     if (!this.viewportEl) return;
 
@@ -562,7 +672,7 @@ class NodeManager {
       const isBg = (e.target === this.viewportEl ||
                     e.target === document.getElementById('board') ||
                     e.target.id === 'wire-svg') &&
-                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu, #canvas-context-menu, #minimap-widget');
+                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu, #canvas-context-menu, #group-context-menu, #minimap-widget');
       if (!isBg || e.button !== 0) return;
 
       this.hideAllMenus();
@@ -584,7 +694,7 @@ class NodeManager {
       const isBg = (e.target === this.viewportEl ||
                     e.target === document.getElementById('board') ||
                     e.target.id === 'wire-svg') &&
-                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu, #minimap-widget');
+                   !e.target.closest('.note-card, .wire-group, .hud-bar, .alignment-bar, #selection-popover, #capsule-action-bar, #wire-drop-menu, #canvas-context-menu, #group-context-menu, #minimap-widget');
       if (!isBg) return;
 
       e.preventDefault();
@@ -641,6 +751,7 @@ class NodeManager {
     this.clearCapsuleSelection();
     this.hideSelectionPopover();
     this.hideCanvasContextMenu();
+    this.hideGroupContextMenu();
     wires.dismissDropMenu(true);
   }
 
@@ -792,6 +903,25 @@ class NodeManager {
     if (this.targetHeaderCard) {
       rect = this.targetHeaderCard.headerEl.getBoundingClientRect();
     } else if (this.targetGroup) {
+      if (this.targetGroup.boardPos) {
+        const screenPos = canvas.boardToScreen(this.targetGroup.boardPos.x, this.targetGroup.boardPos.y);
+        if (screenPos.y < -100 || screenPos.y > window.innerHeight + 100 || screenPos.x < -150 || screenPos.x > window.innerWidth + 150) {
+          this.selectionPopoverEl.style.display = 'none';
+          return;
+        }
+        this.selectionPopoverEl.style.display = 'flex';
+        const popW = this.selectionPopoverEl.offsetWidth || 220;
+        const popH = this.selectionPopoverEl.offsetHeight || 76;
+        const minLeft = popW / 2 + 10;
+        const maxLeft = Math.max(minLeft, window.innerWidth - popW / 2 - 10);
+        const clampedLeft = Math.min(Math.max(screenPos.x, minLeft), maxLeft);
+        const minTop = popH + 20;
+        const maxTop = Math.max(minTop, window.innerHeight);
+        const clampedTop = Math.min(Math.max(screenPos.y, minTop), maxTop);
+        this.selectionPopoverEl.style.left = `${clampedLeft}px`;
+        this.selectionPopoverEl.style.top = `${clampedTop}px`;
+        return;
+      }
       rect = this.targetGroup.headerEl.getBoundingClientRect();
     } else if (this.targetCapsule) {
       const rects = this.targetCapsule.getClientRects();
@@ -884,17 +1014,24 @@ class NodeManager {
       if (this.canvasContextMenuEl && this.canvasContextMenuEl.contains(e.target)) return;
       this.hideCanvasContextMenu();
 
+      if (this.groupContextMenuEl && this.groupContextMenuEl.contains(e.target)) return;
+      this.hideGroupContextMenu();
+
       if (this.capsuleActionBarEl && this.capsuleActionBarEl.contains(e.target)) return;
       if (!e.target.closest('.text-capsule')) {
         this.clearCapsuleSelection();
       }
 
       if (this.selectionPopoverEl && this.selectionPopoverEl.contains(e.target)) return;
-      if (e.target.closest('.text-capsule, .note-header, .group-header')) return;
+      if (e.target.closest('.text-capsule, .note-header, .group-label, #group-menu-color')) return;
       this.hideSelectionPopover();
     });
 
     window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        this.hideGroupContextMenu();
+        this.hideCanvasContextMenu();
+      }
       if (this.selectionPopoverEl && this.selectionPopoverEl.style.display === 'flex') {
         if (e.key === 'Escape') {
           this.hideSelectionPopover();
@@ -932,17 +1069,15 @@ class NodeManager {
         if (newColor) {
           conn.color = newColor;
         } else {
-          const otherId = store.findCardIdByPin(conn.toPinId);
-          const otherCard = store.state.cards.find(c => c.id === otherId);
-          conn.color = otherCard?.headerColor || '#98989d';
+          conn.color = wires.resolvePinColor(conn.toPinId) || '#98989d';
         }
       } else if (headPins.has(conn.toPinId)) {
-        // If arriving from an uncolored header node, update connection color
-        const otherCardId = store.findCardIdByPin(conn.fromPinId);
-        const otherCard = store.state.cards.find(c => c.id === otherCardId);
-        const isFromCapsule = conn.fromPinId.startsWith('pin-') && !conn.fromPinId.startsWith('pin-head-');
+        // If arriving from an uncolored header/group port, update connection color
+        const isFromCapsule = conn.fromPinId.startsWith('pin-') &&
+          !conn.fromPinId.startsWith('pin-head-') &&
+          !conn.fromPinId.startsWith('pin-group-');
         if (!isFromCapsule) {
-          conn.color = otherCard?.headerColor || newColor || '#98989d';
+          conn.color = wires.resolvePinColor(conn.fromPinId) || newColor || '#98989d';
         }
       }
     });
@@ -1319,9 +1454,11 @@ class NodeManager {
     const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
     if (memberCards.length === 0) return null;
 
+    const GRID_SIZE = 24;
     const PADDING_X = 24;
-    const PADDING_TOP = 52;
+    const PADDING_TOP = 24;
     const PADDING_BOTTOM = 24;
+    const MIN_WIDTH = 288;
 
     let minX = Infinity;
     let maxX = -Infinity;
@@ -1340,9 +1477,19 @@ class NodeManager {
       if (cy + h > maxY) maxY = cy + h;
     });
 
+    if (store.state.settings?.gridSnapMode) {
+      const x = Math.floor((minX - PADDING_X) / GRID_SIZE) * GRID_SIZE;
+      const y = Math.floor((minY - PADDING_TOP) / GRID_SIZE) * GRID_SIZE;
+      const right = Math.ceil((maxX + 16) / GRID_SIZE) * GRID_SIZE;
+      const bottom = Math.ceil((maxY + 16) / GRID_SIZE) * GRID_SIZE;
+      const width = Math.max(MIN_WIDTH, right - x);
+      const height = Math.max(GRID_SIZE * 2, bottom - y);
+      return { x, y, width, height };
+    }
+
     const x = minX - PADDING_X;
     const y = minY - PADDING_TOP;
-    const width = Math.max(340, (maxX - minX) + PADDING_X * 2);
+    const width = Math.max(MIN_WIDTH, (maxX - minX) + PADDING_X * 2);
     const height = (maxY - minY) + PADDING_TOP + PADDING_BOTTOM;
 
     return { x, y, width, height };
@@ -1379,52 +1526,55 @@ class NodeManager {
       const rightColor = group.headerColor || rightConn?.color || '#98989d';
 
       if (group.headerColor) {
-        groupEl.style.borderColor = hexToRgba(group.headerColor, 0.45);
-        groupEl.style.backgroundColor = hexToRgba(group.headerColor, 0.035);
         groupEl.style.setProperty('--group-theme', group.headerColor);
-      } else {
-        groupEl.style.removeProperty('--group-theme');
+        groupEl.style.setProperty('--group-border', hexToRgba(group.headerColor, 0.42));
+        groupEl.style.setProperty('--group-border-hover', hexToRgba(group.headerColor, 0.68));
+        groupEl.style.setProperty('--group-bg', hexToRgba(group.headerColor, 0.04));
+        groupEl.style.setProperty('--group-bg-hover', hexToRgba(group.headerColor, 0.065));
+        groupEl.style.setProperty('--group-glow', hexToRgba(group.headerColor, 0.28));
+        groupEl.style.setProperty('--group-drop-bg', hexToRgba(group.headerColor, 0.09));
+        groupEl.style.setProperty('--group-drop-glow', hexToRgba(group.headerColor, 0.34));
+        groupEl.style.setProperty('--group-label-bg', blendHexOnDark(group.headerColor, 0.16, [22, 22, 26]));
+        groupEl.style.setProperty('--group-label-bg-hover', blendHexOnDark(group.headerColor, 0.24, [26, 26, 30]));
       }
 
-      const memberCount = group.cardIds.filter(id => store.state.cards.some(c => c.id === id)).length;
+      const displayTitle = group.title || '未命名组';
 
       groupEl.innerHTML = `
-        <div class="group-header">
-          <div class="header-port-slot header-port-slot-left" title="组连接端口 (左)">
-            <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}" 
-               data-header-pin-id="${leftPinId}" 
-               style="background-color: ${leftColor}; color: ${leftColor};"></i>
-          </div>
+        <div class="group-label">
+          <span class="group-title"></span>
+          <input class="group-title-input" placeholder="未命名组" style="display: none;" />
+        </div>
 
-          <div class="group-title-container">
-            <span class="group-title" title="双击重命名组">${group.title || '节点组'}</span>
-            <input class="group-title-input" value="${group.title || ''}" placeholder="节点组" style="display: none;" />
-            <span class="group-card-count">${memberCount} 个节点</span>
-          </div>
+        <div class="header-port-slot group-port-slot group-port-slot-left" title="组连接端口 (左)">
+          <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}"
+             data-header-pin-id="${leftPinId}"
+             style="background-color: ${leftColor}; color: ${leftColor};"></i>
+        </div>
 
-          <div class="group-actions">
-            <button class="group-focus-btn" title="专注此组">
-              <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2"></circle></svg>
-              专注
-            </button>
-            <button class="group-ungroup-btn" title="解散组 (Ctrl+Shift+G)">
-              <svg viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1"></path><rect x="9" y="3" width="12" height="12" rx="2"></rect></svg>
-              解散
-            </button>
-          </div>
-
-          <div class="header-port-slot header-port-slot-right" title="组连接端口 (右)">
-            <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}" 
-               data-header-pin-id="${rightPinId}" 
-               style="background-color: ${rightColor}; color: ${rightColor};"></i>
-          </div>
+        <div class="header-port-slot group-port-slot group-port-slot-right" title="组连接端口 (右)">
+          <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}"
+             data-header-pin-id="${rightPinId}"
+             style="background-color: ${rightColor}; color: ${rightColor};"></i>
         </div>
       `;
 
       // Title editing
+      const labelEl = groupEl.querySelector('.group-label');
       const titleSpan = groupEl.querySelector('.group-title');
       const titleInput = groupEl.querySelector('.group-title-input');
+      labelEl.title = `${displayTitle} · 拖拽移动组 · 双击重命名 · 右键菜单`;
+      titleSpan.textContent = displayTitle;
+      titleInput.value = group.title || '';
+
+      let prevTitle = group.title || '';
       const startRename = () => {
+        prevTitle = group.title || '';
+        const lockedWidth = labelEl.offsetWidth;
+        if (lockedWidth > 0) {
+          labelEl.style.width = `${lockedWidth}px`;
+        }
+        groupEl.classList.add('is-renaming');
         titleSpan.style.display = 'none';
         titleInput.style.display = 'block';
         titleInput.value = group.title || '';
@@ -1433,15 +1583,21 @@ class NodeManager {
       };
       const finishRename = () => {
         if (titleInput.style.display === 'none') return;
-        const newTitle = titleInput.value.trim() || '节点组';
+        const newTitle = titleInput.value.trim() || '未命名组';
+        const changed = newTitle !== prevTitle;
         group.title = newTitle;
+        prevTitle = newTitle;
         titleSpan.textContent = newTitle;
+        labelEl.title = `${newTitle} · 拖拽移动组 · 双击重命名 · 右键菜单`;
         titleInput.style.display = 'none';
         titleSpan.style.display = '';
-        store.commit();
+        groupEl.classList.remove('is-renaming');
+        this.syncGroupLabelWidth(groupEl);
+        if (changed) store.commit();
         store.scheduleAutoSave();
       };
-      titleSpan.addEventListener('dblclick', (e) => {
+      labelEl.addEventListener('dblclick', (e) => {
+        if (e.target === titleInput) return;
         e.stopPropagation();
         startRename();
       });
@@ -1451,43 +1607,26 @@ class NodeManager {
           finishRename();
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          titleInput.value = group.title || '';
+          titleInput.value = prevTitle;
           finishRename();
         }
       });
       titleInput.addEventListener('blur', finishRename);
       titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
 
-      // Focus button
-      const groupFocusBtn = groupEl.querySelector('.group-focus-btn');
-      groupFocusBtn?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.selectedCardIds = new Set(group.cardIds.filter(id => store.state.cards.some(c => c.id === id)));
-        this.updateSelectionVisuals();
-        this.updateAlignmentBar();
-        this.enterFocusMode(group.cardIds);
-      });
-
-      // Ungroup button
-      const ungroupBtn = groupEl.querySelector('.group-ungroup-btn');
-      ungroupBtn?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.ungroup(group.id);
-      });
-
-      // Right-click group header to recolor
-      const headerEl = groupEl.querySelector('.group-header');
-      headerEl.addEventListener('contextmenu', (e) => {
-        if (e.target.closest('.header-pin, .header-port-slot, .group-ungroup-btn')) return;
+      // Right-click group label or frame to open group context menu
+      const handleContextMenu = (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot')) return;
         e.preventDefault();
         e.stopPropagation();
-        this.openPopoverForGroup(group, headerEl);
-      });
+        this.showGroupContextMenu(group, labelEl, startRename, e.clientX, e.clientY);
+      };
+      groupEl.addEventListener('contextmenu', handleContextMenu);
 
-      // Drag group by header
-      headerEl.addEventListener('mousedown', (e) => {
-        if (e.target.closest('.header-pin, .header-port-slot, .group-ungroup-btn') || e.target === titleInput) return;
-        if (e.button !== 0) return;
+      // Drag group by top-left label or frame
+      groupEl.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot') || e.target === titleInput) return;
+        if (e.button !== 0 || canvas.isSpacePressed) return;
         e.preventDefault();
         e.stopPropagation();
         wires.clearFocus();
@@ -1495,13 +1634,13 @@ class NodeManager {
         this.clearCapsuleSelection();
         window.getSelection()?.removeAllRanges();
         this.hideSelectionPopover();
-
-        // Select all cards in the group
-        this.selectedCardIds = new Set(group.cardIds);
-        this.updateSelectionVisuals();
-        this.updateAlignmentBar();
+        this.hideCanvasContextMenu();
+        this.hideGroupContextMenu();
+        this.clearSelection();
 
         const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
+        const initMinX = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.x)) : 0;
+        const initMinY = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.y)) : 0;
         this.activeDrag = {
           type: 'MOVE_GROUP',
           groupId: group.id,
@@ -1509,6 +1648,8 @@ class NodeManager {
           startY: e.clientY,
           isAlt: e.altKey,
           cloned: false,
+          initMinX,
+          initMinY,
           initialPositions: new Map(memberCards.map(c => [c.id, { x: c.x, y: c.y }]))
         };
         groupEl.classList.add('active');
@@ -1521,7 +1662,27 @@ class NodeManager {
       this.bindPinEvents(pinRight, rightPinId);
 
       this.groupsContainerEl.appendChild(groupEl);
+      this.syncGroupLabelWidth(groupEl, bounds.width);
     });
+  }
+
+  syncGroupLabelWidth(groupEl, boundsWidth) {
+    if (!groupEl) return;
+    const labelEl = groupEl.querySelector('.group-label');
+    if (!labelEl) return;
+    if (!store.state.settings?.gridSnapMode || groupEl.classList.contains('is-renaming')) {
+      labelEl.style.width = '';
+      return;
+    }
+    const GRID_SIZE = 24;
+    const gWidth = boundsWidth || parseFloat(groupEl.style.width) || 288;
+    const maxCells = Math.max(3, Math.floor(Math.min(264, gWidth - GRID_SIZE) / GRID_SIZE));
+    const minCells = 3; // 72px minimum tab width (3 grid cells)
+
+    labelEl.style.width = 'auto';
+    const naturalWidth = labelEl.offsetWidth || 72;
+    const cells = Math.min(maxCells, Math.max(minCells, Math.ceil((naturalWidth - 1) / GRID_SIZE)));
+    labelEl.style.width = `${cells * GRID_SIZE + 1}px`;
   }
 
   updateGroupDOMBounds(groupId) {
@@ -1534,8 +1695,7 @@ class NodeManager {
       groupEl.style.top = `${bounds.y}px`;
       groupEl.style.width = `${bounds.width}px`;
       groupEl.style.height = `${bounds.height}px`;
-      const countBadge = groupEl.querySelector('.group-card-count');
-      if (countBadge) countBadge.textContent = `${group.cardIds.length} 个节点`;
+      this.syncGroupLabelWidth(groupEl, bounds.width);
     }
   }
 
@@ -1544,9 +1704,9 @@ class NodeManager {
     const existingGroupCount = store.state.groups?.length || 0;
     const group = {
       id: `group-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      title: `组 ${existingGroupCount + 1}`,
+      title: existingGroupCount === 0 ? '未命名组' : `组 ${existingGroupCount + 1}`,
       cardIds: [...this.selectedCardIds],
-      headerColor: '#0a84ff'
+      headerColor: null
     };
     store.addGroup(group);
     this.render();
@@ -1575,13 +1735,14 @@ class NodeManager {
     }
   }
 
-  openPopoverForGroup(group, headerEl) {
+  openPopoverForGroup(group, headerEl, anchorScreen = null) {
     this.clearCapsuleSelection();
     window.getSelection()?.removeAllRanges();
     this.currentRange = null;
     this.targetCapsule = null;
     this.targetHeaderCard = null;
-    this.targetGroup = { group, headerEl };
+    const boardPos = anchorScreen ? canvas.screenToBoard(anchorScreen.x, anchorScreen.y) : null;
+    this.targetGroup = { group, headerEl, boardPos };
 
     this.renderPopoverPalette();
     const currentColor = group.headerColor || null;
@@ -1597,12 +1758,17 @@ class NodeManager {
 
     store.state.connections.forEach(conn => {
       if (groupPins.has(conn.fromPinId)) {
-        conn.color = newColor;
-      } else if (groupPins.has(conn.toPinId)) {
-        const otherId = store.findCardIdByPin(conn.fromPinId);
-        const otherCard = store.state.cards.find(c => c.id === otherId);
-        if (!otherCard?.headerColor) {
+        if (newColor) {
           conn.color = newColor;
+        } else {
+          conn.color = wires.resolvePinColor(conn.toPinId) || '#98989d';
+        }
+      } else if (groupPins.has(conn.toPinId)) {
+        const isFromCapsule = conn.fromPinId.startsWith('pin-') &&
+          !conn.fromPinId.startsWith('pin-head-') &&
+          !conn.fromPinId.startsWith('pin-group-');
+        if (!isFromCapsule) {
+          conn.color = wires.resolvePinColor(conn.fromPinId) || newColor || '#98989d';
         }
       }
     });
@@ -1679,13 +1845,15 @@ class NodeManager {
       const titleInput = groupEl.querySelector('.group-title-input');
       const titleSpan = groupEl.querySelector('.group-title');
       if (titleInput && titleInput.style.display !== 'none') {
-        const newTitle = titleInput.value.trim() || '节点组';
+        const newTitle = titleInput.value.trim() || '未命名组';
         group.title = newTitle;
         if (titleSpan) {
           titleSpan.textContent = newTitle;
           titleSpan.style.display = '';
         }
         titleInput.style.display = 'none';
+        groupEl.classList.remove('is-renaming');
+        this.syncGroupLabelWidth(groupEl);
       }
     });
   }
@@ -2270,8 +2438,9 @@ class NodeManager {
                 const newMemberCards = store.state.cards.filter(c => newCards.some(nc => nc.id === c.id));
                 this.activeDrag.cloned = true;
                 this.activeDrag.groupId = newGroupId;
+                this.activeDrag.initMinX = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.x)) : 0;
+                this.activeDrag.initMinY = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.y)) : 0;
                 this.activeDrag.initialPositions = new Map(newMemberCards.map(c => [c.id, { x: c.x, y: c.y }]));
-                this.selectedCardIds = new Set(newCards.map(c => c.id));
                 this.render();
                 this.renderGroups();
                 document.getElementById(`group-dom-${newGroupId}`)?.classList.add('active');
@@ -2297,8 +2466,10 @@ class NodeManager {
 
             if (gridSnapMode) {
               const GRID_SIZE = 24;
-              candX = Math.round(candX / GRID_SIZE) * GRID_SIZE;
-              candY = Math.round(candY / GRID_SIZE) * GRID_SIZE;
+              const targetMinX = Math.round((this.activeDrag.initMinX + dx) / GRID_SIZE) * GRID_SIZE;
+              const targetMinY = Math.round((this.activeDrag.initMinY + dy) / GRID_SIZE) * GRID_SIZE;
+              candX = leadInitPos.x + (targetMinX - this.activeDrag.initMinX);
+              candY = leadInitPos.y + (targetMinY - this.activeDrag.initMinY);
             }
 
             if (shouldAlign) {
@@ -2375,6 +2546,13 @@ class NodeManager {
               if (cardEl) {
                 cardEl.style.width = `${newWidth}px`;
               }
+            }
+            if (store.state.groups) {
+              store.state.groups.forEach(g => {
+                if (g.cardIds.includes(card.id)) {
+                  this.updateGroupDOMBounds(g.id);
+                }
+              });
             }
             wires.render();
           }

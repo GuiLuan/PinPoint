@@ -64,7 +64,8 @@ class CanvasManager {
       const isCanvasBackground = e.target === this.viewportEl ||
                                  e.target === this.boardEl ||
                                  e.target.id === 'wire-svg';
-      if (!isCanvasBackground) return;
+      const isPanOnGroup = (e.button === 1 || this.isSpacePressed) && e.target.closest?.('.node-group');
+      if (!isCanvasBackground && !isPanOnGroup) return;
 
       if (e.button === 1 || this.isSpacePressed) {
         e.preventDefault();

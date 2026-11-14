@@ -95,140 +95,161 @@ html, body {
 .node-group {
   position: absolute;
   pointer-events: auto;
-  border: 1.5px dashed rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.025);
-  border-radius: 16px;
+  border: 1px solid var(--group-border, rgba(255, 255, 255, 0.16));
+  background: var(--group-bg, rgba(255, 255, 255, 0.025));
+  border-radius: 0 14px 14px 14px;
   box-sizing: border-box;
+  cursor: grab;
   transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
   user-select: none;
 }
 
 .node-group:hover {
-  border-color: rgba(255, 255, 255, 0.38);
+  border-color: var(--group-border-hover, rgba(255, 255, 255, 0.3));
+  background: var(--group-bg-hover, rgba(255, 255, 255, 0.04));
 }
 
-.node-group.active {
-  border-color: var(--accent-blue);
-  border-style: solid;
-  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.65);
+.node-group.active,
+.node-group.active:hover {
+  cursor: grabbing;
+  border-color: var(--group-theme, var(--accent-blue));
+  box-shadow: 0 0 0 2px var(--group-glow, rgba(10, 132, 255, 0.25)), 0 14px 36px rgba(0, 0, 0, 0.5);
 }
 
 .node-group.group-drop-target {
-  border-color: var(--accent-blue) !important;
-  border-style: solid !important;
-  background: rgba(10, 132, 255, 0.09) !important;
-  box-shadow: 0 0 28px rgba(10, 132, 255, 0.42) !important;
+  border-color: var(--group-theme, var(--accent-blue)) !important;
+  background: var(--group-drop-bg, rgba(10, 132, 255, 0.08)) !important;
+  box-shadow: 0 0 0 2px var(--group-glow, rgba(10, 132, 255, 0.25)), 0 0 28px var(--group-drop-glow, rgba(10, 132, 255, 0.32)) !important;
 }
 
-.group-header {
+/* Top-left attached folder-tab group label (grid-aligned: 48px = 2x24px above frame) */
+.group-label {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 40px;
-  display: flex;
+  bottom: 100%;
+  left: -1px;
+  height: 49px;
+  max-width: min(265px, calc(100% - 21px));
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 10px;
-  background: rgba(26, 28, 34, 0.94);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-top: 2.5px solid var(--group-theme, rgba(255, 255, 255, 0.22));
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 14px 14px 0 0;
+  justify-content: center;
+  padding: 0 14px;
+  border-radius: 12px 12px 0 0;
+  background: var(--group-label-bg, #1d1d21);
+  border: 1px solid var(--group-border, rgba(255, 255, 255, 0.16));
+  border-bottom: none;
   cursor: grab;
   box-sizing: border-box;
   transition: background-color 0.15s ease, border-color 0.15s ease;
-  z-index: 2;
+  z-index: 3;
 }
 
-.group-header:hover {
-  background: rgba(36, 39, 48, 0.98);
-  border-bottom-color: rgba(255, 255, 255, 0.18);
+.node-group.is-renaming .group-label {
+  padding: 0 8px;
 }
 
-.group-header:active {
+.node-group:hover .group-label {
+  background: var(--group-label-bg-hover, #242429);
+  border-color: var(--group-border-hover, rgba(255, 255, 255, 0.3));
+}
+
+.node-group.active .group-label,
+.node-group.active:hover .group-label {
+  border-color: var(--group-theme, var(--accent-blue));
+}
+
+.node-group.active .group-label::before,
+.node-group.group-drop-target .group-label::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  right: -3px;
+  bottom: 3px;
+  border-radius: 14px 14px 0 0;
+  border: 2px solid var(--group-glow, rgba(10, 132, 255, 0.25));
+  border-bottom: none;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.node-group.group-drop-target .group-label {
+  border-color: var(--group-theme, var(--accent-blue)) !important;
+  background: var(--group-label-bg-hover, #242429);
+}
+
+.node-group.group-drop-target .group-label::before {
+  border-color: var(--group-glow, rgba(10, 132, 255, 0.25)) !important;
+}
+
+.group-label:active,
+.node-group.active .group-label {
   cursor: grabbing;
 }
 
-.group-title-container {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  flex: 1;
-  margin: 0 6px;
-  overflow: hidden;
-}
-
-
 .group-title {
-  font-size: 13px;
+  font-size: 14.5px;
   font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.1px;
   color: var(--text-primary);
+  min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: text;
+  cursor: grab;
+  transition: color 0.15s ease;
+}
+
+.node-group:hover .group-title,
+.node-group.active .group-title {
+  color: #ffffff;
+}
+
+.group-label:active .group-title,
+.node-group.active .group-title {
+  cursor: grabbing;
 }
 
 .group-title-input {
   background: rgba(0, 0, 0, 0.45);
-  border: 1px solid var(--accent-blue);
+  border: 1px solid var(--group-theme, var(--accent-blue));
   border-radius: 4px;
   color: #ffffff;
-  font-size: 12.5px;
+  font-size: 14.5px;
   font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.1px;
   font-family: inherit;
-  padding: 2px 6px;
+  text-align: center;
+  padding: 2px 4px;
   outline: none;
-  width: 120px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
-.group-card-count {
-  font-size: 11px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.75);
-  background: rgba(255, 255, 255, 0.1);
-  padding: 1.5px 7px;
-  border-radius: 10px;
-  margin-left: 4px;
-  white-space: nowrap;
+/* Group edge connection ports */
+.node-group .group-port-slot {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
-.group-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: 4px;
+.node-group .group-port-slot-left {
+  left: -11px;
+  right: auto;
 }
 
-.group-ungroup-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
-  padding: 3px 8px;
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 11.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.12s ease;
+.node-group .group-port-slot-right {
+  right: -11px;
+  left: auto;
 }
 
-.group-ungroup-btn svg {
-  width: 11px;
-  height: 11px;
-  stroke: currentColor;
-  stroke-width: 2;
-  fill: none;
-}
-
-.group-ungroup-btn:hover {
-  background: rgba(255, 69, 58, 0.18);
-  border-color: rgba(255, 69, 58, 0.4);
-  color: #ff453a;
+.node-group:hover .group-port-slot .header-pin:not(.pin-connected) {
+  opacity: 0.28;
+  pointer-events: auto;
 }
 
 /* Apple HIG Floating Header HUD */
@@ -802,7 +823,8 @@ body.is-wire-dragging .note-body {
 
 body.is-wire-dragging .text-capsule,
 body.is-wire-dragging .note-header,
-body.is-wire-dragging .group-header {
+body.is-wire-dragging .group-label,
+body.is-wire-dragging .node-group {
   cursor: crosshair !important;
 }
 
@@ -1205,6 +1227,15 @@ body.is-wire-dragging .group-header {
 
 .context-menu-item:hover {
   background: rgba(255, 255, 255, 0.12);
+}
+
+.context-menu-item-danger:hover {
+  background: rgba(255, 69, 58, 0.18);
+  color: #ff6961;
+}
+
+.context-menu-item-danger:hover .context-menu-icon {
+  color: #ff6961;
 }
 
 .context-menu-label {
@@ -2402,35 +2433,6 @@ body.is-focus-session #viewport {
 .hud-focus-cancel-btn:hover {
   background: rgba(255, 69, 58, 0.16);
   color: #ff6961;
-}
-
-.group-focus-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: rgba(10, 132, 255, 0.12);
-  border: 1px solid rgba(10, 132, 255, 0.32);
-  border-radius: 6px;
-  padding: 3px 8px;
-  color: #64b5ff;
-  font-size: 11.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.12s ease;
-}
-
-.group-focus-btn svg {
-  width: 11px;
-  height: 11px;
-  stroke: currentColor;
-  stroke-width: 2;
-  fill: none;
-}
-
-.group-focus-btn:hover {
-  background: rgba(10, 132, 255, 0.24);
-  border-color: rgba(10, 132, 255, 0.6);
-  color: #ffffff;
 }
 
 body.is-focus-session .group-focus-btn {

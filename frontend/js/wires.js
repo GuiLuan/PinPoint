@@ -488,7 +488,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .group-header') : null;
+      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .node-group') : null;
 
       let targetId = null;
       let activePinEl = null;
@@ -571,7 +571,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .group-header') : null;
+      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .node-group') : null;
       let targetPinId = null;
 
       if (targetSlot) {
