@@ -1,6 +1,8 @@
-# PinPoint
-
-> 极简、纯粹的无限画布思维图谱工具。
+<div align="center">
+  <img src="frontend/icons/icon-192x192.png" alt="PinPoint Logo" width="88" />
+  <h1>PinPoint</h1>
+  <p>极简、纯粹的无限画布思维图谱工具。</p>
+</div>
 
 ![PinPoint 核心特性展示](docs/images/preview.png)
 
