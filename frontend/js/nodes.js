@@ -2225,7 +2225,7 @@ class NodeManager {
     });
   }
 
-  flushActiveDOMEdits() {
+  flushActiveDOMEdits({ exitInputs = true } = {}) {
     store.state.cards.forEach(card => {
       const cardEl = document.getElementById(`card-dom-${card.id}`);
       if (!cardEl) return;
@@ -2236,9 +2236,11 @@ class NodeManager {
         card.title = newTitle;
         if (titleSpan) {
           titleSpan.textContent = newTitle;
-          titleSpan.style.display = '';
         }
-        titleInput.style.display = 'none';
+        if (exitInputs) {
+          if (titleSpan) titleSpan.style.display = '';
+          titleInput.style.display = 'none';
+        }
       }
       if (card.kind !== 'subcanvas') {
         const bodyEl = cardEl.querySelector('.note-body');
@@ -2258,11 +2260,13 @@ class NodeManager {
         group.title = newTitle;
         if (titleSpan) {
           titleSpan.textContent = newTitle;
-          titleSpan.style.display = '';
         }
-        titleInput.style.display = 'none';
-        groupEl.classList.remove('is-renaming');
-        this.syncGroupLabelWidth(groupEl);
+        if (exitInputs) {
+          if (titleSpan) titleSpan.style.display = '';
+          titleInput.style.display = 'none';
+          groupEl.classList.remove('is-renaming');
+          this.syncGroupLabelWidth(groupEl);
+        }
       }
     });
   }

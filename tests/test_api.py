@@ -728,6 +728,20 @@ class PinPointApiTestCase(unittest.TestCase):
         _, root_after = self._request("GET", "/canvases/root")
         self.assertFalse(any(c["id"] == sub1_card_id for c in root_after["data"]["cards"]))
 
+        # 8. Client sync of an orphan subcanvas ID not referenced by any parent card must not create a ghost row
+        status_orphan, orphan_res = self._request("PUT", "/canvases/canvas-ghost-orphan?mode=sync", {
+            "id": "canvas-ghost-orphan",
+            "parentCanvasId": "root",
+            "title": "Ghost",
+            "cards": [],
+            "connections": [],
+            "groups": [],
+        })
+        self.assertEqual(status_orphan, 200)
+        self.assertTrue(orphan_res["data"].get("skippedOrphan"))
+        _, tree_after = self._request("GET", "/canvases")
+        self.assertEqual([c["id"] for c in tree_after["data"]], ["root"])
+
     def test_pack_cards_into_subcanvas_and_import_pinpoint(self) -> None:
         status, sub_res = self._request("POST", "/canvases/root/subcanvases", {
             "title": "Packed Canvas",

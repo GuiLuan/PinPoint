@@ -194,7 +194,9 @@ class LibraryManager {
     if (!Array.isArray(remoteItems)) return;
     this.items = remoteItems;
     this.saveLocalLibrary();
-    this.renderList();
+    if (!this.editingItemId) {
+      this.renderList();
+    }
   }
 
   isOpen() {

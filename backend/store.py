@@ -193,6 +193,7 @@ class GraphStore:
             })
             self._canvases[ROOT_CANVAS_ID] = norm
             self.has_workspace_file = True
+            self.db.prune_orphan_canvases()
             return norm
 
         if self.workspace_file and self.workspace_file.exists():
@@ -941,6 +942,8 @@ class GraphStore:
                 parent_cid = data.get("parentCanvasId") or ROOT_CANVAS_ID
                 if not self.db.has_canvas(parent_cid):
                     parent_cid = ROOT_CANVAS_ID
+                if target_cid not in self.db.get_subcanvas_ids_on_canvas(parent_cid):
+                    return {"id": target_cid, "skippedOrphan": True}
                 self.db.ensure_canvas(
                     target_cid,
                     parent_canvas_id=parent_cid,
@@ -997,6 +1000,11 @@ class GraphStore:
                     self._publish("GRAPH_SYNCED", canvas_id=cid)
                 else:
                     self._persist_workspace(cid)
+                pruned_orphans = self.db.prune_orphan_canvases()
+                for did in pruned_orphans:
+                    self._canvases.pop(did, None)
+                    self.undo_stacks.pop(did, None)
+                    self.redo_stacks.pop(did, None)
                 return self.get_graph(canvas_id=cid)
 
     def reset(self, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:

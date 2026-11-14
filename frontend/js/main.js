@@ -173,6 +173,7 @@ async function initApp() {
 
   let canvasesSearchQuery = '';
   const collapsedCanvasIds = new Set();
+  let pendingCanvasTreeRender = false;
 
   function isCanvasesDrawerOpen() {
     return !!canvasesDrawerEl?.classList.contains('is-open');
@@ -247,6 +248,15 @@ async function initApp() {
 
   function renderCanvasTreeDrawer() {
     if (!canvasTreeListEl) return;
+    // Never destroy an active inline rename input inside the drawer
+    const activeRename = canvasTreeListEl.querySelector('.canvas-tree-rename-input');
+    const isRenamingInDrawer = Array.from(canvasTreeListEl.querySelectorAll('.canvas-tree-rename-input'))
+      .some(inp => inp.style.display !== 'none' || inp === document.activeElement);
+    if (isRenamingInDrawer && activeRename) {
+      pendingCanvasTreeRender = true;
+      return;
+    }
+    pendingCanvasTreeRender = false;
     const allRows = store.getCanvasHierarchy();
     if (canvasesCountBadgeEl) {
       canvasesCountBadgeEl.textContent = String(allRows.length);
@@ -356,6 +366,8 @@ async function initApp() {
         nameEl.style.display = '';
         if (commit && val && val !== row.title) {
           await store.renameCanvas(row.id, val);
+        } else if (pendingCanvasTreeRender) {
+          renderCanvasTreeDrawer();
         }
       };
 

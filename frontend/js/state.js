@@ -93,6 +93,7 @@ class StateManager {
     this.canvasesCache = new Map();
     this.dirtyCanvasIds = new Set();
     this.pendingDeletedCanvasIds = new Set();
+    this.deletedSubcanvasTrash = new Map();
     this.settingsDirty = false;
     this.canvasTree = [{
       id: 'root',
@@ -371,6 +372,9 @@ class StateManager {
 
   undo() {
     if (this.undoStack.length <= 1) return false;
+    const prevSubIds = new Set(
+      this.state.cards.filter(c => c.kind === 'subcanvas' && c.subcanvasId).map(c => c.subcanvasId)
+    );
     const current = this.undoStack.pop();
     this.redoStack.push(current);
     const prevSnap = this.undoStack[this.undoStack.length - 1];
@@ -378,23 +382,64 @@ class StateManager {
     this.state.cards = clone(data.cards);
     this.state.connections = clone(data.connections);
     this.state.groups = clone(data.groups || []);
+    const nextSubIds = new Set(
+      this.state.cards.filter(c => c.kind === 'subcanvas' && c.subcanvasId).map(c => c.subcanvasId)
+    );
+    let treeChanged = false;
+    for (const sid of prevSubIds) {
+      if (!nextSubIds.has(sid)) {
+        this._markSubcanvasSubtreeDeleted(sid);
+        treeChanged = true;
+      }
+    }
+    for (const sid of nextSubIds) {
+      if (!prevSubIds.has(sid)) {
+        this._restoreSubcanvasSubtree(sid);
+        treeChanged = true;
+      }
+    }
     this._refreshSubcanvasThumbnailsOnActive();
     this.markDirty(this.activeCanvasId);
     this.notify({ type: 'STATE_RESTORED' });
+    if (treeChanged) {
+      this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+    }
     return true;
   }
 
   redo() {
     if (this.redoStack.length === 0) return false;
+    const prevSubIds = new Set(
+      this.state.cards.filter(c => c.kind === 'subcanvas' && c.subcanvasId).map(c => c.subcanvasId)
+    );
     const nextSnap = this.redoStack.pop();
     this.undoStack.push(nextSnap);
     const data = JSON.parse(nextSnap);
     this.state.cards = clone(data.cards);
     this.state.connections = clone(data.connections);
     this.state.groups = clone(data.groups || []);
+    const nextSubIds = new Set(
+      this.state.cards.filter(c => c.kind === 'subcanvas' && c.subcanvasId).map(c => c.subcanvasId)
+    );
+    let treeChanged = false;
+    for (const sid of prevSubIds) {
+      if (!nextSubIds.has(sid)) {
+        this._markSubcanvasSubtreeDeleted(sid);
+        treeChanged = true;
+      }
+    }
+    for (const sid of nextSubIds) {
+      if (!prevSubIds.has(sid)) {
+        this._restoreSubcanvasSubtree(sid);
+        treeChanged = true;
+      }
+    }
     this._refreshSubcanvasThumbnailsOnActive();
     this.markDirty(this.activeCanvasId);
     this.notify({ type: 'STATE_RESTORED' });
+    if (treeChanged) {
+      this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+    }
     return true;
   }
 
@@ -480,7 +525,7 @@ class StateManager {
 
     for (const [cid, entry] of this.canvasesCache.entries()) {
       if (this.pendingDeletedCanvasIds.has(cid)) continue;
-      const cards = entry.cards || [];
+      const cards = cid === this.activeCanvasId ? this.state.cards : (entry.cards || []);
       const cardCount = cards.filter(c => c.kind !== 'subcanvas').length;
       const subcanvasCount = cards.filter(c => c.kind === 'subcanvas').length;
       const existing = map.get(cid) || {};
@@ -488,11 +533,34 @@ class StateManager {
         ...existing,
         id: cid,
         parentCanvasId: entry.parentCanvasId !== undefined ? entry.parentCanvasId : (existing.parentCanvasId ?? null),
-        title: entry.title || existing.title || (cid === 'root' ? '主画布' : '子画布'),
+        title: (cid === this.activeCanvasId ? this.activeCanvasTitle : entry.title) || existing.title || (cid === 'root' ? '主画布' : '子画布'),
         cardCount,
         subcanvasCount,
         dirty: this.dirtyCanvasIds.has(cid)
       });
+    }
+
+    // Any parent canvas whose cards are loaded in memory defines its exact set of child subcanvasIds;
+    // filter out stale/orphan canvases not referenced by any subcanvas card in a loaded parent.
+    const loadedParentChildren = new Map();
+    loadedParentChildren.set(
+      this.activeCanvasId,
+      new Set(this.state.cards.filter(c => c.kind === 'subcanvas' && c.subcanvasId).map(c => c.subcanvasId))
+    );
+    for (const [cid, entry] of this.canvasesCache.entries()) {
+      if (cid === this.activeCanvasId) continue;
+      loadedParentChildren.set(
+        cid,
+        new Set((entry.cards || []).filter(c => c.kind === 'subcanvas' && c.subcanvasId).map(c => c.subcanvasId))
+      );
+    }
+
+    for (const [cid, node] of [...map.entries()]) {
+      if (cid === 'root') continue;
+      const pid = node.parentCanvasId;
+      if (pid && loadedParentChildren.has(pid) && !loadedParentChildren.get(pid).has(cid)) {
+        map.delete(cid);
+      }
     }
 
     const result = [...map.values()].map(node => {
@@ -505,7 +573,7 @@ class StateManager {
       };
     });
 
-    // Tree DFS order for clean indentation display
+    // Tree DFS order from root so unreachable orphans never appear in hierarchy
     const childrenByParent = new Map();
     for (const node of result) {
       const p = node.parentCanvasId || '__root_parent__';
@@ -521,10 +589,6 @@ class StateManager {
       }
     };
     walk('__root_parent__');
-    // Append any orphans if parent wasn't loaded
-    for (const node of result) {
-      if (!ordered.some(o => o.id === node.id)) ordered.push(node);
-    }
     return ordered;
   }
 
@@ -811,10 +875,38 @@ class StateManager {
     if (!subcanvasId || subcanvasId === 'root') return;
     const allIds = [subcanvasId, ...this._collectDescendantCanvasIdsLocal(subcanvasId)];
     for (const id of allIds) {
+      const cached = this.canvasesCache.get(id);
+      if (cached) {
+        this.deletedSubcanvasTrash.set(id, clone(cached));
+      }
       this.pendingDeletedCanvasIds.add(id);
       this.dirtyCanvasIds.delete(id);
       this.canvasesCache.delete(id);
       idbCache.deleteCanvas(id);
+    }
+  }
+
+  _restoreSubcanvasSubtree(subcanvasId) {
+    if (!subcanvasId || subcanvasId === 'root') return;
+    const queue = [subcanvasId];
+    const seen = new Set();
+    while (queue.length > 0) {
+      const id = queue.shift();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      this.pendingDeletedCanvasIds.delete(id);
+      const trashed = this.deletedSubcanvasTrash.get(id);
+      if (trashed) {
+        trashed.dirty = true;
+        this.canvasesCache.set(id, trashed);
+        this.dirtyCanvasIds.add(id);
+        idbCache.putCanvas(trashed);
+        for (const c of trashed.cards || []) {
+          if (c.kind === 'subcanvas' && c.subcanvasId && !seen.has(c.subcanvasId)) {
+            queue.push(c.subcanvasId);
+          }
+        }
+      }
     }
   }
 

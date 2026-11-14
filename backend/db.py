@@ -36,8 +36,10 @@ class SQLiteDatabase:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON;")
         if not self.is_memory:
+            # Use DELETE journal mode rather than WAL so SQLite works reliably
+            # on Docker bind mounts (Windows/macOS 9P/VirtioFS) without -shm mmap errors.
             try:
-                self.conn.execute("PRAGMA journal_mode = WAL;")
+                self.conn.execute("PRAGMA journal_mode = DELETE;")
             except sqlite3.OperationalError:
                 pass
         self._init_schema()
@@ -264,6 +266,27 @@ class SQLiteDatabase:
             (canvas_id,),
         ).fetchall()
         return [r["subcanvas_id"] for r in rows if r["subcanvas_id"]]
+
+    def prune_orphan_canvases(self) -> list[str]:
+        """Remove non-root canvas rows not reachable from root via any subcanvas card."""
+        if not self.has_canvas(ROOT_CANVAS_ID):
+            return []
+        reachable: set[str] = {ROOT_CANVAS_ID}
+        queue_ids: list[str] = [ROOT_CANVAS_ID]
+        while queue_ids:
+            cur = queue_ids.pop(0)
+            for child_id in self.get_subcanvas_ids_on_canvas(cur):
+                if child_id not in reachable and self.has_canvas(child_id):
+                    reachable.add(child_id)
+                    queue_ids.append(child_id)
+
+        all_ids = [r["id"] for r in self.conn.execute("SELECT id FROM canvases").fetchall()]
+        orphans = [cid for cid in all_ids if cid not in reachable]
+        if orphans:
+            with self.conn:
+                placeholders = ",".join("?" for _ in orphans)
+                self.conn.execute(f"DELETE FROM canvases WHERE id IN ({placeholders})", orphans)
+        return orphans
 
     def ensure_canvas(
         self,

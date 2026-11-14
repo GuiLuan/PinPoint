@@ -18,6 +18,7 @@ class SyncManager {
     this.healthTimer = null;
     this.selectionTimer = null;
     this.statusDotEl = null;
+    this._deferredAutoSave = false;
   }
 
   init() {
@@ -69,10 +70,12 @@ class SyncManager {
       }
     });
 
-    window.addEventListener('mouseup', () => this.flushPendingIfIdle(), true);
+    window.addEventListener('mouseup', () => {
+      setTimeout(() => this.flushPendingIfIdle(), 25);
+    }, true);
     window.addEventListener('blur', () => this.flushPendingIfIdle());
     window.addEventListener('focusout', () => {
-      setTimeout(() => this.flushPendingIfIdle(), 20);
+      setTimeout(() => this.flushPendingIfIdle(), 25);
     }, true);
 
     this.connectSSE();
@@ -156,9 +159,10 @@ class SyncManager {
       this.autoSaveTimer = null;
       if (store.getSaveSettings().mode === 'auto' && store.hasUnsavedChanges() && !store.isFocusMode) {
         if (this.isUserBusyForSave()) {
-          // Wait until active drag finishes, then re-arm trailing debounce
-          this.scheduleAutoSaveIfNeeded({ reset: true });
+          // Never interrupt active typing, inline renaming, or dragging; save once user finishes
+          this._deferredAutoSave = true;
         } else {
+          this._deferredAutoSave = false;
           await this.saveAllToBackend({ manual: false });
         }
       }
@@ -169,8 +173,22 @@ class SyncManager {
     this.scheduleAutoSaveIfNeeded({ reset: true });
   }
 
+  isEditingActive() {
+    const active = document.activeElement;
+    if (active && active.closest && active.closest('input, textarea, select, [contenteditable="true"]')) {
+      return true;
+    }
+    const openInputs = document.querySelectorAll('.header-title-input, .group-title-input, .canvas-tree-rename-input, .library-item-rename-input');
+    for (const el of openInputs) {
+      if (el.style.display !== 'none' && el.offsetParent !== null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   isUserBusyForSave() {
-    return Boolean(nodes.activeDrag || wires.activeDrag || canvas.dragAction);
+    return Boolean(nodes.activeDrag || wires.activeDrag || canvas.dragAction || this.isEditingActive());
   }
 
   connectSSE() {
@@ -284,8 +302,10 @@ class SyncManager {
                   const card = store.state.cards.find(c => c.kind === 'subcanvas' && c.subcanvasId === evtCanvasId);
                   if (card) {
                     card.thumbnail = json.data;
-                    nodes.render();
-                    wires.render();
+                    if (!this.isUserBusyForSave()) {
+                      nodes.render();
+                      wires.render();
+                    }
                   }
                 }
               }).catch(() => {});
@@ -324,19 +344,22 @@ class SyncManager {
     if (!document.hasFocus()) {
       return false;
     }
-    const active = document.activeElement;
-    if (active && active.closest && active.closest('.note-body, .header-title-input, .group-title-input')) {
-      return true;
-    }
-    return false;
+    return this.isEditingActive();
   }
 
   flushPendingIfIdle() {
-    if (!this.pendingEvent || store.isFocusMode) return;
-    if (this.isUserBusyForSave() || this.isUserBusyForEvent(this.pendingEvent.type)) return;
-    const evt = this.pendingEvent;
-    this.pendingEvent = null;
-    this.applyRemote(evt.state, evt.type);
+    if (store.isFocusMode) return;
+    if (this.pendingEvent && !this.isUserBusyForSave() && !this.isUserBusyForEvent(this.pendingEvent.type)) {
+      const evt = this.pendingEvent;
+      this.pendingEvent = null;
+      this.applyRemote(evt.state, evt.type);
+    }
+    if (this._deferredAutoSave && !this.isUserBusyForSave()) {
+      this._deferredAutoSave = false;
+      if (store.getSaveSettings().mode === 'auto' && store.hasUnsavedChanges()) {
+        this.scheduleAutoSaveIfNeeded({ reset: true });
+      }
+    }
   }
 
   applyRemote(remoteState, sourceEvent) {
@@ -424,12 +447,17 @@ class SyncManager {
     this.updateStatusDot();
 
     try {
-      nodes.flushActiveDOMEdits();
+      nodes.flushActiveDOMEdits({ exitInputs: false });
       await store.flushCacheToIDBNow();
 
-      // 1. Delete pending removed subcanvases
+      // 1. Delete pending removed subcanvases that exist on the backend
+      const serverCanvasIds = new Set((store.canvasTree || []).map(r => r.id));
       const deletedIds = [...store.pendingDeletedCanvasIds];
       for (const delId of deletedIds) {
+        if (!serverCanvasIds.has(delId)) {
+          store.pendingDeletedCanvasIds.delete(delId);
+          continue;
+        }
         try {
           const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(delId)}`, {
             method: 'DELETE',
@@ -443,11 +471,18 @@ class SyncManager {
         }
       }
 
-      // 2. Sync dirty canvases top-down (parent before child)
+      // 2. Sync dirty canvases top-down (parent before child), skipping any unreachable orphans
+      const reachableIds = new Set(store.getCanvasHierarchy().map(r => r.id));
+      reachableIds.add('root');
       const dirtyIds = this._sortCanvasIdsTopDown(store.dirtyCanvasIds);
       const savedIds = [];
 
       for (const cid of dirtyIds) {
+        if (!reachableIds.has(cid)) {
+          store.canvasesCache.delete(cid);
+          savedIds.push(cid);
+          continue;
+        }
         const entry = cid === store.activeCanvasId
           ? store._saveActiveToCacheMap(true)
           : store.canvasesCache.get(cid);
