@@ -150,8 +150,9 @@ def create_server(
     host: str = "",
     port: int = DEFAULT_PORT,
     workspace_file: str | Path | None = None,
+    library_file: str | Path | None = None,
 ) -> tuple[ThreadingTCPServer, GraphStore, ApiRouter]:
-    store = GraphStore(workspace_file=workspace_file, base_dir=ROOT_DIR)
+    store = GraphStore(workspace_file=workspace_file, base_dir=ROOT_DIR, library_file=library_file)
     router = ApiRouter(store=store, openapi_path=OPENAPI_PATH)
     mcp = PinPointMcpServer(make_router_rest_caller(router, client_id="pinpoint-mcp-http"))
     handler_cls = functools.partial(PinPointHandler, router=router, mcp=mcp, directory=str(FRONTEND_DIR))
@@ -164,10 +165,16 @@ def main() -> None:
     parser.add_argument("--host", type=str, default=os.environ.get("PINPOINT_HOST", ""))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PINPOINT_PORT", DEFAULT_PORT)))
     parser.add_argument("--workspace", type=str, default=os.environ.get("PINPOINT_WORKSPACE"))
+    parser.add_argument("--library", type=str, default=os.environ.get("PINPOINT_LIBRARY"))
     parser.add_argument("--no-browser", action="store_true", help="Do not automatically open browser")
     args = parser.parse_args()
 
-    httpd, _store, _router = create_server(host=args.host, port=args.port, workspace_file=args.workspace)
+    httpd, _store, _router = create_server(
+        host=args.host,
+        port=args.port,
+        workspace_file=args.workspace,
+        library_file=args.library,
+    )
 
     def _handle_sigterm(_signum, _frame):
         threading.Thread(target=httpd.shutdown, daemon=True).start()

@@ -20,6 +20,8 @@ PRESET_POOL = [
     "#ff453a", "#64d2ff", "#ac8e68", "#ff375f", "#5e5ce6",
 ]
 VALID_MINIMAP_POSITIONS = {"top-left", "top-right", "bottom-left", "bottom-right"}
+VALID_LIBRARY_POSITIONS = {"left", "right"}
+VALID_LIBRARY_LAYOUTS = {"grid", "list"}
 VALID_ALIGN_TYPES = {
     "left", "center-h", "right",
     "top", "center-v", "bottom",
@@ -45,6 +47,11 @@ DEFAULT_STATE: dict[str, Any] = {
             "enabled": True,
             "position": "bottom-right",
             "size": 220,
+        },
+        "library": {
+            "position": "left",
+            "layout": "grid",
+            "width": 348,
         },
     },
     "cards": [

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import copy
+import html as html_lib
 import json
 import math
 import queue
 import random
+import re
 import threading
 import time
 from pathlib import Path
@@ -23,6 +25,8 @@ from .models import (
     MIN_CARD_WIDTH,
     MIN_ZOOM,
     VALID_ALIGN_TYPES,
+    VALID_LIBRARY_LAYOUTS,
+    VALID_LIBRARY_POSITIONS,
     VALID_MINIMAP_POSITIONS,
     ApiError,
     build_capsule_html,
@@ -32,20 +36,36 @@ from .models import (
 )
 
 
+_CAPSULE_SPAN_RE = re.compile(r"(<span\b[^>]*\btext-capsule\b[^>]*>)", re.IGNORECASE)
+_DATA_PIN_RE = re.compile(r'(\bdata-pin-id=)(["\'])([^"\']*)\2', re.IGNORECASE)
+
+
 class GraphStore:
     """Thread-safe PinPoint workspace store mirroring frontend StateManager."""
 
-    def __init__(self, workspace_file: str | Path | None = None, base_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        workspace_file: str | Path | None = None,
+        base_dir: str | Path | None = None,
+        library_file: str | Path | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self._local = threading.local()
         self._subscribers: set[queue.Queue[dict[str, Any]]] = set()
         self._base_dir = Path(base_dir).resolve() if base_dir else Path.cwd().resolve()
         self.workspace_file: Path | None = Path(workspace_file).resolve() if workspace_file else None
         self.has_workspace_file: bool = bool(self.workspace_file and self.workspace_file.exists())
+        if library_file is not None:
+            self.library_file: Path | None = Path(library_file).resolve()
+        elif self.workspace_file is not None:
+            self.library_file = self.workspace_file.with_name("library.json")
+        else:
+            self.library_file = None
         self._id_counter = 0
         self.revision = 0
 
         self.state: dict[str, Any] = self._load_initial_state()
+        self.library: list[dict[str, Any]] = self._load_initial_library()
         self.selection: dict[str, Any] = {"cardIds": [], "capsulePinId": None, "textSelection": None}
         self.undo_stack: list[str] = [self._snapshot()]
         self.redo_stack: list[str] = []
@@ -77,6 +97,55 @@ class GraphStore:
                 pass
         return copy.deepcopy(DEFAULT_STATE)
 
+    def _load_initial_library(self) -> list[dict[str, Any]]:
+        if self.library_file and self.library_file.exists():
+            try:
+                raw = json.loads(self.library_file.read_text(encoding="utf-8"))
+                raw_items = raw.get("items") if isinstance(raw, dict) else raw
+                if isinstance(raw_items, list):
+                    items: list[dict[str, Any]] = []
+                    for entry in raw_items:
+                        try:
+                            items.append(self._normalize_library_item(entry, preserve_id=True))
+                        except ApiError:
+                            continue
+                    return items
+            except Exception:
+                pass
+        return []
+
+    def _persist_library(self) -> None:
+        if self.library_file is None:
+            return
+        export_data = {
+            "version": 1,
+            "timestamp": int(time.time() * 1000),
+            "items": self.library,
+        }
+        self.library_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.library_file.with_name(f".{self.library_file.name}.tmp")
+        tmp_path.write_text(json.dumps(export_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(self.library_file)
+
+    def _publish_library(self, sub_type: str, payload: dict[str, Any] | None = None) -> None:
+        self.revision += 1
+        self._persist_library()
+        client_id = getattr(self._local, "client_id", None)
+        event = {
+            "type": "LIBRARY_CHANGED",
+            "subType": sub_type,
+            "revision": self.revision,
+            "clientId": client_id,
+            "timestamp": int(time.time() * 1000),
+            "payload": payload or {},
+            "library": copy.deepcopy(self.library),
+        }
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                pass
+
     def _normalize_settings(self, raw_settings: dict[str, Any] | None) -> dict[str, Any]:
         s = raw_settings or {}
         palette = s.get("palette")
@@ -92,6 +161,18 @@ class GraphStore:
             size = 220
         size = int(max(140, min(320, size)))
 
+        lib_raw = s.get("library") if isinstance(s.get("library"), dict) else {}
+        lib_pos = lib_raw.get("position")
+        if lib_pos not in VALID_LIBRARY_POSITIONS:
+            lib_pos = "left"
+        lib_layout = lib_raw.get("layout")
+        if lib_layout not in VALID_LIBRARY_LAYOUTS:
+            lib_layout = "grid"
+        lib_width = lib_raw.get("width", 348)
+        if not isinstance(lib_width, (int, float)) or isinstance(lib_width, bool):
+            lib_width = 348
+        lib_width = int(max(260, min(800, lib_width)))
+
         return {
             "alignMode": bool(s.get("alignMode", False)),
             "gridSnapMode": bool(s.get("gridSnapMode", False)),
@@ -100,6 +181,11 @@ class GraphStore:
                 "enabled": bool(mm_raw.get("enabled", True)),
                 "position": pos,
                 "size": size,
+            },
+            "library": {
+                "position": lib_pos,
+                "layout": lib_layout,
+                "width": lib_width,
             },
         }
 
@@ -1406,6 +1492,26 @@ class GraphStore:
                     if not isinstance(sz, (int, float)) or isinstance(sz, bool):
                         raise ApiError(400, "INVALID_MINIMAP_SIZE", "Minimap size must be a number.")
                     mm["size"] = int(max(140, min(320, sz)))
+            if "library" in patch:
+                lib_patch = patch["library"]
+                if not isinstance(lib_patch, dict):
+                    raise ApiError(400, "INVALID_LIBRARY_SETTINGS", "'library' must be an object.")
+                lib = settings.setdefault("library", {"position": "left", "layout": "grid", "width": 348})
+                if "position" in lib_patch:
+                    lib_pos = lib_patch["position"]
+                    if lib_pos not in VALID_LIBRARY_POSITIONS:
+                        raise ApiError(400, "INVALID_LIBRARY_POSITION", f"Library position must be one of {sorted(VALID_LIBRARY_POSITIONS)}.")
+                    lib["position"] = lib_pos
+                if "layout" in lib_patch:
+                    lib_layout = lib_patch["layout"]
+                    if lib_layout not in VALID_LIBRARY_LAYOUTS:
+                        raise ApiError(400, "INVALID_LIBRARY_LAYOUT", f"Library layout must be one of {sorted(VALID_LIBRARY_LAYOUTS)}.")
+                    lib["layout"] = lib_layout
+                if "width" in lib_patch:
+                    lib_w = lib_patch["width"]
+                    if not isinstance(lib_w, (int, float)) or isinstance(lib_w, bool):
+                        raise ApiError(400, "INVALID_LIBRARY_WIDTH", "Library width must be a number.")
+                    lib["width"] = int(max(260, min(800, lib_w)))
 
             self._publish("SETTINGS_CHANGED", settings)
             return copy.deepcopy(settings)
@@ -1548,3 +1654,328 @@ class GraphStore:
                 },
             )
             return self.get_selection()
+
+    # ------------------------------------------------------------------
+    # Reusable Node Library ("库")
+    # ------------------------------------------------------------------
+
+    def _normalize_library_item(self, raw: dict[str, Any], preserve_id: bool = False) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise ApiError(400, "INVALID_PAYLOAD", "Library item must be a JSON object.")
+
+        raw_cards = raw.get("cards")
+        if not isinstance(raw_cards, list) or len(raw_cards) == 0:
+            raise ApiError(400, "EMPTY_LIBRARY_ITEM", "Library item must contain at least 1 card.")
+
+        cards: list[dict[str, Any]] = []
+        seen_card_ids: set[str] = set()
+        for idx, rc in enumerate(raw_cards):
+            if not isinstance(rc, dict):
+                raise ApiError(400, "INVALID_CARD", "Each card in library item must be an object.")
+            cid = str(rc.get("id") or f"lib-card-{idx + 1}")
+            if cid in seen_card_ids:
+                cid = self._next_id("card")
+            seen_card_ids.add(cid)
+
+            width = rc.get("width", DEFAULT_CARD_WIDTH)
+            if not isinstance(width, (int, float)) or isinstance(width, bool) or width < MIN_CARD_WIDTH:
+                width = DEFAULT_CARD_WIDTH
+
+            card_obj: dict[str, Any] = {
+                "id": cid,
+                "title": str(rc.get("title") or "").strip() or "未命名节点",
+                "x": float(rc.get("x", 0)),
+                "y": float(rc.get("y", 0)),
+                "width": int(round(width)),
+                "contentHtml": str(rc.get("contentHtml") or ""),
+            }
+            if "headerColor" in rc and rc["headerColor"] is not None:
+                card_obj["headerColor"] = str(rc["headerColor"])
+            cards.append(card_obj)
+
+        min_x = min(c["x"] for c in cards)
+        min_y = min(c["y"] for c in cards)
+        for c in cards:
+            c["x"] = int(round(c["x"] - min_x))
+            c["y"] = int(round(c["y"] - min_y))
+
+        card_id_set = {c["id"] for c in cards}
+        groups: list[dict[str, Any]] = []
+        seen_group_ids: set[str] = set()
+        for idx, rg in enumerate(raw.get("groups") or []):
+            if not isinstance(rg, dict):
+                continue
+            member_ids = [str(mid) for mid in (rg.get("cardIds") or []) if str(mid) in card_id_set]
+            member_ids = list(dict.fromkeys(member_ids))
+            if len(member_ids) < 2:
+                continue
+            gid = str(rg.get("id") or f"lib-group-{idx + 1}")
+            if gid in seen_group_ids:
+                gid = self._next_id("group")
+            seen_group_ids.add(gid)
+            group_obj: dict[str, Any] = {
+                "id": gid,
+                "title": str(rg.get("title") or "").strip() or "节点组",
+                "cardIds": member_ids,
+            }
+            if "headerColor" in rg:
+                group_obj["headerColor"] = rg["headerColor"]
+            groups.append(group_obj)
+
+        connections: list[dict[str, Any]] = []
+        seen_conn_ids: set[str] = set()
+        for idx, rconn in enumerate(raw.get("connections") or []):
+            if not isinstance(rconn, dict):
+                continue
+            if not self._validate_connection_dict(rconn, cards, groups):
+                continue
+            conn_id = str(rconn.get("id") or f"lib-conn-{idx + 1}")
+            if conn_id in seen_conn_ids:
+                conn_id = self._next_id("conn")
+            seen_conn_ids.add(conn_id)
+            connections.append({
+                "id": conn_id,
+                "fromPinId": str(rconn["fromPinId"]),
+                "toPinId": str(rconn["toPinId"]),
+                "color": rconn.get("color"),
+            })
+
+        default_name = cards[0]["title"] if len(cards) == 1 else f"{cards[0]['title']} 等 {len(cards)} 个节点"
+        name = str(raw.get("name") or "").strip() or default_name
+        description = str(raw.get("description") or "").strip()
+        now_ms = int(time.time() * 1000)
+
+        item_id = str(raw.get("id") or "").strip() if preserve_id else ""
+        if not item_id:
+            item_id = self._next_id("lib")
+
+        created_at = raw.get("createdAt")
+        if not isinstance(created_at, (int, float)) or isinstance(created_at, bool):
+            created_at = now_ms
+        updated_at = raw.get("updatedAt")
+        if not isinstance(updated_at, (int, float)) or isinstance(updated_at, bool):
+            updated_at = now_ms
+
+        return {
+            "id": item_id,
+            "name": name,
+            "description": description,
+            "createdAt": int(created_at),
+            "updatedAt": int(updated_at),
+            "cards": cards,
+            "connections": connections,
+            "groups": groups,
+        }
+
+    def _remap_capsule_html(self, content_html: str, pin_id_map: dict[str, str]) -> str:
+        if not content_html:
+            return ""
+
+        def _replace_span(match: re.Match[str]) -> str:
+            tag = match.group(1)
+            m_pin = _DATA_PIN_RE.search(tag)
+            new_pin = self._next_id("pin")
+            if m_pin:
+                old_pin = html_lib.unescape(m_pin.group(3))
+                if old_pin:
+                    pin_id_map[old_pin] = new_pin
+                safe_new = html_lib.escape(new_pin, quote=True)
+                return _DATA_PIN_RE.sub(lambda pm: f'{pm.group(1)}{pm.group(2)}{safe_new}{pm.group(2)}', tag, count=1)
+            safe_new = html_lib.escape(new_pin, quote=True)
+            return tag[:-1] + f' data-pin-id="{safe_new}">'
+
+        return _CAPSULE_SPAN_RE.sub(_replace_span, content_html)
+
+    def list_library(self, q: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            needle = (q or "").strip().lower()
+            out: list[dict[str, Any]] = []
+            for item in self.library:
+                if needle:
+                    parts = [item.get("name", ""), item.get("description", "")]
+                    for c in item.get("cards", []):
+                        plain_text, _, _ = parse_content(c.get("contentHtml", ""))
+                        parts.append(c.get("title", ""))
+                        parts.append(plain_text)
+                    haystack = "\n".join(parts).lower()
+                    if needle not in haystack:
+                        continue
+                out.append(copy.deepcopy(item))
+            return out
+
+    def get_library_item(self, item_id: str) -> dict[str, Any]:
+        with self._lock:
+            item = next((it for it in self.library if it["id"] == item_id), None)
+            if not item:
+                raise ApiError(404, "LIBRARY_ITEM_NOT_FOUND", f"Library item '{item_id}' not found.")
+            return copy.deepcopy(item)
+
+    def create_library_item(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
+        with self._lock:
+            if "cards" in payload and payload["cards"] is not None:
+                source_payload = copy.deepcopy(payload)
+            elif "cardIds" in payload:
+                raw_ids = payload.get("cardIds")
+                if not isinstance(raw_ids, list) or len(raw_ids) == 0:
+                    raise ApiError(400, "INVALID_CARD_IDS", "'cardIds' must be a non-empty array of card IDs.")
+                unique_ids = list(dict.fromkeys(str(cid) for cid in raw_ids))
+                card_map = {c["id"]: c for c in self.state["cards"]}
+                missing = [cid for cid in unique_ids if cid not in card_map]
+                if missing:
+                    raise ApiError(404, "CARD_NOT_FOUND", f"Cards not found: {', '.join(missing)}")
+
+                selected_set = set(unique_ids)
+                selected_cards = [copy.deepcopy(card_map[cid]) for cid in unique_ids]
+                selected_groups = [
+                    copy.deepcopy(g)
+                    for g in self.state.get("groups", [])
+                    if g.get("cardIds") and all(mid in selected_set for mid in g["cardIds"])
+                ]
+                selected_group_ids = {g["id"] for g in selected_groups}
+                relevant_owners = selected_set | selected_group_ids
+                selected_conns = [
+                    copy.deepcopy(conn)
+                    for conn in self.state["connections"]
+                    if self._find_owner_id_by_pin(conn["fromPinId"]) in relevant_owners
+                    and self._find_owner_id_by_pin(conn["toPinId"]) in relevant_owners
+                ]
+                source_payload = {
+                    "name": payload.get("name"),
+                    "description": payload.get("description", ""),
+                    "cards": selected_cards,
+                    "groups": selected_groups,
+                    "connections": selected_conns,
+                }
+            else:
+                raise ApiError(400, "MISSING_LIBRARY_SOURCE", "Provide either 'cards' or 'cardIds' to create a library item.")
+
+            item = self._normalize_library_item(source_payload, preserve_id=bool(payload.get("id")))
+            if any(existing["id"] == item["id"] for existing in self.library):
+                item["id"] = self._next_id("lib")
+
+            self.library.insert(0, item)
+            self._publish_library("LIBRARY_ITEM_CREATED", {"itemId": item["id"]})
+            return copy.deepcopy(item)
+
+    def update_library_item(self, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
+        with self._lock:
+            idx = next((i for i, it in enumerate(self.library) if it["id"] == item_id), None)
+            if idx is None:
+                raise ApiError(404, "LIBRARY_ITEM_NOT_FOUND", f"Library item '{item_id}' not found.")
+
+            current = self.library[idx]
+            if "cards" in payload:
+                merged = copy.deepcopy(current)
+                merged.update({
+                    "id": current["id"],
+                    "createdAt": current["createdAt"],
+                    "name": payload.get("name", current["name"]),
+                    "description": payload.get("description", current.get("description", "")),
+                    "cards": payload["cards"],
+                    "groups": payload.get("groups", current.get("groups", [])),
+                    "connections": payload.get("connections", current.get("connections", [])),
+                    "updatedAt": int(time.time() * 1000),
+                })
+                updated = self._normalize_library_item(merged, preserve_id=True)
+                self.library[idx] = updated
+            else:
+                if "name" in payload:
+                    new_name = str(payload["name"] or "").strip()
+                    if not new_name:
+                        raise ApiError(400, "INVALID_LIBRARY_NAME", "Library item name cannot be empty.")
+                    current["name"] = new_name
+                if "description" in payload:
+                    current["description"] = str(payload["description"] or "").strip()
+                current["updatedAt"] = int(time.time() * 1000)
+
+            self._publish_library("LIBRARY_ITEM_UPDATED", {"itemId": item_id})
+            return copy.deepcopy(self.library[idx])
+
+    def delete_library_item(self, item_id: str) -> dict[str, Any]:
+        with self._lock:
+            before = len(self.library)
+            self.library = [it for it in self.library if it["id"] != item_id]
+            if len(self.library) == before:
+                raise ApiError(404, "LIBRARY_ITEM_NOT_FOUND", f"Library item '{item_id}' not found.")
+            self._publish_library("LIBRARY_ITEM_DELETED", {"itemId": item_id})
+            return {"deletedId": item_id}
+
+    def instantiate_library_item(self, item_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if payload is not None and not isinstance(payload, dict):
+            raise ApiError(400, "INVALID_PAYLOAD", "Request body must be a JSON object.")
+        b = payload or {}
+        with self._lock:
+            item = next((it for it in self.library if it["id"] == item_id), None)
+            if not item:
+                raise ApiError(404, "LIBRARY_ITEM_NOT_FOUND", f"Library item '{item_id}' not found.")
+
+            if "x" in b and "y" in b:
+                base_x = float(b["x"])
+                base_y = float(b["y"])
+            else:
+                auto_x, auto_y = self._auto_spawn_position()
+                base_x = float(b.get("x", auto_x))
+                base_y = float(b.get("y", auto_y))
+
+            card_id_map: dict[str, str] = {}
+            pin_id_map: dict[str, str] = {}
+            new_cards: list[dict[str, Any]] = []
+            new_groups: list[dict[str, Any]] = []
+            new_connections: list[dict[str, Any]] = []
+
+            for c in item["cards"]:
+                new_cid = self._next_id("card")
+                card_id_map[c["id"]] = new_cid
+                pin_id_map[f"pin-head-left-{c['id']}"] = f"pin-head-left-{new_cid}"
+                pin_id_map[f"pin-head-right-{c['id']}"] = f"pin-head-right-{new_cid}"
+                pin_id_map[f"pin-head-{c['id']}"] = f"pin-head-left-{new_cid}"
+
+            for g in item.get("groups", []):
+                new_gid = self._next_id("group")
+                pin_id_map[f"pin-group-left-{g['id']}"] = f"pin-group-left-{new_gid}"
+                pin_id_map[f"pin-group-right-{g['id']}"] = f"pin-group-right-{new_gid}"
+                pin_id_map[f"pin-group-{g['id']}"] = f"pin-group-left-{new_gid}"
+                cloned_g = copy.deepcopy(g)
+                cloned_g["id"] = new_gid
+                cloned_g["cardIds"] = [card_id_map[mid] for mid in g.get("cardIds", []) if mid in card_id_map]
+                if len(cloned_g["cardIds"]) >= 2:
+                    new_groups.append(cloned_g)
+
+            for c in item["cards"]:
+                cloned_c = copy.deepcopy(c)
+                cloned_c["id"] = card_id_map[c["id"]]
+                cloned_c["x"] = self._snap_coord(base_x + float(c.get("x", 0)))
+                cloned_c["y"] = self._snap_coord(base_y + float(c.get("y", 0)))
+                cloned_c["contentHtml"] = self._remap_capsule_html(c.get("contentHtml", ""), pin_id_map)
+                new_cards.append(cloned_c)
+
+            for conn in item.get("connections", []):
+                remapped_from = pin_id_map.get(conn.get("fromPinId"))
+                remapped_to = pin_id_map.get(conn.get("toPinId"))
+                if remapped_from and remapped_to:
+                    new_connections.append({
+                        "id": self._next_id("conn"),
+                        "fromPinId": remapped_from,
+                        "toPinId": remapped_to,
+                        "color": conn.get("color"),
+                    })
+
+            self.state["cards"].extend(new_cards)
+            self.state.setdefault("groups", []).extend(new_groups)
+            self.state["connections"].extend(new_connections)
+
+            self._commit(
+                "LIBRARY_INSTANTIATED",
+                {"itemId": item_id, "cardIds": [c["id"] for c in new_cards]},
+            )
+            return {
+                "itemId": item_id,
+                "cards": [self._card_to_view(c) for c in new_cards],
+                "groups": copy.deepcopy(new_groups),
+                "connections": copy.deepcopy(new_connections),
+            }
+

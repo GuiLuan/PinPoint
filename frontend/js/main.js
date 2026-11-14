@@ -5,6 +5,7 @@ import { wires } from './wires.js';
 import { settings } from './settings.js';
 import { minimap } from './minimap.js';
 import { sync } from './sync.js';
+import { library } from './library.js';
 
 async function initApp() {
   const viewportEl = document.getElementById('viewport');
@@ -20,12 +21,15 @@ async function initApp() {
   const canvasContextMenuEl = document.getElementById('canvas-context-menu');
   const settingsOverlayEl = document.getElementById('settings-overlay');
   const minimapWidgetEl = document.getElementById('minimap-widget');
+  const libraryDrawerEl = document.getElementById('library-drawer');
+  const btnLibraryEl = document.getElementById('btn-library');
 
   canvas.init(viewportEl, boardEl);
   wires.init(wireSvgEl, (pos, skipCommit, title, headerColor) => nodes.spawnNode(pos, title, skipCommit, headerColor), wireDropMenuEl);
   nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl);
   settings.init(settingsOverlayEl);
   minimap.init(minimapWidgetEl);
+  library.init(libraryDrawerEl, btnLibraryEl);
 
   window.__store = store;
   window.__nodes = nodes;
@@ -33,6 +37,7 @@ async function initApp() {
   window.__settings = settings;
   window.__minimap = minimap;
   window.__sync = sync;
+  window.__library = library;
 
   canvas.onTransform = () => {
     nodes.updatePopoverPosition();
@@ -50,6 +55,7 @@ async function initApp() {
   nodes.onSelectionChange = () => {
     minimap.requestRender();
     sync.notifySelectionChanged();
+    library.updateSelectionState();
   };
 
   function updateStatus(text) {
@@ -74,6 +80,11 @@ async function initApp() {
   // HUD Button: Focus Mode
   document.getElementById('btn-focus-mode')?.addEventListener('click', () => {
     nodes.enterFocusMode();
+  });
+
+  // HUD Button: Library Drawer
+  btnLibraryEl?.addEventListener('click', () => {
+    library.toggle();
   });
 
   document.getElementById('btn-focus-confirm')?.addEventListener('click', () => {
@@ -221,6 +232,7 @@ async function initApp() {
       nodes.renderPopoverPalette();
       nodes.updateContextMenuToggles();
       minimap.applySettings();
+      library.applySettings();
     } else if (event.type === 'REMOTE_SYNCED') {
       if (event.sourceEvent === 'VIEWPORT_CHANGED') {
         canvas.applyTransform();
@@ -229,6 +241,7 @@ async function initApp() {
         nodes.renderPopoverPalette();
         nodes.updateContextMenuToggles();
         minimap.applySettings();
+        library.applySettings();
       } else {
         nodes.filterSelectionAfterRestore();
         canvas.applyTransform();
@@ -240,6 +253,7 @@ async function initApp() {
         nodes.updateContextMenuToggles();
         minimap.applySettings();
         minimap.requestRender();
+        library.applySettings();
       }
     } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED' || event.type?.startsWith('GROUP_') || event.type?.startsWith('CARD_')) {
       nodes.render();

@@ -82,6 +82,9 @@ class SettingsManager {
     // Minimap settings listeners
     this.bindMinimapListeners();
 
+    // Library settings listeners
+    this.bindLibraryListeners();
+
     // Nav tabs switching
     this.overlayEl.querySelectorAll('.settings-nav-item').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -95,6 +98,7 @@ class SettingsManager {
     this.renderPaletteSlots();
     this.syncAssistanceToggles();
     this.syncMinimapSettings();
+    this.syncLibrarySettings();
   }
 
   switchTab(tabId) {
@@ -115,6 +119,8 @@ class SettingsManager {
       this.updatePreviewMockup();
     } else if (tabId === 'minimap') {
       this.syncMinimapSettings();
+    } else if (tabId === 'library') {
+      this.syncLibrarySettings();
     }
   }
 
@@ -128,6 +134,7 @@ class SettingsManager {
     this.renderPaletteSlots();
     this.syncAssistanceToggles();
     this.syncMinimapSettings();
+    this.syncLibrarySettings();
     this.overlayEl.classList.add('is-open');
   }
 
@@ -149,6 +156,7 @@ class SettingsManager {
       this.renderPaletteSlots();
       this.syncAssistanceToggles();
       this.syncMinimapSettings();
+      this.syncLibrarySettings();
     }
   }
 
@@ -266,6 +274,48 @@ class SettingsManager {
     const valDisplay = this.overlayEl.querySelector('#minimap-size-val');
     if (slider) slider.value = mm.size;
     if (valDisplay) valDisplay.textContent = `${mm.size}px`;
+  }
+
+  bindLibraryListeners() {
+    if (!this.overlayEl) return;
+    const panel = this.overlayEl.querySelector('#tab-panel-library');
+    if (!panel) return;
+
+    panel.addEventListener('click', (e) => {
+      const posCard = e.target.closest('.library-pos-card');
+      if (posCard) {
+        e.preventDefault();
+        const pos = posCard.getAttribute('data-lib-pos');
+        if (pos === 'left' || pos === 'right') {
+          store.setLibrarySettings({ position: pos });
+          this.syncLibrarySettings();
+        }
+        return;
+      }
+
+      const layoutCard = e.target.closest('.library-layout-card');
+      if (layoutCard) {
+        e.preventDefault();
+        const layout = layoutCard.getAttribute('data-lib-layout');
+        if (layout === 'grid' || layout === 'list') {
+          store.setLibrarySettings({ layout });
+          this.syncLibrarySettings();
+        }
+      }
+    });
+  }
+
+  syncLibrarySettings() {
+    if (!this.overlayEl) return;
+    const lib = store.getLibrarySettings();
+
+    this.overlayEl.querySelectorAll('.library-pos-card').forEach(card => {
+      card.classList.toggle('is-active', card.getAttribute('data-lib-pos') === lib.position);
+    });
+
+    this.overlayEl.querySelectorAll('.library-layout-card').forEach(card => {
+      card.classList.toggle('is-active', card.getAttribute('data-lib-layout') === lib.layout);
+    });
   }
 
   syncAssistanceToggles() {

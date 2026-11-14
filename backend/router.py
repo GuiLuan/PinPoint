@@ -249,6 +249,31 @@ class ApiRouter:
             strict = bool(isinstance(body, dict) and body.get("strict"))
             return 200, self.store.update_selection(body, strict=strict)
 
+        # Reusable Node Library
+        @self._route("GET", "/library")
+        def list_library(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.list_library(q=query.get("q", [None])[0])
+
+        @self._route("POST", "/library")
+        def create_library_item(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            return 201, self.store.create_library_item(body)
+
+        @self._route("GET", "/library/{itemId}")
+        def get_library_item(_query: dict[str, list[str]], _body: Any, itemId: str) -> tuple[int, Any]:
+            return 200, self.store.get_library_item(itemId)
+
+        @self._route("PATCH", "/library/{itemId}")
+        def update_library_item(_query: dict[str, list[str]], body: Any, itemId: str) -> tuple[int, Any]:
+            return 200, self.store.update_library_item(itemId, body)
+
+        @self._route("DELETE", "/library/{itemId}")
+        def delete_library_item(_query: dict[str, list[str]], _body: Any, itemId: str) -> tuple[int, Any]:
+            return 200, self.store.delete_library_item(itemId)
+
+        @self._route("POST", "/library/{itemId}/instantiate")
+        def instantiate_library_item(_query: dict[str, list[str]], body: Any, itemId: str) -> tuple[int, Any]:
+            return 201, self.store.instantiate_library_item(itemId, body)
+
     def is_api_path(self, raw_path: str) -> bool:
         path = urlparse(raw_path).path
         return path == API_PREFIX or path.startswith(API_PREFIX + "/")
@@ -328,6 +353,7 @@ class ApiRouter:
                     "hasWorkspaceFile": self.store.has_workspace_file,
                     "state": self.store.get_graph(),
                     "selection": self.store.get_selection(),
+                    "library": self.store.list_library(),
                 },
                 ensure_ascii=False,
             )

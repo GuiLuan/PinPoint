@@ -60,6 +60,11 @@ const DEFAULT_STATE = {
       enabled: true,
       position: 'bottom-right',
       size: 220
+    },
+    library: {
+      position: 'left',
+      layout: 'grid',
+      width: 348
     }
   },
   cards: [
@@ -226,6 +231,13 @@ class StateManager {
           enabled: remoteState.settings.minimap?.enabled ?? true,
           position: remoteState.settings.minimap?.position || 'bottom-right',
           size: typeof remoteState.settings.minimap?.size === 'number' ? remoteState.settings.minimap.size : 220
+        },
+        library: {
+          position: remoteState.settings.library?.position === 'right' ? 'right' : 'left',
+          layout: remoteState.settings.library?.layout === 'list' ? 'list' : 'grid',
+          width: typeof remoteState.settings.library?.width === 'number'
+            ? Math.max(260, Math.min(800, Math.round(remoteState.settings.library.width)))
+            : 348
         }
       };
     }
@@ -269,6 +281,13 @@ class StateManager {
                 enabled: parsed.settings?.minimap?.enabled ?? true,
                 position: parsed.settings?.minimap?.position || 'bottom-right',
                 size: typeof parsed.settings?.minimap?.size === 'number' ? parsed.settings.minimap.size : 220
+              },
+              library: {
+                position: parsed.settings?.library?.position === 'right' ? 'right' : 'left',
+                layout: parsed.settings?.library?.layout === 'list' ? 'list' : 'grid',
+                width: typeof parsed.settings?.library?.width === 'number'
+                  ? Math.max(260, Math.min(800, Math.round(parsed.settings.library.width)))
+                  : 348
               }
             },
             cards,
@@ -397,6 +416,40 @@ class StateManager {
   setMinimapSettings(patch) {
     const mm = this.getMinimapSettings();
     Object.assign(mm, patch);
+    this.scheduleAutoSave();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+  }
+
+  getLibrarySettings() {
+    if (!this.state.settings) {
+      this.state.settings = {
+        alignMode: false,
+        gridSnapMode: false,
+        palette: [...DEFAULT_PALETTE],
+        minimap: { enabled: true, position: 'bottom-right', size: 220 },
+        library: { position: 'left', layout: 'grid', width: 348 }
+      };
+    }
+    if (!this.state.settings.library) {
+      this.state.settings.library = { position: 'left', layout: 'grid', width: 348 };
+    }
+    if (typeof this.state.settings.library.width !== 'number') {
+      this.state.settings.library.width = 348;
+    }
+    return this.state.settings.library;
+  }
+
+  setLibrarySettings(patch) {
+    const lib = this.getLibrarySettings();
+    if (patch.position === 'left' || patch.position === 'right') {
+      lib.position = patch.position;
+    }
+    if (patch.layout === 'grid' || patch.layout === 'list') {
+      lib.layout = patch.layout;
+    }
+    if (typeof patch.width === 'number' && !Number.isNaN(patch.width)) {
+      lib.width = Math.max(260, Math.min(800, Math.round(patch.width)));
+    }
     this.scheduleAutoSave();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
   }

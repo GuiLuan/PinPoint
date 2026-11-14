@@ -1125,6 +1125,7 @@ class NodeManager {
     } else {
       this.alignmentBarEl.style.display = 'none';
     }
+    window.__library?.updateSelectionState?.();
   }
 
   deleteSelectedCards() {
@@ -1137,6 +1138,11 @@ class NodeManager {
     store.scheduleAutoSave();
   }
 
+  _nextCloneId(prefix) {
+    this._cloneSeq = (this._cloneSeq || 0) + 1;
+    return `${prefix}-${Date.now()}-${this._cloneSeq}-${Math.floor(Math.random() * 100000)}`;
+  }
+
   cloneCardsAndGroups(cardsToClone, groupsToClone = [], connectionsToClone = null) {
     const cardIdMap = new Map();
     const groupIdMap = new Map();
@@ -1146,7 +1152,7 @@ class NodeManager {
 
     // 1. Generate new IDs and map header pins for cards
     cardsToClone.forEach(c => {
-      const newCardId = `card-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`;
+      const newCardId = this._nextCloneId('card');
       cardIdMap.set(c.id, newCardId);
       pinIdMap.set(`pin-head-left-${c.id}`, `pin-head-left-${newCardId}`);
       pinIdMap.set(`pin-head-right-${c.id}`, `pin-head-right-${newCardId}`);
@@ -1155,7 +1161,7 @@ class NodeManager {
 
     // 2. Generate new IDs and map pins for groups
     groupsToClone.forEach(g => {
-      const newGroupId = `group-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`;
+      const newGroupId = this._nextCloneId('group');
       groupIdMap.set(g.id, newGroupId);
       pinIdMap.set(`pin-group-left-${g.id}`, `pin-group-left-${newGroupId}`);
       pinIdMap.set(`pin-group-right-${g.id}`, `pin-group-right-${newGroupId}`);
@@ -1178,7 +1184,7 @@ class NodeManager {
         tempDiv.innerHTML = cloned.contentHtml;
         tempDiv.querySelectorAll('.text-capsule').forEach(capsule => {
           const oldPinId = capsule.getAttribute('data-pin-id');
-          const newPinId = `pin-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`;
+          const newPinId = this._nextCloneId('pin');
           capsule.setAttribute('data-pin-id', newPinId);
           if (oldPinId) pinIdMap.set(oldPinId, newPinId);
         });
@@ -1206,7 +1212,7 @@ class NodeManager {
       const remappedTo = pinIdMap.get(conn.toPinId);
       if (remappedFrom && remappedTo) {
         newConnections.push({
-          id: `conn-${Date.now()}-${Math.floor(Math.random() * 100000)}-${Math.floor(Math.random() * 1000)}`,
+          id: this._nextCloneId('conn'),
           fromPinId: remappedFrom,
           toPinId: remappedTo,
           color: conn.color
@@ -1631,6 +1637,12 @@ class NodeManager {
     btnCreateGroup?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.createGroupFromSelected();
+    });
+
+    const btnSaveToLibrary = this.alignmentBarEl.querySelector('#btn-save-to-library');
+    btnSaveToLibrary?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.__library?.openSaveForm?.();
     });
 
     const btnAlignFocus = this.alignmentBarEl.querySelector('#btn-align-focus');
@@ -2458,7 +2470,15 @@ class NodeManager {
         }
       }
 
-      const isEditingText = e.target?.closest?.('input, textarea, [contenteditable="true"]');
+      if (e.isComposing || e.keyCode === 229) return;
+      const targetEl = e.target instanceof Element ? e.target : e.target?.parentElement;
+      const activeEl = document.activeElement instanceof Element ? document.activeElement : null;
+      const isEditingText = Boolean(
+        targetEl?.isContentEditable ||
+        activeEl?.isContentEditable ||
+        targetEl?.closest?.('input, textarea, select, [contenteditable]') ||
+        activeEl?.closest?.('input, textarea, select, [contenteditable]')
+      );
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !isEditingText) {
         e.preventDefault();
@@ -2516,6 +2536,21 @@ class NodeManager {
         }
       }
 
+      // Library Drawer Toggle: L (without Shift/Ctrl/Meta/Alt, when not editing text)
+      const isKeyL = e.code === 'KeyL' || e.key?.toLowerCase() === 'l';
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && isKeyL && !isEditingText && !window.__settings?.isOpen?.()) {
+        e.preventDefault();
+        window.__library?.toggle?.();
+        return;
+      }
+
+      // Save selected cards to Library: Shift+L (only when not editing text)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.shiftKey && isKeyL && !isEditingText && !window.__settings?.isOpen?.()) {
+        e.preventDefault();
+        window.__library?.openSaveForm?.();
+        return;
+      }
+
       // Group: Ctrl+G
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g' && !e.shiftKey && !isEditingText) {
         if (this.selectedCardIds.size >= 2) {
@@ -2547,6 +2582,9 @@ class NodeManager {
       } else if (e.key === 'Escape') {
         if (window.__settings?.isOpen?.()) {
           window.__settings.close();
+          return;
+        }
+        if (window.__library?.handleEscape?.()) {
           return;
         }
         this.hideCanvasContextMenu();

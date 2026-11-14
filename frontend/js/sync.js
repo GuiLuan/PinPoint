@@ -130,6 +130,10 @@ class SyncManager {
         } else {
           this.lastRevision = rev;
         }
+
+        if (Array.isArray(data.library)) {
+          window.__library?.syncFromBackendBootstrap?.(data.library);
+        }
       } catch (e) {
         console.warn('[PinPoint Sync] Failed to parse connected payload:', e);
       }
@@ -149,6 +153,13 @@ class SyncManager {
         if (evt.type === 'SELECTION_CHANGED') {
           if (!store.isFocusMode) {
             this.applyRemoteSelection(evt.payload);
+          }
+          return;
+        }
+
+        if (evt.type === 'LIBRARY_CHANGED') {
+          if (Array.isArray(evt.library)) {
+            window.__library?.applyRemoteLibrary?.(evt.library);
           }
           return;
         }

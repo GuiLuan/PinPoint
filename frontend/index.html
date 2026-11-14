@@ -36,6 +36,9 @@
       <button class="hud-btn hud-focus-entry-btn" id="btn-focus-mode" data-tooltip="专注模式 (F)">
         <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
       </button>
+      <button class="hud-btn" id="btn-library" data-tooltip="库 (L)">
+        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+      </button>
       <div class="hud-divider hud-normal-only"></div>
       <button class="hud-btn hud-normal-only" id="btn-open" data-tooltip="打开文件">
         <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
@@ -93,6 +96,9 @@
     <div class="hud-divider"></div>
     <button class="hud-btn" id="btn-create-group" data-tooltip="创建组 (Ctrl+G)">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>
+    </button>
+    <button class="hud-btn" id="btn-save-to-library" data-tooltip="保存到库 (Shift+L)">
+      <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path><line x1="12" y1="8" x2="12" y2="14"></line><line x1="9" y1="11" x2="15" y2="11"></line></svg>
     </button>
     <button class="hud-btn" id="btn-align-focus" data-tooltip="进入专注模式 (F)">
       <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
@@ -250,6 +256,14 @@
                 <line x1="16" y1="6" x2="16" y2="22"></line>
               </svg>
               <span>小地图</span>
+            </button>
+            <button class="settings-nav-item" data-tab="library">
+              <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                <path d="M2 17l10 5 10-5"></path>
+                <path d="M2 12l10 5 10-5"></path>
+              </svg>
+              <span>库</span>
             </button>
             <button class="settings-nav-item" data-tab="shortcuts">
               <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
@@ -423,6 +437,65 @@
             </div>
           </div>
 
+          <!-- 库配置 -->
+          <div class="settings-tab-panel" id="tab-panel-library">
+            <div class="settings-section-header">
+              <div>
+                <h3 class="settings-section-title">库设置</h3>
+                <p class="settings-section-desc">自定义库抽屉的停靠位置与条目排列布局</p>
+              </div>
+            </div>
+
+            <!-- 停靠位置 (左侧 / 右侧) -->
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <div>
+                  <h4 class="settings-section-title" style="font-size: 12px;">停靠位置</h4>
+                  <p class="settings-section-desc">选择库抽屉贴靠在画布的左侧或右侧</p>
+                </div>
+              </div>
+              <div class="minimap-pos-grid">
+                <button class="minimap-pos-card library-pos-card is-active" data-lib-pos="left" type="button">
+                  <div class="library-pos-mockup left"><span class="mockup-bar"></span></div>
+                  <span>左侧停靠 (默认)</span>
+                </button>
+                <button class="minimap-pos-card library-pos-card" data-lib-pos="right" type="button">
+                  <div class="library-pos-mockup right"><span class="mockup-bar"></span></div>
+                  <span>右侧停靠</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 布局模式 (网格 / 单列) -->
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <div>
+                  <h4 class="settings-section-title" style="font-size: 12px;">排列布局</h4>
+                  <p class="settings-section-desc">切换从左到右的多列图标网格或紧凑单列视图</p>
+                </div>
+              </div>
+              <div class="minimap-pos-grid">
+                <button class="minimap-pos-card library-layout-card is-active" data-lib-layout="grid" type="button">
+                  <div class="library-layout-mockup grid">
+                    <span></span><span></span><span></span><span></span>
+                  </div>
+                  <span>网格视图 (默认)</span>
+                </button>
+                <button class="minimap-pos-card library-layout-card" data-lib-layout="list" type="button">
+                  <div class="library-layout-mockup list">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <span>单列视图</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="settings-tip-box">
+              <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+              <span>也可以直接在库抽屉右上角切换「网格 / 单列」布局，并单击条目下方的名称直接重命名。</span>
+            </div>
+          </div>
+
           <!-- 快捷键指南 -->
           <div class="settings-tab-panel" id="tab-panel-shortcuts">
             <div class="settings-section-header">
@@ -446,6 +519,8 @@
               <div class="shortcut-item"><kbd>Ctrl + Z / Y</kbd><span>撤销 / 重做</span></div>
               <div class="shortcut-item"><kbd>Ctrl + S</kbd><span>保存图谱文件</span></div>
               <div class="shortcut-item"><kbd>F</kbd><span>进入专注模式 (需选中节点)</span></div>
+              <div class="shortcut-item"><kbd>L</kbd><span>打开 / 收起库</span></div>
+              <div class="shortcut-item"><kbd>Shift + L</kbd><span>将选中节点保存到库</span></div>
             </div>
           </div>
         </main>
@@ -478,6 +553,57 @@
       <div id="minimap-viewport-indicator" class="minimap-viewport-indicator" title="拖拽平移视口"></div>
     </div>
   </aside>
+
+  <!-- 可复用库抽屉 (L 切换) -->
+  <aside id="library-drawer" class="library-drawer pos-left" aria-label="库">
+    <div class="library-header">
+      <div class="library-title-row">
+        <svg class="library-header-icon" viewBox="0 0 24 24">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+          <path d="M2 17l10 5 10-5"></path>
+          <path d="M2 12l10 5 10-5"></path>
+        </svg>
+        <span class="library-title">库</span>
+        <span class="library-count-badge" id="library-count-badge">0</span>
+      </div>
+      <div class="library-header-actions">
+        <button type="button" class="library-header-btn" id="btn-library-layout-toggle" data-tooltip="切换单列视图" aria-label="切换布局">
+          <svg class="icon-layout-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>
+          <svg class="icon-layout-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><circle cx="4" cy="6" r="1.2" fill="currentColor"></circle><circle cx="4" cy="12" r="1.2" fill="currentColor"></circle><circle cx="4" cy="18" r="1.2" fill="currentColor"></circle></svg>
+        </button>
+        <button type="button" class="library-header-btn library-close-btn" id="btn-close-library" data-tooltip="收起 (Esc)" aria-label="收起库">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="library-toolbar">
+      <div class="library-toolbar-row">
+        <button type="button" class="library-add-btn" id="btn-library-save-selection" data-tooltip="选中画布节点后保存到库 (Shift+L)" aria-label="保存选中节点到库" disabled>
+          <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path><line x1="12" y1="8" x2="12" y2="14"></line><line x1="9" y1="11" x2="15" y2="11"></line></svg>
+        </button>
+
+        <div class="library-search-box">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="search" id="library-search-input" class="library-search-input" placeholder="搜索库..." />
+        </div>
+      </div>
+
+      <div class="library-save-composer" id="library-save-composer" style="display: none;">
+        <div class="library-composer-head">
+          <span class="library-composer-title">保存到库</span>
+        </div>
+        <div class="library-composer-preview" id="library-save-preview"></div>
+        <input type="text" class="library-input" id="library-save-name-input" placeholder="输入名称 (Enter 确认 / Esc 取消)" maxlength="80" />
+      </div>
+    </div>
+
+    <div class="library-items-list layout-grid" id="library-items-list"></div>
+    <div class="library-resize-handle" id="library-resize-handle" title="拖拽调整宽度（双击恢复默认）" aria-label="调整库宽度"></div>
+  </aside>
+
+  <!-- 拖拽库条目到画布的放置提示 -->
+  <div id="library-canvas-drop-hint" class="library-canvas-drop-hint">释放鼠标即可在此位置插入节点模板</div>
 
   <!-- 浮动提示 Toast -->
   <div id="app-toast" class="app-toast" role="status" aria-live="polite"></div>

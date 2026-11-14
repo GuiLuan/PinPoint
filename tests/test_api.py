@@ -367,6 +367,248 @@ class PinPointApiTestCase(unittest.TestCase):
                 urllib.request.urlopen(f"{root_url}{forbidden_path}", timeout=5)
             self.assertEqual(ctx.exception.code, 404)
 
+    def test_library_crud_verbatim_capture_instantiate_and_persistence(self) -> None:
+        # 1. Build 3 cards with distinct colors, capsules, a group, and connections
+        _, c1 = self._request("POST", "/cards", {
+            "title": "入口节点",
+            "x": 200,
+            "y": 150,
+            "width": 340,
+            "headerColor": "#bf5af2",
+            "contentText": "包含关键实体 A 和指标 B",
+            "capsules": [
+                {"text": "关键实体 A", "color": "#0a84ff"},
+                {"text": "指标 B", "color": "#ff9f0a"},
+            ],
+        })
+        c1_id = c1["data"]["id"]
+        c1_pin_a = c1["data"]["capsules"][0]["pinId"]
+        c1_pin_b = c1["data"]["capsules"][1]["pinId"]
+
+        _, c2 = self._request("POST", "/cards", {
+            "title": "目标节点",
+            "x": 680,
+            "y": 290,
+            "width": 310,
+            "headerColor": "#30d158",
+            "contentText": "接收来自入口的信号",
+            "capsules": [{"text": "信号", "color": "#ff453a"}],
+        })
+        c2_id = c2["data"]["id"]
+        c2_pin = c2["data"]["capsules"][0]["pinId"]
+
+        _, c3 = self._request("POST", "/cards", {
+            "title": "外部干扰节点",
+            "x": 1100,
+            "y": 500,
+            "contentText": "不应被包含在库条目内",
+        })
+        c3_id = c3["data"]["id"]
+
+        # Create group for [c1, c2]
+        _, grp = self._request("POST", "/groups", {
+            "title": "核心模块",
+            "headerColor": "#5e5ce6",
+            "cardIds": [c1_id, c2_id],
+        })
+        grp_id = grp["data"]["id"]
+
+        # Connect c1_pin_a -> c2_pin (internal to selection)
+        _, conn_in = self._request("POST", "/connections", {
+            "fromPinId": c1_pin_a,
+            "toPinId": c2_pin,
+            "color": "#0a84ff",
+        })
+        self.assertEqual(conn_in["data"]["color"], "#0a84ff")
+
+        # Connect group -> c2 header? No, connect c1_pin_b -> c3 header (external to selection - must be excluded)
+        self._request("POST", "/connections", {
+            "fromPinId": c1_pin_b,
+            "toCardId": c3_id,
+            "toSide": "left",
+        })
+
+        # 2. Save [c1_id, c2_id] into Library via cardIds capture
+        status, lib_created = self._request("POST", "/library", {
+            "name": "标准双节点模板",
+            "description": "保留颜色、胶囊、分组和内部连线",
+            "cardIds": [c1_id, c2_id],
+        })
+        self.assertEqual(status, 201)
+        item = lib_created["data"]
+        item_id = item["id"]
+        self.assertEqual(item["name"], "标准双节点模板")
+        self.assertEqual(len(item["cards"]), 2)
+        self.assertEqual(len(item["groups"]), 1)
+        self.assertEqual(len(item["connections"]), 1)
+
+        # Verify relative coordinates normalized to (0, 0) top-left and verbatim colors preserved
+        min_x = min(c["x"] for c in item["cards"])
+        min_y = min(c["y"] for c in item["cards"])
+        self.assertEqual(min_x, 0)
+        self.assertEqual(min_y, 0)
+        saved_c1 = next(c for c in item["cards"] if c["title"] == "入口节点")
+        saved_c2 = next(c for c in item["cards"] if c["title"] == "目标节点")
+        self.assertEqual(saved_c1["headerColor"], "#bf5af2")
+        self.assertEqual(saved_c1["width"], 340)
+        self.assertEqual(saved_c2["x"] - saved_c1["x"], 480)
+        self.assertEqual(saved_c2["y"] - saved_c1["y"], 140)
+        self.assertEqual(item["groups"][0]["headerColor"], "#5e5ce6")
+        self.assertEqual(item["connections"][0]["color"], "#0a84ff")
+
+        # 3. Rename & list
+        status, updated = self._request("PATCH", f"/library/{item_id}", {"name": "标准模板 v2"})
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["data"]["name"], "标准模板 v2")
+
+        status, listed = self._request("GET", "/library")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(it["id"] == item_id and it["name"] == "标准模板 v2" for it in listed["data"]))
+
+        # 4. Instantiate onto canvas at (1200, 800)
+        status, inst = self._request("POST", f"/library/{item_id}/instantiate", {"x": 1200, "y": 800})
+        self.assertEqual(status, 201)
+        new_cards = inst["data"]["cards"]
+        new_groups = inst["data"]["groups"]
+        new_conns = inst["data"]["connections"]
+        self.assertEqual(len(new_cards), 2)
+        self.assertEqual(len(new_groups), 1)
+        self.assertEqual(len(new_conns), 1)
+
+        # All IDs must be distinct from originals
+        new_card_ids = {c["id"] for c in new_cards}
+        self.assertTrue(new_card_ids.isdisjoint({c1_id, c2_id}))
+        self.assertNotEqual(new_groups[0]["id"], grp_id)
+        self.assertEqual(set(new_groups[0]["cardIds"]), new_card_ids)
+
+        # New connection endpoints must reference new capsule pin IDs inside the new cards
+        new_pin_ids = set()
+        for nc in new_cards:
+            for cap in nc.get("capsules", []):
+                new_pin_ids.add(cap["pinId"])
+        self.assertIn(new_conns[0]["fromPinId"], new_pin_ids)
+        self.assertIn(new_conns[0]["toPinId"], new_pin_ids)
+        self.assertNotEqual(new_conns[0]["fromPinId"], c1_pin_a)
+        self.assertNotEqual(new_conns[0]["toPinId"], c2_pin)
+        self.assertEqual(new_conns[0]["color"], "#0a84ff")
+
+        # Relative positions preserved at new anchor
+        inst_c1 = next(c for c in new_cards if c["title"] == "入口节点")
+        inst_c2 = next(c for c in new_cards if c["title"] == "目标节点")
+        self.assertEqual(inst_c1["x"], 1200)
+        self.assertEqual(inst_c1["y"], 800)
+        self.assertEqual(inst_c2["x"], 1680)
+        self.assertEqual(inst_c2["y"], 940)
+        self.assertEqual(inst_c1["headerColor"], "#bf5af2")
+
+        # 5. Resetting canvas must preserve library, and deleting item removes it
+        self.store.reset()
+        _, after_reset = self._request("GET", "/library")
+        self.assertTrue(any(it["id"] == item_id for it in after_reset["data"]))
+
+        status, deleted = self._request("DELETE", f"/library/{item_id}")
+        self.assertEqual(status, 200)
+        self.assertEqual(deleted["data"]["deletedId"], item_id)
+
+        status, not_found = self._request("GET", f"/library/{item_id}")
+        self.assertEqual(status, 404)
+
+    def test_library_sse_events_and_file_persistence(self) -> None:
+        from backend import GraphStore
+
+        # SSE CONNECTED includes library and POST /library emits LIBRARY_CHANGED
+        url = f"{self.base_url}/events"
+        with urllib.request.urlopen(url, timeout=5) as stream:
+            lines = []
+            while True:
+                line = stream.readline().decode("utf-8")
+                if line in ("\n", "\r\n"):
+                    break
+                lines.append(line.strip())
+            hello = json.loads(next(l for l in lines if l.startswith("data:"))[5:].strip())
+            self.assertIn("library", hello)
+
+            req = urllib.request.Request(
+                f"{self.base_url}/library",
+                data=json.dumps({
+                    "name": "SSE 模板",
+                    "cards": [
+                        {"id": "c-tmp", "title": "Solo", "x": 0, "y": 0, "width": 310, "headerColor": "#30d158", "contentHtml": "Body"}
+                    ],
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json", "X-PinPoint-Client": "tab-lib-1"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 201)
+
+            evt_lines = []
+            while True:
+                line = stream.readline().decode("utf-8")
+                if line in ("\n", "\r\n"):
+                    break
+                evt_lines.append(line.strip())
+            evt = json.loads(next(l for l in evt_lines if l.startswith("data:"))[5:].strip())
+            self.assertEqual(evt["type"], "LIBRARY_CHANGED")
+            self.assertEqual(evt["clientId"], "tab-lib-1")
+            self.assertEqual(len(evt["library"]), 1)
+            self.assertEqual(evt["library"][0]["name"], "SSE 模板")
+
+        # File persistence alongside workspace
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
+            ws_path = Path(tmpdir) / "workspace.pinpoint"
+            store1 = GraphStore(workspace_file=ws_path, base_dir=Path.cwd())
+            created = store1.create_library_item({
+                "name": "持久模板",
+                "cards": [{"id": "c1", "title": "A", "x": 10, "y": 20, "headerColor": "#ff9f0a", "contentHtml": "Hi"}],
+            })
+            lib_path = ws_path.with_name("library.json")
+            self.assertTrue(lib_path.exists())
+
+            store2 = GraphStore(workspace_file=ws_path, base_dir=Path.cwd())
+            items = store2.list_library()
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["id"], created["id"])
+            self.assertEqual(items[0]["cards"][0]["headerColor"], "#ff9f0a")
+
+    def test_library_settings_validation_and_update(self) -> None:
+        _, initial = self._request("GET", "/settings")
+        self.assertEqual(initial["data"]["library"], {"position": "left", "layout": "grid", "width": 348})
+
+        status, updated = self._request("PATCH", "/settings", {
+            "library": {"position": "right", "layout": "list", "width": 520},
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["data"]["library"], {"position": "right", "layout": "list", "width": 520})
+
+        _, clamped_min = self._request("PATCH", "/settings", {
+            "library": {"width": 120},
+        })
+        self.assertEqual(clamped_min["data"]["library"]["width"], 260)
+
+        _, clamped_max = self._request("PATCH", "/settings", {
+            "library": {"width": 1400},
+        })
+        self.assertEqual(clamped_max["data"]["library"]["width"], 800)
+
+        bad_pos_status, bad_pos = self._request("PATCH", "/settings", {
+            "library": {"position": "center"},
+        })
+        self.assertEqual(bad_pos_status, 400)
+        self.assertEqual(bad_pos["error"]["code"], "INVALID_LIBRARY_POSITION")
+
+        bad_layout_status, bad_layout = self._request("PATCH", "/settings", {
+            "library": {"layout": "masonry"},
+        })
+        self.assertEqual(bad_layout_status, 400)
+        self.assertEqual(bad_layout["error"]["code"], "INVALID_LIBRARY_LAYOUT")
+
+        bad_width_status, bad_width = self._request("PATCH", "/settings", {
+            "library": {"width": "wide"},
+        })
+        self.assertEqual(bad_width_status, 400)
+        self.assertEqual(bad_width["error"]["code"], "INVALID_LIBRARY_WIDTH")
+
 
 if __name__ == "__main__":
     unittest.main()

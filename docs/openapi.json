@@ -24,7 +24,8 @@
     { "name": "Layout", "description": "Alignment, equal distribution, and automatic graph layout" },
     { "name": "History", "description": "Undo and redo history stack" },
     { "name": "Viewport", "description": "Canvas pan, zoom, fit-to-content, and focus" },
-    { "name": "Settings", "description": "Workspace assistance toggles, palette, and minimap preferences" }
+    { "name": "Settings", "description": "Workspace assistance toggles, palette, and minimap preferences" },
+    { "name": "Library", "description": "Reusable node, group, and connection snippets library" }
   ],
   "paths": {
     "/health": {
@@ -975,6 +976,114 @@
         }
       }
     },
+    "/library": {
+      "get": {
+        "tags": ["Library"],
+        "operationId": "listLibrary",
+        "summary": "List saved reusable library items",
+        "parameters": [
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of library items",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Library"],
+        "operationId": "createLibraryItem",
+        "summary": "Save cards, groups, and internal connections into the reusable library",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Library item created",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/library/{itemId}": {
+      "parameters": [
+        { "name": "itemId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "get": {
+        "tags": ["Library"],
+        "operationId": "getLibraryItem",
+        "summary": "Get a single library item",
+        "responses": {
+          "200": {
+            "description": "Library item detail",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Library"],
+        "operationId": "updateLibraryItem",
+        "summary": "Rename or update a library item",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Library item updated",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Library"],
+        "operationId": "deleteLibraryItem",
+        "summary": "Delete a library item",
+        "responses": {
+          "200": {
+            "description": "Library item deleted",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/library/{itemId}/instantiate": {
+      "parameters": [
+        { "name": "itemId", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "post": {
+        "tags": ["Library"],
+        "operationId": "instantiateLibraryItem",
+        "summary": "Instantiate a saved library item onto the canvas with remapped IDs",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "x": { "type": "number" },
+                  "y": { "type": "number" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Library item instantiated onto canvas",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
     "/selection": {
       "get": {
         "tags": ["Viewport"],
@@ -1081,6 +1190,14 @@
           "size": { "type": "integer", "minimum": 140, "maximum": 320 }
         }
       },
+      "LibrarySettings": {
+        "type": "object",
+        "properties": {
+          "position": { "type": "string", "enum": ["left", "right"] },
+          "layout": { "type": "string", "enum": ["grid", "list"] },
+          "width": { "type": "integer", "minimum": 260, "maximum": 800 }
+        }
+      },
       "Settings": {
         "type": "object",
         "properties": {
@@ -1092,7 +1209,8 @@
             "maxItems": 10,
             "items": { "type": "string" }
           },
-          "minimap": { "$ref": "#/components/schemas/MinimapSettings" }
+          "minimap": { "$ref": "#/components/schemas/MinimapSettings" },
+          "library": { "$ref": "#/components/schemas/LibrarySettings" }
         }
       },
       "SettingsPatch": {
@@ -1106,7 +1224,8 @@
             "maxItems": 10,
             "items": { "type": "string" }
           },
-          "minimap": { "$ref": "#/components/schemas/MinimapSettings" }
+          "minimap": { "$ref": "#/components/schemas/MinimapSettings" },
+          "library": { "$ref": "#/components/schemas/LibrarySettings" }
         }
       },
       "Capsule": {
