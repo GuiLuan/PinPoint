@@ -42,7 +42,7 @@ class ApiRouter:
             return 200, {
                 "status": "ok",
                 "service": "pinpoint-api",
-                "version": "3.0.0",
+                "version": "3.1.0",
                 "storage": "sqlite",
                 "revision": self.store.revision,
             }
