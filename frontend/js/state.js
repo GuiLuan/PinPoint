@@ -1077,6 +1077,178 @@ class StateManager {
     return out;
   }
 
+  putCachedCanvas(entry) {
+    if (!entry || !entry.id) return;
+    this.pendingDeletedCanvasIds.delete(entry.id);
+    this.canvasesCache.set(entry.id, entry);
+    if (entry.dirty) {
+      this.dirtyCanvasIds.add(entry.id);
+    }
+    idbCache.putCanvas(entry);
+  }
+
+  notifyCanvasTreeUpdated() {
+    this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+  }
+
+  _extractSubcanvasSnapshot(entry, fallbackId) {
+    if (!entry) return null;
+    return {
+      id: entry.id || fallbackId,
+      title: entry.title || '子画布',
+      viewport: clone(entry.viewport || { x: 0, y: 0, zoom: 1.0 }),
+      cards: clone(entry.cards || []).map(c => {
+        if (c.kind === 'subcanvas') {
+          const { thumbnail, ...rest } = c;
+          return rest;
+        }
+        return c;
+      }),
+      connections: clone(entry.connections || []),
+      groups: clone(entry.groups || [])
+    };
+  }
+
+  collectCachedSubcanvasSubtreeSync(rootSubIds = []) {
+    const out = {};
+    const queue = [...rootSubIds].filter(Boolean);
+    const seen = new Set();
+
+    while (queue.length > 0) {
+      const sid = queue.shift();
+      if (!sid || seen.has(sid)) continue;
+      seen.add(sid);
+
+      let entry = null;
+      if (sid === this.activeCanvasId) {
+        entry = {
+          id: this.activeCanvasId,
+          title: this.activeCanvasTitle,
+          viewport: this.state.viewport,
+          cards: this.state.cards,
+          connections: this.state.connections,
+          groups: this.state.groups || []
+        };
+      } else {
+        entry = this.canvasesCache.get(sid) || this.deletedSubcanvasTrash.get(sid) || null;
+      }
+
+      if (!entry) continue;
+      const snap = this._extractSubcanvasSnapshot(entry, sid);
+      out[sid] = snap;
+      for (const c of snap.cards || []) {
+        if (c.kind === 'subcanvas' && c.subcanvasId && !seen.has(c.subcanvasId)) {
+          queue.push(c.subcanvasId);
+        }
+      }
+    }
+    return out;
+  }
+
+  async collectSubcanvasSubtree(rootSubIds = []) {
+    const out = {};
+    const queue = [...rootSubIds].filter(Boolean);
+    const seen = new Set();
+
+    while (queue.length > 0) {
+      const sid = queue.shift();
+      if (!sid || seen.has(sid)) continue;
+      seen.add(sid);
+
+      let entry = null;
+      if (sid === this.activeCanvasId) {
+        entry = {
+          id: this.activeCanvasId,
+          title: this.activeCanvasTitle,
+          viewport: this.state.viewport,
+          cards: this.state.cards,
+          connections: this.state.connections,
+          groups: this.state.groups || []
+        };
+      } else {
+        entry = this.canvasesCache.get(sid) || null;
+      }
+
+      if (!entry) {
+        try {
+          const idbEntry = await idbCache.getCanvas(sid);
+          if (idbEntry) {
+            entry = idbEntry;
+            if (!this.canvasesCache.has(sid) && !this.pendingDeletedCanvasIds.has(sid)) {
+              this.canvasesCache.set(sid, idbEntry);
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (!entry && !this.pendingDeletedCanvasIds.has(sid)) {
+        try {
+          const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(sid)}/export?includeSubcanvases=true`);
+          if (res.ok) {
+            const json = await res.json();
+            const data = json?.ok && json.data ? json.data : null;
+            if (data) {
+              entry = {
+                id: sid,
+                parentCanvasId: null,
+                title: data.title || '子画布',
+                viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
+                cards: data.cards || [],
+                connections: data.connections || [],
+                groups: data.groups || [],
+                dirty: false,
+                updatedAt: Date.now()
+              };
+              if (!this.canvasesCache.has(sid)) {
+                this.canvasesCache.set(sid, entry);
+              }
+              const nestedMap = data.subcanvases || {};
+              for (const [nestedId, nestedData] of Object.entries(nestedMap)) {
+                if (!nestedId || !nestedData || seen.has(nestedId)) continue;
+                const nestedSnap = this._extractSubcanvasSnapshot(nestedData, nestedId);
+                out[nestedId] = nestedSnap;
+                seen.add(nestedId);
+                if (!this.canvasesCache.has(nestedId) && !this.pendingDeletedCanvasIds.has(nestedId)) {
+                  this.canvasesCache.set(nestedId, {
+                    id: nestedId,
+                    parentCanvasId: nestedData.parentCanvasId ?? null,
+                    title: nestedSnap.title,
+                    viewport: clone(nestedSnap.viewport),
+                    cards: clone(nestedSnap.cards),
+                    connections: clone(nestedSnap.connections),
+                    groups: clone(nestedSnap.groups),
+                    dirty: false,
+                    updatedAt: Date.now()
+                  });
+                }
+                for (const sc of nestedSnap.cards || []) {
+                  if (sc.kind === 'subcanvas' && sc.subcanvasId && !seen.has(sc.subcanvasId)) {
+                    queue.push(sc.subcanvasId);
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (!entry) {
+        entry = this.deletedSubcanvasTrash.get(sid) || null;
+      }
+
+      if (!entry) continue;
+      const snap = this._extractSubcanvasSnapshot(entry, sid);
+      out[sid] = snap;
+      for (const c of snap.cards || []) {
+        if (c.kind === 'subcanvas' && c.subcanvasId && !seen.has(c.subcanvasId)) {
+          queue.push(c.subcanvasId);
+        }
+      }
+    }
+
+    return out;
+  }
+
   _markSubcanvasSubtreeDeleted(subcanvasId) {
     if (!subcanvasId || subcanvasId === 'root') return;
     const allIds = [subcanvasId, ...this._collectDescendantCanvasIdsLocal(subcanvasId)];

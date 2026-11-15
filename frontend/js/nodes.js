@@ -1744,7 +1744,12 @@ class NodeManager {
     return `${prefix}-${Date.now()}-${this._cloneSeq}-${Math.floor(Math.random() * 100000)}`;
   }
 
-  cloneCardsAndGroups(cardsToClone, groupsToClone = [], connectionsToClone = null) {
+  cloneCardsAndGroups(cardsToClone, groupsToClone = [], connectionsToClone = null, options = {}) {
+    const subcanvasSnapshots = options?.subcanvases || null;
+    const parentCanvasId = options?.parentCanvasId || store.activeCanvasId;
+    const parentBreadcrumbs = Array.isArray(options?.parentBreadcrumbs) ? options.parentBreadcrumbs : store.breadcrumbs;
+    const clonedAncestors = options?.clonedAncestors || new Set();
+
     const cardIdMap = new Map();
     const groupIdMap = new Map();
     const pinIdMap = new Map();
@@ -1774,7 +1779,7 @@ class NodeManager {
       newGroups.push(clonedGroup);
     });
 
-    // 3. Clone cards and remap capsule pins in contentHtml
+    // 3. Clone cards, recursively clone subcanvases, and remap capsule pins in contentHtml
     cardsToClone.forEach(c => {
       const newCardId = cardIdMap.get(c.id);
       const cloned = JSON.parse(JSON.stringify(c));
@@ -1783,21 +1788,46 @@ class NodeManager {
       if (cloned.kind === 'subcanvas') {
         const newSubId = this._nextCloneId('canvas');
         const oldSubId = cloned.subcanvasId;
-        const cachedOld = oldSubId ? store.canvasesCache.get(oldSubId) : null;
+        const sourceSub = (oldSubId && subcanvasSnapshots?.[oldSubId])
+          || (oldSubId ? (store.canvasesCache.get(oldSubId) || store.deletedSubcanvasTrash.get(oldSubId)) : null);
+        const childTitle = cloned.title || sourceSub?.title || '未命名子画布';
+        const childBreadcrumbs = [...parentBreadcrumbs, { id: newSubId, title: childTitle }];
+
+        let innerCards = [];
+        let innerGroups = [];
+        let innerConnections = [];
+        if (sourceSub && (!oldSubId || !clonedAncestors.has(oldSubId))) {
+          const nextAncestors = new Set(clonedAncestors);
+          if (oldSubId) nextAncestors.add(oldSubId);
+          const innerRes = this.cloneCardsAndGroups(
+            sourceSub.cards || [],
+            sourceSub.groups || [],
+            sourceSub.connections || [],
+            {
+              subcanvases: subcanvasSnapshots,
+              parentCanvasId: newSubId,
+              parentBreadcrumbs: childBreadcrumbs,
+              clonedAncestors: nextAncestors
+            }
+          );
+          innerCards = innerRes.newCards;
+          innerGroups = innerRes.newGroups;
+          innerConnections = innerRes.newConnections;
+        }
+
         const childEntry = {
           id: newSubId,
-          parentCanvasId: store.activeCanvasId,
-          title: cloned.title || '未命名子画布',
-          breadcrumbs: [...store.breadcrumbs, { id: newSubId, title: cloned.title || '未命名子画布' }],
-          viewport: cachedOld?.viewport ? JSON.parse(JSON.stringify(cachedOld.viewport)) : { x: 0, y: 0, zoom: 1.0 },
-          cards: cachedOld?.cards ? JSON.parse(JSON.stringify(cachedOld.cards)) : [],
-          connections: cachedOld?.connections ? JSON.parse(JSON.stringify(cachedOld.connections)) : [],
-          groups: cachedOld?.groups ? JSON.parse(JSON.stringify(cachedOld.groups)) : [],
+          parentCanvasId,
+          title: childTitle,
+          breadcrumbs: childBreadcrumbs,
+          viewport: sourceSub?.viewport ? JSON.parse(JSON.stringify(sourceSub.viewport)) : { x: 0, y: 0, zoom: 1.0 },
+          cards: innerCards,
+          connections: innerConnections,
+          groups: innerGroups,
           dirty: true,
           updatedAt: Date.now()
         };
-        store.canvasesCache.set(newSubId, childEntry);
-        store.dirtyCanvasIds.add(newSubId);
+        store.putCachedCanvas(childEntry);
         cloned.subcanvasId = newSubId;
         cloned.thumbnail = computeLocalThumbnail(childEntry);
       }
@@ -1879,31 +1909,104 @@ class NodeManager {
       return owner1 && owner2 && relevantEntityIds.has(owner1) && relevantEntityIds.has(owner2);
     }).map(c => JSON.parse(JSON.stringify(c)));
 
+    const subIds = cardsToCopy
+      .filter(c => c.kind === 'subcanvas' && c.subcanvasId)
+      .map(c => c.subcanvasId);
+
+    const syncSubtrees = subIds.length > 0 ? store.collectCachedSubcanvasSubtreeSync(subIds) : {};
+    this._clipboardSeq = (this._clipboardSeq || 0) + 1;
+    const seq = this._clipboardSeq;
+
     this.clipboard = {
       cards: JSON.parse(JSON.stringify(cardsToCopy)),
       groups: JSON.parse(JSON.stringify(groupsToCopy)),
-      internalConnections
+      internalConnections,
+      subcanvases: syncSubtrees
     };
     this.pasteCount = 0;
+
+    if (subIds.length > 0) {
+      this._clipboardHydratePromise = store.collectSubcanvasSubtree(subIds).then((fullSubtrees) => {
+        if (this._clipboardSeq === seq && this.clipboard) {
+          this.clipboard.subcanvases = { ...syncSubtrees, ...fullSubtrees };
+        }
+        return this.clipboard?.subcanvases || syncSubtrees;
+      }).finally(() => {
+        if (this._clipboardSeq === seq) {
+          this._clipboardHydratePromise = null;
+        }
+      });
+    } else {
+      this._clipboardHydratePromise = null;
+    }
+
     return true;
   }
 
-  cutSelectedCards() {
+  async cutSelectedCards() {
     if (this.selectedCardIds.size === 0) return false;
-    this.copySelectedCards();
-    this.deleteSelectedCards();
+    const originCanvasId = store.activeCanvasId;
+    const cutIds = [...this.selectedCardIds];
+    const ok = this.copySelectedCards();
+    if (!ok) return false;
+
+    const hasUncachedSub = (this.clipboard?.cards || []).some(c => {
+      if (c.kind !== 'subcanvas' || !c.subcanvasId) return false;
+      const seen = new Set();
+      const q = [c.subcanvasId];
+      while (q.length > 0) {
+        const sid = q.shift();
+        if (!sid || seen.has(sid)) continue;
+        seen.add(sid);
+        const snap = this.clipboard.subcanvases?.[sid];
+        if (!snap) return true;
+        for (const sc of snap.cards || []) {
+          if (sc.kind === 'subcanvas' && sc.subcanvasId) q.push(sc.subcanvasId);
+        }
+      }
+      return false;
+    });
+
+    if (hasUncachedSub && this._clipboardHydratePromise) {
+      await this._clipboardHydratePromise;
+    }
+
+    if (store.activeCanvasId === originCanvasId) {
+      this.selectedCardIds = new Set(cutIds);
+      this.deleteSelectedCards();
+    } else {
+      const originEntry = store.canvasesCache.get(originCanvasId);
+      if (originEntry) {
+        const cutSet = new Set(cutIds);
+        const cutSubIds = (originEntry.cards || [])
+          .filter(c => cutSet.has(c.id) && c.kind === 'subcanvas' && c.subcanvasId)
+          .map(c => c.subcanvasId);
+        originEntry.cards = (originEntry.cards || []).filter(c => !cutSet.has(c.id));
+        originEntry.dirty = true;
+        store.putCachedCanvas(originEntry);
+        cutSubIds.forEach(sid => store._markSubcanvasSubtreeDeleted(sid));
+        store.notifyCanvasTreeUpdated();
+      }
+    }
     return true;
   }
 
-  pasteCards() {
+  async pasteCards() {
     if (!this.clipboard || !this.clipboard.cards || this.clipboard.cards.length === 0) return false;
+    if (this._clipboardHydratePromise) {
+      try {
+        await this._clipboardHydratePromise;
+      } catch (e) {}
+    }
+
     this.pasteCount++;
     const offset = 32 * this.pasteCount;
 
     const { newCards, newGroups, newConnections } = this.cloneCardsAndGroups(
       this.clipboard.cards,
       this.clipboard.groups || [],
-      this.clipboard.internalConnections || []
+      this.clipboard.internalConnections || [],
+      { subcanvases: this.clipboard.subcanvases || null }
     );
 
     newCards.forEach(c => {
@@ -1944,6 +2047,9 @@ class NodeManager {
     wires.render();
     store.scheduleAutoSave();
     this.updateAlignmentBar();
+    if (newCards.some(c => c.kind === 'subcanvas')) {
+      store.notifyCanvasTreeUpdated();
+    }
     if (this.onSelectionChange) this.onSelectionChange();
     return true;
   }
