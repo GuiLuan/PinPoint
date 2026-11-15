@@ -199,6 +199,20 @@ class WireManager {
 
       hitZone.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
+        const stack = document.elementsFromPoint(e.clientX, e.clientY);
+        const underGroupPort = stack.find(el => el.closest && el.closest('.group-port-slot'));
+        if (underGroupPort) {
+          e.preventDefault();
+          e.stopPropagation();
+          underGroupPort.closest('.group-port-slot').dispatchEvent(new MouseEvent('mousedown', {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            clientX: e.clientX,
+            clientY: e.clientY
+          }));
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         this.clearFocus();
@@ -457,6 +471,23 @@ class WireManager {
     this.updateTempWire(this.pendingDrop.startPos, this.pendingDrop.dropBoardPos, fromDir, toDir);
   }
 
+  findGroupAtBoardPos(boardPos) {
+    const groups = store.state.groups || [];
+    for (let i = groups.length - 1; i >= 0; i--) {
+      const g = groups[i];
+      const el = document.getElementById(`group-dom-${g.id}`);
+      const gx = typeof g.x === 'number' ? g.x : (el ? parseFloat(el.style.left) : NaN);
+      const gy = typeof g.y === 'number' ? g.y : (el ? parseFloat(el.style.top) : NaN);
+      const gw = typeof g.width === 'number' ? g.width : (el ? parseFloat(el.style.width) : NaN);
+      const gh = typeof g.height === 'number' ? g.height : (el ? parseFloat(el.style.height) : NaN);
+      if (isNaN(gx) || isNaN(gy) || isNaN(gw) || isNaN(gh)) continue;
+      if (boardPos.x >= gx && boardPos.x <= gx + gw && boardPos.y >= gy && boardPos.y <= gy + gh) {
+        return { group: g, el, bounds: { x: gx, y: gy, width: gw, height: gh } };
+      }
+    }
+    return null;
+  }
+
   bindGlobalEvents() {
     window.addEventListener('selectstart', (e) => {
       if (document.body.classList.contains('is-wire-dragging') || this.activeDrag) {
@@ -489,8 +520,15 @@ class WireManager {
         const card = cardEl ? store.state.cards.find(c => c.id === cardEl.id.replace('card-dom-', '')) : null;
         const group = groupEl ? store.state.groups?.find(g => g.id === groupEl.id.replace('group-dom-', '')) : null;
         if (!card?.headerColor && !group?.headerColor && !el.classList.contains('pin-connected')) {
-          el.style.backgroundColor = '';
-          el.style.color = '';
+          if (el.classList.contains('subcanvas-portal-pin')) {
+            el.style.color = 'var(--text-secondary)';
+          } else if (el.classList.contains('group-label-dot')) {
+            el.style.backgroundColor = 'var(--text-muted)';
+            el.style.color = 'var(--text-muted)';
+          } else {
+            el.style.backgroundColor = '';
+            el.style.color = '';
+          }
         }
       });
       document.querySelectorAll('.target-highlight').forEach(el => el.classList.remove('target-highlight'));
@@ -499,7 +537,7 @@ class WireManager {
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .node-group, .subcanvas-portal') : null;
+      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .group-label, .node-group, .subcanvas-portal') : null;
 
       let targetId = null;
       let activePinEl = null;
@@ -517,8 +555,9 @@ class WireManager {
         activePinEl = targetCapsule.querySelector('.capsule-pin');
         toDir = 'left';
       } else if (targetHeader) {
+        const isGroupLabel = targetHeader.classList.contains('group-label');
         const rect = targetHeader.getBoundingClientRect();
-        const isLeft = e.clientX < rect.left + rect.width / 2;
+        const isLeft = isGroupLabel ? true : (e.clientX < rect.left + rect.width / 2);
         const pinEl = isLeft
           ? targetHeader.querySelector('.header-pin-left')
           : targetHeader.querySelector('.header-pin-right');
@@ -526,6 +565,19 @@ class WireManager {
           targetId = pinEl.getAttribute('data-header-pin-id');
           activePinEl = pinEl;
           toDir = isLeft ? 'left' : 'right';
+        }
+      } else {
+        const groupHit = this.findGroupAtBoardPos(boardPos);
+        if (groupHit && groupHit.el) {
+          const isLeft = boardPos.x < groupHit.bounds.x + groupHit.bounds.width / 2;
+          const pinEl = isLeft
+            ? groupHit.el.querySelector('.header-pin-left')
+            : groupHit.el.querySelector('.header-pin-right');
+          if (pinEl) {
+            targetId = pinEl.getAttribute('data-header-pin-id');
+            activePinEl = pinEl;
+            toDir = isLeft ? 'left' : 'right';
+          }
         }
       }
 
@@ -545,7 +597,9 @@ class WireManager {
               const group = groupEl ? store.state.groups?.find(g => g.id === groupEl.id.replace('group-dom-', '')) : null;
               const hasColor = card?.headerColor || group?.headerColor;
               if (!hasColor && this.activeDrag.wireColor && this.activeDrag.wireColor !== '#98989d') {
-                activePinEl.style.backgroundColor = this.activeDrag.wireColor;
+                if (!activePinEl.classList.contains('subcanvas-portal-pin')) {
+                  activePinEl.style.backgroundColor = this.activeDrag.wireColor;
+                }
                 activePinEl.style.color = this.activeDrag.wireColor;
               }
             }
@@ -561,6 +615,7 @@ class WireManager {
 
     window.addEventListener('mouseup', (e) => {
       if (!this.activeDrag) return;
+      const hitEl = (e.clientX !== undefined && e.clientY !== undefined ? document.elementFromPoint(e.clientX, e.clientY) : null) || e.target;
       document.body.classList.remove('is-wire-dragging');
       document.body.style.cursor = '';
       this.tempWireEl.style.display = 'none';
@@ -573,17 +628,23 @@ class WireManager {
         const card = cardEl ? store.state.cards.find(c => c.id === cardEl.id.replace('card-dom-', '')) : null;
         const group = groupEl ? store.state.groups?.find(g => g.id === groupEl.id.replace('group-dom-', '')) : null;
         if (!card?.headerColor && !group?.headerColor && !el.classList.contains('pin-connected')) {
-          el.style.backgroundColor = '';
-          el.style.color = '';
+          if (el.classList.contains('subcanvas-portal-pin')) {
+            el.style.color = 'var(--text-secondary)';
+          } else if (el.classList.contains('group-label-dot')) {
+            el.style.backgroundColor = 'var(--text-muted)';
+            el.style.color = 'var(--text-muted)';
+          } else {
+            el.style.backgroundColor = '';
+            el.style.color = '';
+          }
         }
       });
       document.querySelectorAll('.target-highlight').forEach(el => el.classList.remove('target-highlight'));
 
-      const hitEl = (e.clientX !== undefined && e.clientY !== undefined ? document.elementFromPoint(e.clientX, e.clientY) : null) || e.target;
       const targetSlot = hitEl?.closest ? hitEl.closest('.header-port-slot') : null;
       const targetPin = hitEl?.closest ? hitEl.closest('.capsule-pin, .header-pin') : null;
       const targetCapsule = hitEl?.closest ? hitEl.closest('.text-capsule') : null;
-      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .node-group, .subcanvas-portal') : null;
+      const targetHeader = hitEl?.closest ? hitEl.closest('.note-header, .group-label, .node-group, .subcanvas-portal') : null;
       let targetPinId = null;
 
       if (targetSlot) {
@@ -593,12 +654,23 @@ class WireManager {
       } else if (targetCapsule) {
         targetPinId = targetCapsule.getAttribute('data-pin-id');
       } else if (targetHeader) {
+        const isGroupLabel = targetHeader.classList.contains('group-label');
         const rect = targetHeader.getBoundingClientRect();
-        const isLeft = e.clientX < rect.left + rect.width / 2;
+        const isLeft = isGroupLabel ? true : (e.clientX < rect.left + rect.width / 2);
         const pinEl = isLeft
           ? targetHeader.querySelector('.header-pin-left')
           : targetHeader.querySelector('.header-pin-right');
         targetPinId = pinEl?.getAttribute('data-header-pin-id');
+      } else {
+        const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
+        const groupHit = this.findGroupAtBoardPos(boardPos);
+        if (groupHit && groupHit.el) {
+          const isLeft = boardPos.x < groupHit.bounds.x + groupHit.bounds.width / 2;
+          const pinEl = isLeft
+            ? groupHit.el.querySelector('.header-pin-left')
+            : groupHit.el.querySelector('.header-pin-right');
+          targetPinId = pinEl?.getAttribute('data-header-pin-id');
+        }
       }
 
       const { type, connId, fromPinId, wireColor, moved } = this.activeDrag;

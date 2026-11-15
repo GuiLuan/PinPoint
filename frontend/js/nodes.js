@@ -231,24 +231,26 @@ class NodeManager {
               ${isEmpty ? `<div class="subcanvas-portal-empty"><svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="1.6" fill="none"><rect x="4" y="4" width="16" height="16" rx="4"></rect><line x1="12" y1="9" x2="12" y2="15"></line><line x1="9" y1="12" x2="15" y2="12"></line></svg></div>` : ''}
             </div>
             <div class="subcanvas-portal-caption">
-              <svg class="subcanvas-portal-icon" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
-                <rect x="3" y="3" width="18" height="18" rx="3"></rect>
-                <path d="M9 12h6"></path>
-              </svg>
+              <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-left" title="子画布连接端口 (左)">
+                <span class="header-pin header-pin-left subcanvas-portal-pin ${leftConnected ? 'pin-connected' : ''}"
+                      data-header-pin-id="${leftPinId}"
+                      style="color: ${card.headerColor || leftConn?.color || 'var(--text-secondary)'};">
+                  <svg class="subcanvas-portal-icon" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
+                    <rect x="3" y="3" width="18" height="18" rx="3"></rect>
+                    <path d="M9 12h6"></path>
+                  </svg>
+                </span>
+              </div>
               <span class="header-title subcanvas-portal-title" title="双击重命名"></span>
               <input class="header-title-input subcanvas-portal-title-input" placeholder="未命名子画布" style="display: none;" />
+              <span class="subcanvas-portal-spacer" aria-hidden="true"></span>
               ${countBadgeHtml}
+              <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-right" title="子画布连接端口 (右)">
+                <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}"
+                   data-header-pin-id="${rightPinId}"
+                   style="background-color: ${rightColor}; color: ${rightColor};"></i>
+              </div>
             </div>
-          </div>
-          <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-left" title="连接端口 (左)">
-            <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}"
-               data-header-pin-id="${leftPinId}"
-               style="background-color: ${leftColor}; color: ${leftColor};"></i>
-          </div>
-          <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-right" title="连接端口 (右)">
-            <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}"
-               data-header-pin-id="${rightPinId}"
-               style="background-color: ${rightColor}; color: ${rightColor};"></i>
           </div>
           <div class="card-resize-handle card-resize-handle-left" data-side="left"></div>
           <div class="card-resize-handle card-resize-handle-right" data-side="right"></div>
@@ -1007,6 +1009,17 @@ class NodeManager {
       this.hideGroupContextMenu();
       if (ctx?.group && ctx?.labelEl) {
         this.openPopoverForGroup(ctx.group, ctx.labelEl, { x: e.clientX, y: e.clientY });
+      }
+    });
+
+    const btnFit = this.groupContextMenuEl.querySelector('#group-menu-fit');
+    btnFit?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextGroup;
+      this.hideGroupContextMenu();
+      if (ctx?.group) {
+        this.fitGroupToMembers(ctx.group.id);
       }
     });
 
@@ -1906,7 +1919,18 @@ class NodeManager {
 
     if (newGroups && newGroups.length > 0) {
       if (!store.state.groups) store.state.groups = [];
-      newGroups.forEach(g => store.state.groups.push(g));
+      newGroups.forEach(g => {
+        if (typeof g.x === 'number' && typeof g.y === 'number') {
+          g.x = Math.round(g.x + offset);
+          g.y = Math.round(g.y + offset);
+          if (store.state.settings?.gridSnapMode) {
+            const GRID_SIZE = 24;
+            g.x = Math.round(g.x / GRID_SIZE) * GRID_SIZE;
+            g.y = Math.round(g.y / GRID_SIZE) * GRID_SIZE;
+          }
+        }
+        store.state.groups.push(g);
+      });
     }
 
     newConnections.forEach(conn => {
@@ -1924,7 +1948,7 @@ class NodeManager {
     return true;
   }
 
-  calcGroupBounds(group) {
+  calcFitGroupBounds(group) {
     if (!group || !Array.isArray(group.cardIds) || group.cardIds.length === 0) return null;
     const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
     if (memberCards.length === 0) return null;
@@ -1943,7 +1967,7 @@ class NodeManager {
     memberCards.forEach(c => {
       const el = document.getElementById(`card-dom-${c.id}`);
       const w = el?.offsetWidth || c.width || 310;
-      const h = el?.offsetHeight || 140;
+      const h = el?.offsetHeight || c.height || 140;
       const cx = (el && el.style.left) ? parseFloat(el.style.left) : c.x;
       const cy = (el && el.style.top) ? parseFloat(el.style.top) : c.y;
       if (cx < minX) minX = cx;
@@ -1968,6 +1992,50 @@ class NodeManager {
     const height = (maxY - minY) + PADDING_TOP + PADDING_BOTTOM;
 
     return { x, y, width, height };
+  }
+
+  calcGroupBounds(group) {
+    if (!group) return null;
+    if (
+      typeof group.x === 'number' && !isNaN(group.x) &&
+      typeof group.y === 'number' && !isNaN(group.y) &&
+      typeof group.width === 'number' && !isNaN(group.width) &&
+      typeof group.height === 'number' && !isNaN(group.height)
+    ) {
+      return {
+        x: group.x,
+        y: group.y,
+        width: Math.max(220, group.width),
+        height: Math.max(100, group.height)
+      };
+    }
+    const fitted = this.calcFitGroupBounds(group);
+    if (fitted) {
+      group.x = Math.round(fitted.x);
+      group.y = Math.round(fitted.y);
+      group.width = Math.round(fitted.width);
+      group.height = Math.round(fitted.height);
+    }
+    return fitted;
+  }
+
+  fitGroupToMembers(groupId) {
+    const group = store.state.groups?.find(g => g.id === groupId);
+    if (!group) return false;
+    const fitted = this.calcFitGroupBounds(group);
+    if (!fitted) {
+      store.emitToast('组内暂无节点，无法自动适配大小', 'info');
+      return false;
+    }
+    group.x = Math.round(fitted.x);
+    group.y = Math.round(fitted.y);
+    group.width = Math.round(fitted.width);
+    group.height = Math.round(fitted.height);
+    this.updateGroupDOMBounds(group.id);
+    store.commit();
+    wires.render();
+    store.scheduleAutoSave();
+    return true;
   }
 
   renderGroups() {
@@ -2015,24 +2083,32 @@ class NodeManager {
 
       const displayTitle = group.title || '未命名组';
 
+      const groupLeftDisplayColor = group.headerColor || leftConn?.color || 'var(--text-muted)';
+      const groupRightDisplayColor = group.headerColor || rightConn?.color || '#98989d';
+
       groupEl.innerHTML = `
         <div class="group-label">
-          <span class="group-label-dot" style="background-color: ${group.headerColor || 'var(--text-muted)'};"></span>
+          <div class="header-port-slot group-port-slot group-port-slot-left" title="组连接端口 (左)">
+            <i class="header-pin header-pin-left group-label-dot ${leftConnected ? 'pin-connected' : ''}"
+               data-header-pin-id="${leftPinId}"
+               style="background-color: ${groupLeftDisplayColor}; color: ${groupLeftDisplayColor};"></i>
+          </div>
           <span class="group-title"></span>
           <input class="group-title-input" placeholder="未命名组" style="display: none;" />
         </div>
-
-        <div class="header-port-slot group-port-slot group-port-slot-left" title="组连接端口 (左)">
-          <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}"
-             data-header-pin-id="${leftPinId}"
-             style="background-color: ${leftColor}; color: ${leftColor};"></i>
-        </div>
-
         <div class="header-port-slot group-port-slot group-port-slot-right" title="组连接端口 (右)">
           <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}"
              data-header-pin-id="${rightPinId}"
-             style="background-color: ${rightColor}; color: ${rightColor};"></i>
+             style="background-color: ${groupRightDisplayColor}; color: ${groupRightDisplayColor};"></i>
         </div>
+        <div class="group-resize-handle group-resize-handle-n" data-dir="n"></div>
+        <div class="group-resize-handle group-resize-handle-s" data-dir="s"></div>
+        <div class="group-resize-handle group-resize-handle-w" data-dir="w"></div>
+        <div class="group-resize-handle group-resize-handle-e" data-dir="e"></div>
+        <div class="group-resize-handle group-resize-handle-nw" data-dir="nw"></div>
+        <div class="group-resize-handle group-resize-handle-ne" data-dir="ne"></div>
+        <div class="group-resize-handle group-resize-handle-sw" data-dir="sw"></div>
+        <div class="group-resize-handle group-resize-handle-se" data-dir="se"></div>
       `;
 
       // Title editing
@@ -2073,7 +2149,7 @@ class NodeManager {
         store.scheduleAutoSave();
       };
       labelEl.addEventListener('dblclick', (e) => {
-        if (e.target === titleInput) return;
+        if (e.target === titleInput || e.target.closest('.header-pin, .header-port-slot')) return;
         e.stopPropagation();
         startRename();
       });
@@ -2090,17 +2166,47 @@ class NodeManager {
       titleInput.addEventListener('blur', finishRename);
       titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
 
-      // Right-click group label or frame to open group context menu
+      // Right-click group label or resize border to open group context menu
       const handleContextMenu = (e) => {
         if (e.target.closest('.header-pin, .header-port-slot')) return;
         e.preventDefault();
         e.stopPropagation();
         this.showGroupContextMenu(group, labelEl, startRename, e.clientX, e.clientY);
       };
-      groupEl.addEventListener('contextmenu', handleContextMenu);
+      labelEl.addEventListener('contextmenu', handleContextMenu);
 
-      // Drag group by top-left label or frame
-      groupEl.addEventListener('mousedown', (e) => {
+      // Resize handles on group edges and corners
+      groupEl.querySelectorAll('.group-resize-handle').forEach(handle => {
+        handle.addEventListener('contextmenu', handleContextMenu);
+        handle.addEventListener('mousedown', (e) => {
+          if (e.button !== 0 || canvas.isSpacePressed) return;
+          e.preventDefault();
+          e.stopPropagation();
+          this._blurActiveTextEditor();
+          wires.clearFocus();
+          wires.dismissDropMenu(true);
+          this.hideAllMenus();
+
+          const curBounds = this.calcGroupBounds(group);
+          if (!curBounds) return;
+          handle.classList.add('active');
+          groupEl.classList.add('active');
+          this.activeDrag = {
+            type: 'RESIZE_GROUP',
+            groupId: group.id,
+            dir: handle.dataset.dir,
+            startX: e.clientX,
+            startY: e.clientY,
+            initX: curBounds.x,
+            initY: curBounds.y,
+            initWidth: curBounds.width,
+            initHeight: curBounds.height
+          };
+        });
+      });
+
+      // Drag group ONLY by top-left header label
+      labelEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot') || e.target === titleInput) return;
         if (e.button !== 0 || canvas.isSpacePressed) return;
         e.preventDefault();
@@ -2134,8 +2240,9 @@ class NodeManager {
           this.updateAlignmentBar();
         }
 
-        const initMinX = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.x)) : 0;
-        const initMinY = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.y)) : 0;
+        const curBounds = this.calcGroupBounds(group) || { x: 0, y: 0, width: 288, height: 140 };
+        const initMinX = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.x)) : curBounds.x;
+        const initMinY = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.y)) : curBounds.y;
         this.activeDrag = {
           type: 'MOVE_GROUP',
           groupId: group.id,
@@ -2146,6 +2253,8 @@ class NodeManager {
           cloned: false,
           initMinX,
           initMinY,
+          initGroupX: curBounds.x,
+          initGroupY: curBounds.y,
           initialPositions: new Map(memberCards.map(c => [c.id, { x: c.x, y: c.y }]))
         };
         groupEl.classList.add('active');
@@ -2193,6 +2302,13 @@ class NodeManager {
       cardIds: [...this.selectedCardIds],
       headerColor: null
     };
+    const initBounds = this.calcFitGroupBounds(group);
+    if (initBounds) {
+      group.x = Math.round(initBounds.x);
+      group.y = Math.round(initBounds.y);
+      group.width = Math.round(initBounds.width);
+      group.height = Math.round(initBounds.height);
+    }
     store.addGroup(group);
     this.render();
     wires.render();
@@ -2890,12 +3006,16 @@ class NodeManager {
           });
 
           // Check hover over existing groups to add member cards
+          // Check if leadCard is hovering over a group container to join
           let hoveredGroupId = null;
           if (store.state.groups && store.state.groups.length > 0) {
             const leadCard = store.state.cards.find(c => c.id === this.activeDrag.leadCardId);
             if (leadCard) {
-              const cardCenterX = leadCard.x + (leadCard.width || 310) / 2;
-              const cardCenterY = leadCard.y + 70;
+              const leadEl = document.getElementById(`card-dom-${leadCard.id}`);
+              const leadW = leadEl?.offsetWidth || leadCard.width || 310;
+              const leadH = leadEl?.offsetHeight || leadCard.height || 140;
+              const cardCenterX = leadCard.x + leadW / 2;
+              const cardCenterY = leadCard.y + leadH / 2;
               for (const group of store.state.groups) {
                 const bounds = this.calcGroupBounds(group);
                 if (bounds) {
@@ -2917,15 +3037,6 @@ class NodeManager {
             el.classList.toggle('group-drop-target', gId === hoveredGroupId);
           });
 
-          // Update bounds for any groups containing moved cards
-          if (store.state.groups) {
-            store.state.groups.forEach(g => {
-              if (g.cardIds.some(id => this.selectedCardIds.has(id))) {
-                this.updateGroupDOMBounds(g.id);
-              }
-            });
-          }
-
           wires.render();
         } else if (this.activeDrag.type === 'MOVE_GROUP') {
           // Alt+Drag: Clone group, member cards and connections
@@ -2941,11 +3052,14 @@ class NodeManager {
                 newConnections.forEach(conn => store.state.connections.push(conn));
 
                 const newGroupId = groupIdMap.get(group.id);
+                const newGroupObj = store.state.groups.find(g => g.id === newGroupId);
                 const newMemberCards = store.state.cards.filter(c => newCards.some(nc => nc.id === c.id));
                 this.activeDrag.cloned = true;
                 this.activeDrag.groupId = newGroupId;
-                this.activeDrag.initMinX = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.x)) : 0;
-                this.activeDrag.initMinY = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.y)) : 0;
+                this.activeDrag.initMinX = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.x)) : (newGroupObj?.x ?? 0);
+                this.activeDrag.initMinY = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.y)) : (newGroupObj?.y ?? 0);
+                this.activeDrag.initGroupX = newGroupObj?.x ?? this.activeDrag.initGroupX;
+                this.activeDrag.initGroupY = newGroupObj?.y ?? this.activeDrag.initGroupY;
                 this.activeDrag.initialPositions = new Map(newMemberCards.map(c => [c.id, { x: c.x, y: c.y }]));
                 this.render();
                 this.renderGroups();
@@ -2959,8 +3073,8 @@ class NodeManager {
 
           const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
           const leadCardId = this.activeDrag.initialPositions.keys().next().value;
-          const leadCard = store.state.cards.find(c => c.id === leadCardId);
-          const leadInitPos = this.activeDrag.initialPositions.get(leadCardId);
+          const leadCard = leadCardId ? store.state.cards.find(c => c.id === leadCardId) : null;
+          const leadInitPos = leadCardId ? this.activeDrag.initialPositions.get(leadCardId) : null;
 
           if (leadCard && leadInitPos) {
             let candX = leadInitPos.x + dx;
@@ -2990,6 +3104,10 @@ class NodeManager {
 
             dx = candX - leadInitPos.x;
             dy = candY - leadInitPos.y;
+          } else if (store.state.settings?.gridSnapMode) {
+            const GRID_SIZE = 24;
+            dx = Math.round((this.activeDrag.initGroupX + dx) / GRID_SIZE) * GRID_SIZE - this.activeDrag.initGroupX;
+            dy = Math.round((this.activeDrag.initGroupY + dy) / GRID_SIZE) * GRID_SIZE - this.activeDrag.initGroupY;
           }
 
           this.activeDrag.initialPositions.forEach((pos, cardId) => {
@@ -3005,6 +3123,10 @@ class NodeManager {
             }
           });
 
+          if (group) {
+            group.x = Math.round(this.activeDrag.initGroupX + dx);
+            group.y = Math.round(this.activeDrag.initGroupY + dy);
+          }
           this.updateGroupDOMBounds(this.activeDrag.groupId);
           wires.render();
         } else if (this.activeDrag.type === 'RESIZE_CARD') {
@@ -3057,13 +3179,6 @@ class NodeManager {
               const thumbCanvas = cardEl?.querySelector('.subcanvas-thumbnail-canvas');
               if (thumbCanvas) renderThumbnailCanvas(thumbCanvas, store.getThumbnailForSubcanvas(card), store.getPalette());
             }
-            if (store.state.groups) {
-              store.state.groups.forEach(g => {
-                if (g.cardIds.includes(card.id)) {
-                  this.updateGroupDOMBounds(g.id);
-                }
-              });
-            }
             wires.render();
           }
         } else if (this.activeDrag.type === 'RESIZE_SUBCANVAS_HEIGHT') {
@@ -3081,13 +3196,66 @@ class NodeManager {
               const thumbCanvas = cardEl.querySelector('.subcanvas-thumbnail-canvas');
               if (thumbCanvas) renderThumbnailCanvas(thumbCanvas, store.getThumbnailForSubcanvas(card), store.getPalette());
             }
-            if (store.state.groups) {
-              store.state.groups.forEach(g => {
-                if (g.cardIds.includes(card.id)) {
-                  this.updateGroupDOMBounds(g.id);
-                }
-              });
+            wires.render();
+          }
+        } else if (this.activeDrag.type === 'RESIZE_GROUP') {
+          const dx = (e.clientX - this.activeDrag.startX) / zoom;
+          const dy = (e.clientY - this.activeDrag.startY) / zoom;
+          const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
+          if (group) {
+            const MIN_W = 220;
+            const MIN_H = 100;
+            const dir = this.activeDrag.dir;
+            const { initX, initY, initWidth, initHeight } = this.activeDrag;
+            let x = initX;
+            let y = initY;
+            let w = initWidth;
+            let h = initHeight;
+            const gridSnap = !!store.state.settings?.gridSnapMode;
+            const GRID = 24;
+
+            if (dir.includes('e')) {
+              w = Math.max(MIN_W, Math.round(initWidth + dx));
+              if (gridSnap) w = Math.max(MIN_W, Math.round((initX + w) / GRID) * GRID - x);
             }
+            if (dir.includes('s')) {
+              h = Math.max(MIN_H, Math.round(initHeight + dy));
+              if (gridSnap) h = Math.max(MIN_H, Math.round((initY + h) / GRID) * GRID - y);
+            }
+            if (dir.includes('w')) {
+              const rightEdge = initX + initWidth;
+              let candW = Math.max(MIN_W, Math.round(initWidth - dx));
+              let candX = rightEdge - candW;
+              if (gridSnap) {
+                const snappedX = Math.round(candX / GRID) * GRID;
+                if (rightEdge - snappedX >= MIN_W) {
+                  candX = snappedX;
+                  candW = rightEdge - candX;
+                }
+              }
+              x = candX;
+              w = candW;
+            }
+            if (dir.includes('n')) {
+              const bottomEdge = initY + initHeight;
+              let candH = Math.max(MIN_H, Math.round(initHeight - dy));
+              let candY = bottomEdge - candH;
+              if (gridSnap) {
+                const snappedY = Math.round(candY / GRID) * GRID;
+                if (bottomEdge - snappedY >= MIN_H) {
+                  candY = snappedY;
+                  candH = bottomEdge - candY;
+                }
+              }
+              y = candY;
+              h = candH;
+            }
+
+            group.x = x;
+            group.y = y;
+            group.width = w;
+            group.height = h;
+            this.updateGroupDOMBounds(group.id);
             wires.render();
           }
         }
@@ -3122,32 +3290,33 @@ class NodeManager {
             document.getElementById(`card-dom-${id}`)?.classList.remove('active');
           });
 
-          if (this.activeDrag.hoverGroupId) {
-            this.selectedCardIds.forEach(id => {
-              store.addCardToGroup(this.activeDrag.hoverGroupId, id);
-            });
-            this.renderGroups();
-          } else {
-            if (store.state.groups && store.state.groups.length > 0) {
+          if (store.state.groups && store.state.groups.length > 0) {
+            let membershipChanged = false;
+            this.selectedCardIds.forEach(cardId => {
+              const card = store.state.cards.find(c => c.id === cardId);
+              if (!card) return;
+              const cardEl = document.getElementById(`card-dom-${card.id}`);
+              const cw = cardEl?.offsetWidth || card.width || 310;
+              const ch = cardEl?.offsetHeight || card.height || 140;
+              const cx = card.x + cw / 2;
+              const cy = card.y + ch / 2;
+
               store.state.groups.forEach(group => {
-                const remainingCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
-                if (remainingCards.length > 1) {
-                  const toRemove = [];
-                  group.cardIds.forEach(cardId => {
-                    if (this.selectedCardIds.has(cardId)) {
-                      const card = store.state.cards.find(c => c.id === cardId);
-                      if (card) {
-                        const others = remainingCards.filter(c => c.id !== cardId);
-                        const minDist = Math.min(...others.map(oc => Math.hypot(card.x - oc.x, card.y - oc.y)));
-                        if (minDist > 550) {
-                          toRemove.push(cardId);
-                        }
-                      }
-                    }
-                  });
-                  toRemove.forEach(id => store.removeCardFromGroup(group.id, id));
+                const bounds = this.calcGroupBounds(group);
+                if (!bounds) return;
+                const isInside = cx >= bounds.x && cx <= bounds.x + bounds.width &&
+                                 cy >= bounds.y && cy <= bounds.y + bounds.height;
+                const isMember = group.cardIds.includes(cardId);
+                if (isInside && !isMember) {
+                  group.cardIds.push(cardId);
+                  membershipChanged = true;
+                } else if (!isInside && isMember) {
+                  group.cardIds = group.cardIds.filter(id => id !== cardId);
+                  membershipChanged = true;
                 }
               });
+            });
+            if (membershipChanged) {
               this.renderGroups();
             }
           }
@@ -3158,6 +3327,10 @@ class NodeManager {
             this.updateSelectionVisuals();
             this.updateAlignmentBar();
           }
+          document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
+          this.updateGroupDOMBounds(this.activeDrag.groupId);
+        } else if (this.activeDrag.type === 'RESIZE_GROUP') {
+          document.querySelectorAll('.group-resize-handle.active').forEach(h => h.classList.remove('active'));
           document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
           this.updateGroupDOMBounds(this.activeDrag.groupId);
         } else if (this.activeDrag.type === 'RESIZE_CARD') {

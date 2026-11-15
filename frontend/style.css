@@ -436,12 +436,11 @@ html[data-canvas-texture="grid"] #viewport {
    ========================================================================== */
 .node-group {
   position: absolute;
-  pointer-events: auto;
+  pointer-events: none;
   border: 1px solid var(--group-border, var(--border-subtle));
   background: var(--group-bg, rgba(255, 255, 255, 0.02));
   border-radius: var(--r-lg);
   box-sizing: border-box;
-  cursor: grab;
   transition: border-color 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease;
   user-select: none;
 }
@@ -474,15 +473,16 @@ html[data-theme="light"] .node-group {
   top: 10px;
   left: 12px;
   height: 26px;
-  max-width: calc(100% - 28px);
+  max-width: calc(100% - 42px);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 9px;
+  gap: 3px;
+  padding: 0 9px 0 4px;
   border-radius: var(--r-sm);
   background: var(--group-label-bg, var(--bg-surface-2));
   border: 1px solid var(--border-hairline);
   cursor: grab;
+  pointer-events: auto;
   box-sizing: border-box;
   transition: background-color 0.14s ease, border-color 0.14s ease;
   z-index: 3;
@@ -526,17 +526,56 @@ html[data-theme="light"] .node-group {
   max-width: 220px;
 }
 
-/* Preserved Group Edge Connection Ports */
-.node-group .group-port-slot {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-}
-.node-group .group-port-slot-left { left: -11px; right: auto; }
-.node-group .group-port-slot-right { right: -11px; left: auto; }
-.node-group:hover .group-port-slot .header-pin:not(.pin-connected) {
-  opacity: 0.28;
+/* Group Header Connection Ports (Left dot = group-label-dot, Right dot = top-right of group) */
+.node-group .group-port-slot-left {
+  width: 16px;
+  height: 18px;
+  position: relative;
+  flex-shrink: 0;
   pointer-events: auto;
+}
+.node-group .group-port-slot-left .header-pin.group-label-dot {
+  opacity: 1;
+  pointer-events: auto;
+}
+.node-group .group-port-slot-left:hover .header-pin.group-label-dot,
+.node-group .group-port-slot-left .header-pin.group-label-dot.pin-ghost {
+  opacity: 1 !important;
+  transform: scale(1.22);
+}
+.node-group .group-port-slot-right {
+  position: absolute;
+  top: 13px;
+  right: 10px;
+  width: 20px;
+  height: 20px;
+  z-index: 4;
+  pointer-events: auto;
+}
+.node-group:hover .group-port-slot-right .header-pin:not(.pin-connected) {
+  opacity: 0.38;
+  pointer-events: auto;
+}
+
+/* Manual Group Resize Handles (Edges + Corners) */
+.group-resize-handle {
+  position: absolute;
+  pointer-events: auto;
+  z-index: 2;
+  transition: background-color 0.12s ease;
+}
+.group-resize-handle-n  { top: -4px; left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
+.group-resize-handle-s  { bottom: -4px; left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
+.group-resize-handle-w  { left: -4px; top: 10px; bottom: 10px; width: 8px; cursor: ew-resize; }
+.group-resize-handle-e  { right: -4px; top: 10px; bottom: 10px; width: 8px; cursor: ew-resize; }
+.group-resize-handle-nw { top: -5px; left: -5px; width: 12px; height: 12px; cursor: nwse-resize; z-index: 3; }
+.group-resize-handle-ne { top: -5px; right: -5px; width: 12px; height: 12px; cursor: nesw-resize; z-index: 3; }
+.group-resize-handle-sw { bottom: -5px; left: -5px; width: 12px; height: 12px; cursor: nesw-resize; z-index: 3; }
+.group-resize-handle-se { bottom: -5px; right: -5px; width: 12px; height: 12px; cursor: nwse-resize; z-index: 3; }
+.group-resize-handle:hover,
+.group-resize-handle.active {
+  background-color: var(--group-glow, var(--accent-soft));
+  border-radius: 4px;
 }
 
 /* ==========================================================================
@@ -911,23 +950,23 @@ html[data-theme="light"] .subcanvas-portal-caption {
 .subcanvas-portal-caption {
   height: 32px;
   flex-shrink: 0;
-  padding: 0 11px;
+  padding: 0 7px;
   border-top: 1px solid var(--border-hairline);
   background: var(--bg-surface-1);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .subcanvas-portal-icon {
-  color: var(--portal-accent, var(--text-secondary));
+  color: inherit;
   flex-shrink: 0;
+  display: block;
 }
 
 .subcanvas-portal-title {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: calc(100% - 46px);
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text-primary);
@@ -943,7 +982,7 @@ html[data-theme="light"] .subcanvas-portal-caption {
 .subcanvas-portal-title-input {
   flex: 0 1 auto;
   min-width: 80px;
-  max-width: calc(100% - 46px);
+  max-width: calc(100% - 60px);
   background: var(--bg-surface-2);
   border: 1px solid var(--portal-accent, var(--accent));
   border-radius: 4px;
@@ -955,8 +994,12 @@ html[data-theme="light"] .subcanvas-portal-caption {
   outline: none;
 }
 
+.subcanvas-portal-spacer {
+  flex: 1;
+  min-width: 4px;
+}
+
 .subcanvas-portal-count {
-  margin-left: auto;
   font-size: 11px;
   font-weight: 500;
   padding: 1px 6px;
@@ -967,14 +1010,29 @@ html[data-theme="light"] .subcanvas-portal-caption {
 }
 
 .subcanvas-portal .subcanvas-port-slot {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  position: relative;
+  flex-shrink: 0;
 }
-.subcanvas-portal .subcanvas-port-slot-left { left: -11px; right: auto; }
-.subcanvas-portal .subcanvas-port-slot-right { right: -11px; left: auto; }
-.subcanvas-portal:hover .subcanvas-port-slot .header-pin:not(.pin-connected) {
-  opacity: 0.35;
+.header-pin.subcanvas-portal-pin {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: transparent !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.subcanvas-port-slot-left:hover .header-pin.subcanvas-portal-pin,
+.header-pin.subcanvas-portal-pin.pin-ghost,
+.header-pin.subcanvas-portal-pin.pin-active {
+  transform: scale(1.16);
+}
+.subcanvas-portal:hover .subcanvas-port-slot-right .header-pin:not(.pin-connected) {
+  opacity: 0.4;
   pointer-events: auto;
 }
 
@@ -1046,6 +1104,7 @@ body.focus-mode .wire-group:not(.focus-wire) { opacity: 0.14; }
 
 body.is-wire-dragging,
 body.is-wire-dragging * { user-select: none !important; -webkit-user-select: none !important; }
+body.is-wire-dragging .wire-hit-zone { pointer-events: none !important; }
 body.is-wire-dragging .text-capsule,
 body.is-wire-dragging .note-header,
 body.is-wire-dragging .group-label,

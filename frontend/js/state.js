@@ -1428,8 +1428,11 @@ class StateManager {
       this.state.groups.forEach(g => {
         g.cardIds = g.cardIds.filter(id => !idSet.has(id));
       });
-      const emptyGroups = this.state.groups.filter(g => g.cardIds.length < 2);
-      emptyGroups.forEach(g => {
+      const legacyEmptyGroups = this.state.groups.filter(g => {
+        const hasBounds = typeof g.x === 'number' && typeof g.y === 'number' && typeof g.width === 'number' && typeof g.height === 'number';
+        return !hasBounds && g.cardIds.length < 2;
+      });
+      legacyEmptyGroups.forEach(g => {
         const leftPinId = `pin-group-left-${g.id}`;
         const rightPinId = `pin-group-right-${g.id}`;
         this.state.connections = this.state.connections.filter(c =>
@@ -1437,7 +1440,10 @@ class StateManager {
           c.fromPinId !== rightPinId && c.toPinId !== rightPinId
         );
       });
-      this.state.groups = this.state.groups.filter(g => g.cardIds.length >= 2);
+      this.state.groups = this.state.groups.filter(g => {
+        const hasBounds = typeof g.x === 'number' && typeof g.y === 'number' && typeof g.width === 'number' && typeof g.height === 'number';
+        return hasBounds || g.cardIds.length >= 2;
+      });
     }
     this.state.connections = this.state.connections.filter(c => {
       const c1 = this.findCardIdByPin(c.fromPinId);
@@ -1513,14 +1519,14 @@ class StateManager {
     }
   }
 
-  removeCardFromGroup(groupId, cardId) {
+  removeCardFromGroup(groupId, cardId, skipCommit = false) {
     const group = this.state.groups?.find(g => g.id === groupId);
     if (!group) return;
+    const prevLen = group.cardIds.length;
     group.cardIds = group.cardIds.filter(id => id !== cardId);
-    if (group.cardIds.length < 2) {
-      this.removeGroup(groupId);
-    } else {
-      this.commit();
+    if (group.cardIds.length !== prevLen) {
+      if (!skipCommit) this.commit();
+      else this.markDirty(this.activeCanvasId);
       this.notify({ type: 'GROUP_UPDATED', groupId });
     }
   }

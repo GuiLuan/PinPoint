@@ -84,6 +84,10 @@ class SQLiteDatabase:
                     title TEXT NOT NULL,
                     card_ids_json TEXT NOT NULL,
                     header_color TEXT NULL,
+                    x INTEGER NULL,
+                    y INTEGER NULL,
+                    width INTEGER NULL,
+                    height INTEGER NULL,
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (canvas_id, id)
                 );
@@ -119,6 +123,13 @@ class SQLiteDatabase:
                 CREATE INDEX IF NOT EXISTS idx_canvases_parent ON canvases(parent_canvas_id);
                 """
             )
+            cols = {
+                row["name"]
+                for row in self.conn.execute("PRAGMA table_info(groups)").fetchall()
+            }
+            for col_name in ("x", "y", "width", "height"):
+                if col_name not in cols:
+                    self.conn.execute(f"ALTER TABLE groups ADD COLUMN {col_name} INTEGER NULL")
 
     def close(self) -> None:
         try:
@@ -370,7 +381,7 @@ class SQLiteDatabase:
             cards.append(c)
 
         group_rows = self.conn.execute(
-            "SELECT id, title, card_ids_json, header_color FROM groups WHERE canvas_id = ? ORDER BY sort_order ASC",
+            "SELECT id, title, card_ids_json, header_color, x, y, width, height FROM groups WHERE canvas_id = ? ORDER BY sort_order ASC",
             (canvas_id,),
         ).fetchall()
         groups: list[dict[str, Any]] = []
@@ -382,6 +393,11 @@ class SQLiteDatabase:
             }
             if r["header_color"] is not None:
                 g["headerColor"] = r["header_color"]
+            if r["x"] is not None and r["y"] is not None and r["width"] is not None and r["height"] is not None:
+                g["x"] = int(r["x"])
+                g["y"] = int(r["y"])
+                g["width"] = int(r["width"])
+                g["height"] = int(r["height"])
             groups.append(g)
 
         conn_rows = self.conn.execute(
@@ -486,15 +502,23 @@ class SQLiteDatabase:
                 )
 
             for idx, g in enumerate(groups):
+                gx = int(round(float(g["x"]))) if g.get("x") is not None else None
+                gy = int(round(float(g["y"]))) if g.get("y") is not None else None
+                gw = int(round(float(g["width"]))) if g.get("width") is not None else None
+                gh = int(round(float(g["height"]))) if g.get("height") is not None else None
                 self.conn.execute(
-                    "INSERT INTO groups (id, canvas_id, title, card_ids_json, header_color, sort_order) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO groups (id, canvas_id, title, card_ids_json, header_color, x, y, width, height, sort_order) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(g["id"]),
                         canvas_id,
                         str(g.get("title") or "未命名组"),
                         json.dumps(list(g.get("cardIds") or []), ensure_ascii=False),
                         g.get("headerColor"),
+                        gx,
+                        gy,
+                        gw,
+                        gh,
                         idx,
                     ),
                 )
@@ -548,7 +572,7 @@ class SQLiteDatabase:
             (canvas_id,),
         ).fetchall()
         group_rows = self.conn.execute(
-            "SELECT id, card_ids_json, header_color FROM groups WHERE canvas_id = ? ORDER BY sort_order ASC",
+            "SELECT id, card_ids_json, header_color, x, y, width, height FROM groups WHERE canvas_id = ? ORDER BY sort_order ASC",
             (canvas_id,),
         ).fetchall()
         conn_rows = self.conn.execute(
@@ -586,21 +610,30 @@ class SQLiteDatabase:
         thumb_groups: list[dict[str, Any]] = []
         group_bounds_map: dict[str, dict[str, Any]] = {}
         for gr in group_rows:
-            cids = json.loads(gr["card_ids_json"])
-            members = [card_map[cid] for cid in cids if cid in card_map]
-            if not members:
-                continue
-            gx = min(m["x"] for m in members) - GRID_SIZE
-            gy = min(m["y"] for m in members) - GRID_SIZE
-            gx2 = max(m["x"] + m["width"] for m in members) + GRID_SIZE
-            gy2 = max(m["y"] + m["height"] for m in members) + GRID_SIZE
-            gb = {
-                "x": gx,
-                "y": gy,
-                "width": max(288, gx2 - gx),
-                "height": gy2 - gy,
-                "headerColor": gr["header_color"],
-            }
+            if gr["x"] is not None and gr["y"] is not None and gr["width"] is not None and gr["height"] is not None:
+                gb = {
+                    "x": int(gr["x"]),
+                    "y": int(gr["y"]),
+                    "width": int(gr["width"]),
+                    "height": int(gr["height"]),
+                    "headerColor": gr["header_color"],
+                }
+            else:
+                cids = json.loads(gr["card_ids_json"])
+                members = [card_map[cid] for cid in cids if cid in card_map]
+                if not members:
+                    continue
+                gx = min(m["x"] for m in members) - GRID_SIZE
+                gy = min(m["y"] for m in members) - GRID_SIZE
+                gx2 = max(m["x"] + m["width"] for m in members) + GRID_SIZE
+                gy2 = max(m["y"] + m["height"] for m in members) + GRID_SIZE
+                gb = {
+                    "x": gx,
+                    "y": gy,
+                    "width": max(288, gx2 - gx),
+                    "height": gy2 - gy,
+                    "headerColor": gr["header_color"],
+                }
             group_bounds_map[gr["id"]] = gb
             thumb_groups.append(gb)
 

@@ -653,7 +653,19 @@ class LibraryManager {
 
       if (b.newGroups.length > 0) {
         if (!store.state.groups) store.state.groups = [];
-        b.newGroups.forEach(g => store.state.groups.push(g));
+        b.newGroups.forEach(g => {
+          if (typeof g.x === 'number' && typeof g.y === 'number') {
+            let gx = Math.round(g.x + dx);
+            let gy = Math.round(g.y + dy);
+            if (gridSnap) {
+              gx = Math.round(gx / 24) * 24;
+              gy = Math.round(gy / 24) * 24;
+            }
+            g.x = gx;
+            g.y = gy;
+          }
+          store.state.groups.push(g);
+        });
       }
 
       b.newConnections.forEach(conn => {

@@ -574,13 +574,13 @@ class GraphStore:
                 c["thumbnail"] = self.db.compute_canvas_thumbnail(c["subcanvasId"])
         return out
 
-    def _calc_group_bounds(self, group: dict[str, Any]) -> dict[str, float] | None:
+    def _fit_group_bounds(self, group: dict[str, Any]) -> dict[str, float] | None:
         card_ids = set(group.get("cardIds") or [])
         members = [c for c in self.state["cards"] if c["id"] in card_ids]
         if not members:
             return None
         pad_x = 24
-        pad_top = 24
+        pad_top = 48
         pad_bottom = 24
         min_width = 288
         min_x = min(c["x"] for c in members)
@@ -604,6 +604,21 @@ class GraphStore:
             "width": max(min_width, (max_x - min_x) + pad_x * 2),
             "height": (max_y - min_y) + pad_top + pad_bottom,
         }
+
+    def _calc_group_bounds(self, group: dict[str, Any]) -> dict[str, float] | None:
+        if (
+            group.get("x") is not None
+            and group.get("y") is not None
+            and group.get("width") is not None
+            and group.get("height") is not None
+        ):
+            return {
+                "x": float(group["x"]),
+                "y": float(group["y"]),
+                "width": float(group["width"]),
+                "height": float(group["height"]),
+            }
+        return self._fit_group_bounds(group)
 
     # ------------------------------------------------------------------
     # Canvases / Subcanvases / Graph / Workspace
@@ -1314,15 +1329,24 @@ class GraphStore:
         if groups:
             for g in groups:
                 g["cardIds"] = [cid for cid in g.get("cardIds", []) if cid not in id_set]
-            dissolved = [g for g in groups if len(g["cardIds"]) < 2]
-            for g in dissolved:
-                lp = f"pin-group-left-{g['id']}"
-                rp = f"pin-group-right-{g['id']}"
-                self.state["connections"] = [
-                    c for c in self.state["connections"]
-                    if c["fromPinId"] not in (lp, rp) and c["toPinId"] not in (lp, rp)
-                ]
-            self.state["groups"] = [g for g in groups if len(g["cardIds"]) >= 2]
+            keep_groups = []
+            for g in groups:
+                has_explicit = (
+                    g.get("x") is not None
+                    and g.get("y") is not None
+                    and g.get("width") is not None
+                    and g.get("height") is not None
+                )
+                if len(g["cardIds"]) >= 2 or has_explicit:
+                    keep_groups.append(g)
+                else:
+                    lp = f"pin-group-left-{g['id']}"
+                    rp = f"pin-group-right-{g['id']}"
+                    self.state["connections"] = [
+                        c for c in self.state["connections"]
+                        if c["fromPinId"] not in (lp, rp) and c["toPinId"] not in (lp, rp)
+                    ]
+            self.state["groups"] = keep_groups
 
         return removed
 
@@ -1740,6 +1764,15 @@ class GraphStore:
                 "cardIds": unique_ids,
                 "headerColor": payload.get("headerColor", "#0a84ff"),
             }
+            init_bounds = self._fit_group_bounds(group)
+            if init_bounds:
+                group["x"] = int(round(init_bounds["x"]))
+                group["y"] = int(round(init_bounds["y"]))
+                group["width"] = int(round(init_bounds["width"]))
+                group["height"] = int(round(init_bounds["height"]))
+            for key in ("x", "y", "width", "height"):
+                if payload.get(key) is not None:
+                    group[key] = int(round(float(payload[key])))
             groups.append(group)
             self._commit("GROUP_ADDED", {"groupId": group["id"]})
             item = copy.deepcopy(group)
@@ -1780,6 +1813,14 @@ class GraphStore:
                     if card["id"] in member_ids:
                         card["x"] = int(round(card["x"] + dx_val))
                         card["y"] = int(round(card["y"] + dy_val))
+                if group.get("x") is not None:
+                    group["x"] = int(round(float(group["x"]) + dx_val))
+                if group.get("y") is not None:
+                    group["y"] = int(round(float(group["y"]) + dy_val))
+
+            for key in ("x", "y", "width", "height"):
+                if payload.get(key) is not None:
+                    group[key] = int(round(float(payload[key])))
 
             self._commit("GROUP_UPDATED", {"groupId": group_id})
             item = copy.deepcopy(group)
@@ -2431,7 +2472,13 @@ class GraphStore:
                 continue
             member_ids = [str(mid) for mid in (rg.get("cardIds") or []) if str(mid) in card_id_set]
             member_ids = list(dict.fromkeys(member_ids))
-            if len(member_ids) < 2:
+            has_explicit_bounds = (
+                rg.get("x") is not None
+                and rg.get("y") is not None
+                and rg.get("width") is not None
+                and rg.get("height") is not None
+            )
+            if len(member_ids) < 2 and not has_explicit_bounds:
                 continue
             gid = str(rg.get("id") or f"lib-group-{idx + 1}")
             if gid in seen_group_ids:
@@ -2444,6 +2491,11 @@ class GraphStore:
             }
             if "headerColor" in rg:
                 group_obj["headerColor"] = rg["headerColor"]
+            if has_explicit_bounds:
+                group_obj["x"] = int(round(float(rg["x"])))
+                group_obj["y"] = int(round(float(rg["y"])))
+                group_obj["width"] = int(round(float(rg["width"])))
+                group_obj["height"] = int(round(float(rg["height"])))
             groups.append(group_obj)
 
         connections: list[dict[str, Any]] = []
