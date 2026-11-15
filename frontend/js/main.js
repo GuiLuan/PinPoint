@@ -1,6 +1,6 @@
 import { store } from './state.js';
 import { canvas } from './canvas.js';
-import { nodes } from './nodes.js';
+import { nodes, hexToRgba } from './nodes.js';
 import { wires } from './wires.js';
 import { settings } from './settings.js';
 import { minimap } from './minimap.js';
@@ -78,6 +78,81 @@ async function initApp() {
     sync.notifySelectionChanged();
     library.updateSelectionState();
   };
+
+  function applyAppearanceSettings() {
+    const ap = store.getAppearanceSettings();
+    const html = document.documentElement;
+    const prevTheme = html.getAttribute('data-theme');
+    html.setAttribute('data-theme', ap.theme || 'dark');
+    html.setAttribute('data-canvas-texture', ap.canvasTexture || 'dots');
+
+    const accent = ap.accentColor || '#4c8dff';
+    html.style.setProperty('--accent', accent);
+    html.style.setProperty('--accent-soft', hexToRgba(accent, 0.14));
+    html.style.setProperty('--accent-border', hexToRgba(accent, 0.5));
+    html.style.setProperty('--accent-text', accent);
+
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) {
+      metaTheme.setAttribute('content', ap.theme === 'light' ? '#f6f5f2' : '#17181a');
+    }
+
+    canvas.applyTransform();
+    if (prevTheme !== ap.theme) {
+      nodes.render();
+      wires.render();
+      minimap.requestRender();
+    }
+  }
+
+  function syncEdgeDrawerOffsets() {
+    const canvasesOpen = isCanvasesDrawerOpen();
+    const libOpen = library.isOpen();
+    const libPos = store.getLibrarySettings()?.position === 'right' ? 'right' : 'left';
+    const leftOpen = canvasesOpen || (libOpen && libPos === 'left');
+    const rightOpen = libOpen && libPos === 'right';
+    document.body.classList.toggle('drawer-left-open', leftOpen);
+    document.body.classList.toggle('drawer-right-open', rightOpen);
+
+    let leftW = 0;
+    if (canvasesOpen && libPos === 'left' && canvasesDrawerEl) {
+      leftW = canvasesDrawerEl.offsetWidth || store.getLibrarySettings()?.width || 348;
+    } else if (libOpen && libPos === 'left' && libraryDrawerEl) {
+      leftW = libraryDrawerEl.offsetWidth || store.getLibrarySettings()?.width || 348;
+    }
+    let rightW = 0;
+    if (canvasesOpen && libPos === 'right' && canvasesDrawerEl) {
+      rightW = canvasesDrawerEl.offsetWidth || store.getLibrarySettings()?.width || 348;
+    } else if (rightOpen && libraryDrawerEl) {
+      rightW = libraryDrawerEl.offsetWidth || store.getLibrarySettings()?.width || 348;
+    }
+    document.documentElement.style.setProperty('--open-left-drawer-width', `${leftW}px`);
+    document.documentElement.style.setProperty('--open-right-drawer-width', `${rightW}px`);
+  }
+  window.__syncDrawerLayout = syncEdgeDrawerOffsets;
+
+  const btnHudMoreEl = document.getElementById('btn-hud-more');
+  const hudMoreMenuEl = document.getElementById('hud-more-menu');
+  function closeHudMoreMenu() {
+    if (hudMoreMenuEl) hudMoreMenuEl.classList.remove('is-open');
+    btnHudMoreEl?.setAttribute('aria-expanded', 'false');
+  }
+  btnHudMoreEl?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!hudMoreMenuEl) return;
+    const open = hudMoreMenuEl.classList.toggle('is-open');
+    btnHudMoreEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  hudMoreMenuEl?.addEventListener('mousedown', (e) => e.stopPropagation());
+  hudMoreMenuEl?.addEventListener('click', () => closeHudMoreMenu());
+  document.addEventListener('mousedown', (e) => {
+    if (hudMoreMenuEl && !hudMoreMenuEl.contains(e.target) && e.target !== btnHudMoreEl) {
+      closeHudMoreMenu();
+    }
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeHudMoreMenu();
+  });
 
   function updateStatus(text) {
     if (fileStatusEl) fileStatusEl.textContent = text || '';
@@ -179,16 +254,26 @@ async function initApp() {
     return !!canvasesDrawerEl?.classList.contains('is-open');
   }
 
+  function applySharedSidePanelSettings() {
+    if (!canvasesDrawerEl) return;
+    const lib = store.getLibrarySettings();
+    const libPos = lib?.position === 'right' ? 'right' : 'left';
+    canvasesDrawerEl.classList.remove('pos-left', 'pos-right');
+    canvasesDrawerEl.classList.add(`pos-${libPos}`);
+    if (!canvasesDrawerEl.classList.contains('is-resizing')) {
+      canvasesDrawerEl.style.width = `${library.clampWidth(lib?.width)}px`;
+    }
+  }
+
   async function openCanvasesDrawer() {
     if (!canvasesDrawerEl) return;
     if (library.isOpen()) {
       library.close();
     }
-    const libPos = store.getLibrarySettings()?.position === 'right' ? 'right' : 'left';
-    canvasesDrawerEl.classList.remove('pos-left', 'pos-right');
-    canvasesDrawerEl.classList.add(`pos-${libPos}`);
+    applySharedSidePanelSettings();
     canvasesDrawerEl.classList.add('is-open');
     btnCanvasesEl?.classList.add('is-active');
+    syncEdgeDrawerOffsets();
     renderCanvasTreeDrawer();
     await store.refreshCanvasTree();
     renderCanvasTreeDrawer();
@@ -198,7 +283,12 @@ async function initApp() {
     if (!canvasesDrawerEl) return;
     canvasesDrawerEl.classList.remove('is-open');
     btnCanvasesEl?.classList.remove('is-active');
+    if (document.activeElement === btnCanvasesEl) {
+      btnCanvasesEl.blur();
+    }
+    syncEdgeDrawerOffsets();
   }
+  window.__closeCanvasesDrawer = closeCanvasesDrawer;
 
   function toggleCanvasesDrawer() {
     if (isCanvasesDrawerOpen()) {
@@ -409,6 +499,7 @@ async function initApp() {
 
   window.__updateSaveUI = ({ connected, dirty, saving, label }) => {
     const btnSave = document.getElementById('btn-save');
+    const labelEl = document.getElementById('save-status-label');
     if (btnSave) {
       btnSave.classList.toggle('is-offline', !connected);
       btnSave.classList.toggle('has-unsaved', !!connected && !!dirty);
@@ -417,7 +508,19 @@ async function initApp() {
         btnSave.setAttribute('data-tooltip', label);
       }
     }
+    if (labelEl) {
+      if (!connected) labelEl.textContent = '离线';
+      else if (saving) labelEl.textContent = '保存中';
+      else if (dirty) labelEl.textContent = '未保存';
+      else labelEl.textContent = '已保存';
+    }
   };
+
+  document.querySelectorAll('.hud-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      if (e.detail > 0) btn.blur();
+    });
+  });
 
   btnCanvasesEl?.addEventListener('click', () => {
     toggleCanvasesDrawer();
@@ -433,6 +536,53 @@ async function initApp() {
     canvasesSearchQuery = e.target.value || '';
     renderCanvasTreeDrawer();
   });
+
+  const canvasesResizeHandleEl = document.getElementById('canvases-resize-handle');
+  if (canvasesResizeHandleEl && canvasesDrawerEl) {
+    canvasesResizeHandleEl.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startWidth = canvasesDrawerEl.getBoundingClientRect().width;
+      const isRight = canvasesDrawerEl.classList.contains('pos-right');
+
+      canvasesDrawerEl.classList.add('is-resizing');
+      document.body.style.cursor = 'ew-resize';
+
+      const onMouseMove = (ev) => {
+        const delta = isRight ? (startX - ev.clientX) : (ev.clientX - startX);
+        const nextWidth = library.clampWidth(startWidth + delta);
+        canvasesDrawerEl.style.width = `${nextWidth}px`;
+        syncEdgeDrawerOffsets();
+      };
+
+      const onMouseUp = () => {
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+        canvasesDrawerEl.classList.remove('is-resizing');
+        document.body.style.cursor = '';
+
+        const finalWidth = library.clampWidth(canvasesDrawerEl.getBoundingClientRect().width);
+        canvasesDrawerEl.style.width = `${finalWidth}px`;
+        store.setLibrarySettings({ width: finalWidth });
+        syncEdgeDrawerOffsets();
+      };
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    });
+
+    canvasesResizeHandleEl.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const resetWidth = library.clampWidth(348);
+      canvasesDrawerEl.style.width = `${resetWidth}px`;
+      store.setLibrarySettings({ width: resetWidth });
+      syncEdgeDrawerOffsets();
+    });
+  }
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && isCanvasesDrawerOpen()) {
@@ -626,6 +776,7 @@ async function initApp() {
       renderCanvasNavigation();
     } else if (event.type === 'STATE_RESTORED') {
       nodes.filterSelectionAfterRestore();
+      applyAppearanceSettings();
       canvas.applyTransform();
       nodes.render();
       wires.render();
@@ -633,29 +784,31 @@ async function initApp() {
       applyToastSettings();
       if (store.isFocusMode) nodes.updateFocusModeUI();
     } else if (event.type === 'SETTINGS_CHANGED') {
+      applyAppearanceSettings();
       settings.syncUI();
       nodes.renderPopoverPalette();
       nodes.updateContextMenuToggles();
       minimap.applySettings();
       library.applySettings();
       applyToastSettings();
-      if (canvasesDrawerEl) {
-        const libPos = store.getLibrarySettings()?.position === 'right' ? 'right' : 'left';
-        canvasesDrawerEl.classList.remove('pos-left', 'pos-right');
-        canvasesDrawerEl.classList.add(`pos-${libPos}`);
-      }
+      applySharedSidePanelSettings();
+      syncEdgeDrawerOffsets();
     } else if (event.type === 'REMOTE_SYNCED') {
       if (event.sourceEvent === 'VIEWPORT_CHANGED') {
         canvas.applyTransform();
       } else if (event.sourceEvent === 'SETTINGS_CHANGED') {
+        applyAppearanceSettings();
         settings.syncUI();
         nodes.renderPopoverPalette();
         nodes.updateContextMenuToggles();
         minimap.applySettings();
         library.applySettings();
         applyToastSettings();
+        applySharedSidePanelSettings();
+        syncEdgeDrawerOffsets();
       } else {
         nodes.filterSelectionAfterRestore();
+        applyAppearanceSettings();
         canvas.applyTransform();
         nodes.render();
         wires.render();
@@ -667,7 +820,9 @@ async function initApp() {
         minimap.requestRender();
         library.applySettings();
         applyToastSettings();
+        applySharedSidePanelSettings();
         renderCanvasNavigation();
+        syncEdgeDrawerOffsets();
       }
     } else if (event.type === 'CONNECTION_ADDED' || event.type === 'CONNECTION_REMOVED' || event.type === 'CONNECTION_RECONNECTED' || event.type?.startsWith('GROUP_') || event.type?.startsWith('CARD_')) {
       nodes.render();
@@ -678,12 +833,15 @@ async function initApp() {
   });
 
   // Initial render
+  applyAppearanceSettings();
+  applySharedSidePanelSettings();
   canvas.applyTransform();
   nodes.render();
   wires.render();
   updateUndoRedoButtons();
   applyToastSettings();
   renderCanvasNavigation();
+  syncEdgeDrawerOffsets();
   sync.init();
 
   document.fonts?.ready?.then(() => {

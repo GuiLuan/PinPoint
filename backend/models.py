@@ -19,11 +19,18 @@ MAX_ZOOM = 2.5
 MAX_HISTORY_STACK = 60
 
 DEFAULT_COLOR_NEUTRAL = "#98989d"
-DEFAULT_PALETTE = ["#30d158", "#0a84ff", "#bf5af2", "#ffd60a", "#ff9f0a"]
+DEFAULT_PALETTE = ["#5ca479", "#5c91cf", "#967bc2", "#c7a24f", "#c77b5c"]
 PRESET_POOL = [
-    "#30d158", "#0a84ff", "#bf5af2", "#ffd60a", "#ff9f0a",
-    "#ff453a", "#64d2ff", "#ac8e68", "#ff375f", "#5e5ce6",
+    "#5ca479", "#5c91cf", "#967bc2", "#c7a24f", "#c77b5c",
+    "#c96b6b", "#5fa8b8", "#9c8d77", "#b87495", "#767ac7",
 ]
+VALID_THEMES = {"dark", "light"}
+VALID_CANVAS_TEXTURES = {"solid", "dots", "grid"}
+DEFAULT_APPEARANCE_SETTINGS = {
+    "theme": "dark",
+    "accentColor": "#4c8dff",
+    "canvasTexture": "dots",
+}
 VALID_MINIMAP_POSITIONS = {"top-left", "top-right", "bottom-left", "bottom-right"}
 VALID_LIBRARY_POSITIONS = {"left", "right"}
 VALID_LIBRARY_LAYOUTS = {"grid", "list"}
@@ -52,6 +59,7 @@ DEFAULT_STATE: dict[str, Any] = {
         "alignMode": False,
         "gridSnapMode": False,
         "palette": list(DEFAULT_PALETTE),
+        "appearance": dict(DEFAULT_APPEARANCE_SETTINGS),
         "minimap": {
             "enabled": True,
             "position": "bottom-right",

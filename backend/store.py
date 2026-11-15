@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 from .db import SQLiteDatabase
 from .models import (
+    DEFAULT_APPEARANCE_SETTINGS,
     DEFAULT_CARD_HEIGHT,
     DEFAULT_CARD_WIDTH,
     DEFAULT_COLOR_NEUTRAL,
@@ -33,10 +34,12 @@ from .models import (
     ROOT_CANVAS_ID,
     ROOT_CANVAS_TITLE,
     VALID_ALIGN_TYPES,
+    VALID_CANVAS_TEXTURES,
     VALID_LIBRARY_LAYOUTS,
     VALID_LIBRARY_POSITIONS,
     VALID_MINIMAP_POSITIONS,
     VALID_SAVE_MODES,
+    VALID_THEMES,
     VALID_TOAST_POSITIONS,
     ApiError,
     build_capsule_html,
@@ -304,10 +307,28 @@ class GraphStore:
             toast_dur = DEFAULT_TOAST_SETTINGS["durationSec"]
         toast_dur = int(max(2, min(30, toast_dur)))
 
+        app_raw = s.get("appearance") if isinstance(s.get("appearance"), dict) else {}
+        theme = app_raw.get("theme", DEFAULT_APPEARANCE_SETTINGS["theme"])
+        if theme not in VALID_THEMES:
+            theme = DEFAULT_APPEARANCE_SETTINGS["theme"]
+        accent = app_raw.get("accentColor", DEFAULT_APPEARANCE_SETTINGS["accentColor"])
+        if not isinstance(accent, str) or not re.match(r"^#[0-9a-fA-F]{6}$", accent.strip()):
+            accent = DEFAULT_APPEARANCE_SETTINGS["accentColor"]
+        else:
+            accent = accent.strip().lower()
+        canvas_tex = app_raw.get("canvasTexture", DEFAULT_APPEARANCE_SETTINGS["canvasTexture"])
+        if canvas_tex not in VALID_CANVAS_TEXTURES:
+            canvas_tex = DEFAULT_APPEARANCE_SETTINGS["canvasTexture"]
+
         return {
             "alignMode": bool(s.get("alignMode", False)),
             "gridSnapMode": bool(s.get("gridSnapMode", False)),
             "palette": list(palette),
+            "appearance": {
+                "theme": theme,
+                "accentColor": accent,
+                "canvasTexture": canvas_tex,
+            },
             "minimap": {
                 "enabled": bool(mm_raw.get("enabled", True)),
                 "position": pos,
@@ -2163,6 +2184,26 @@ class GraphStore:
                     if not isinstance(td, (int, float)) or isinstance(td, bool):
                         raise ApiError(400, "INVALID_TOAST_DURATION", "Toast durationSec must be a number.")
                     ts["durationSec"] = int(max(2, min(30, td)))
+            if "appearance" in patch:
+                app_patch = patch["appearance"]
+                if not isinstance(app_patch, dict):
+                    raise ApiError(400, "INVALID_APPEARANCE_SETTINGS", "'appearance' must be an object.")
+                ap = settings.setdefault("appearance", dict(DEFAULT_APPEARANCE_SETTINGS))
+                if "theme" in app_patch:
+                    th = app_patch["theme"]
+                    if th not in VALID_THEMES:
+                        raise ApiError(400, "INVALID_THEME", f"Theme must be one of {sorted(VALID_THEMES)}.")
+                    ap["theme"] = th
+                if "accentColor" in app_patch:
+                    ac = app_patch["accentColor"]
+                    if not isinstance(ac, str) or not re.match(r"^#[0-9a-fA-F]{6}$", ac.strip()):
+                        raise ApiError(400, "INVALID_ACCENT_COLOR", "accentColor must be a #RRGGBB hex string.")
+                    ap["accentColor"] = ac.strip().lower()
+                if "canvasTexture" in app_patch:
+                    ct = app_patch["canvasTexture"]
+                    if ct not in VALID_CANVAS_TEXTURES:
+                        raise ApiError(400, "INVALID_CANVAS_TEXTURE", f"canvasTexture must be one of {sorted(VALID_CANVAS_TEXTURES)}.")
+                    ap["canvasTexture"] = ct
 
             for st in self._canvases.values():
                 st["settings"] = self.settings

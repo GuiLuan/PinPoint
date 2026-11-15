@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#121214">
+  <meta name="theme-color" content="#17181a">
   <title>PinPoint</title>
   <link rel="icon" href="favicon.ico" sizes="48x48">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png">
@@ -15,69 +15,105 @@
 </head>
 <body>
 
-  <!-- Apple HIG 极简浮动工具栏 -->
-  <header class="hud-bar">
-    <div class="hud-actions">
-      <button class="hud-btn hud-normal-only" id="btn-canvases" data-tooltip="画布">
-        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"></rect><rect x="7.5" y="7.5" width="4" height="4" rx="1"></rect><rect x="12.5" y="12.5" width="4" height="4" rx="1"></rect></svg>
-      </button>
-      <div class="hud-divider hud-normal-only"></div>
-      <button class="hud-btn" id="btn-add-node" data-tooltip="新建节点">
-        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-      </button>
-      <button class="hud-btn hud-normal-only" id="btn-add-subcanvas" data-tooltip="新建子画布">
-        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
-      </button>
-      <button class="hud-btn" id="btn-undo" data-tooltip="撤销 (Ctrl+Z)">
-        <svg viewBox="0 0 24 24"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
-      </button>
-      <button class="hud-btn" id="btn-redo" data-tooltip="重做 (Ctrl+Y)">
-        <svg viewBox="0 0 24 24"><path d="M21 7v6h-6"></path><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"></path></svg>
-      </button>
-      <button class="hud-btn hud-focus-entry-btn" id="btn-focus-mode" data-tooltip="专注模式 (F)">
-        <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
-      </button>
-      <button class="hud-btn" id="btn-library" data-tooltip="库 (L)">
-        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
-      </button>
-      <div class="hud-divider hud-normal-only"></div>
-      <button class="hud-btn hud-normal-only" id="btn-open" data-tooltip="导入 .pinpoint">
-        <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-      </button>
-      <button class="hud-btn hud-normal-only" id="btn-export" data-tooltip="导出画布 (.pinpoint)">
-        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-      </button>
-      <button class="hud-btn" id="btn-save" data-tooltip="保存 (Ctrl+S)">
-        <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-      </button>
-      <button class="hud-btn hud-normal-only" id="btn-reset" data-tooltip="重置画布">
-        <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
-      </button>
-      <div class="hud-divider"></div>
-      <button class="hud-btn" id="btn-settings" data-tooltip="偏好设置 (Ctrl+,)">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-      </button>
-    </div>
-    <div class="hud-focus-session" id="focus-session-controls">
-      <div class="hud-divider"></div>
-      <button class="hud-btn hud-focus-confirm-btn" id="btn-focus-confirm" data-tooltip="确认并退出专注模式">
-        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
-      </button>
-      <button class="hud-btn hud-focus-cancel-btn" id="btn-focus-cancel" data-tooltip="取消修改并退出">
-        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-      </button>
-    </div>
-  </header>
+  <!-- 顶部 HUD 整体容器（非重叠 Flex 分散布局） -->
+  <div class="hud-dock" id="hud-dock">
+    <!-- 左上角：画布抽屉入口（带简洁文字）+ 子画布面包屑 -->
+    <div class="hud-corner-left" id="hud-corner-left">
+      <div class="hud-bar hud-pill-group hud-normal-only">
+        <button class="hud-btn hud-btn-labeled" id="btn-canvases" data-tooltip="全部画布">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"></rect><rect x="7.5" y="7.5" width="4" height="4" rx="1"></rect><rect x="12.5" y="12.5" width="4" height="4" rx="1"></rect></svg>
+          <span class="hud-btn-label">画布</span>
+        </button>
+      </div>
 
-  <!-- 子画布面包屑导航条 -->
-  <nav id="canvas-breadcrumb-bar" class="canvas-breadcrumb-bar" style="display: none;" aria-label="画布导航">
-    <button type="button" class="breadcrumb-back-btn" id="btn-canvas-back" title="返回上一级">
-      <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.2" fill="none">
-        <polyline points="15 18 9 12 15 6"></polyline>
-      </svg>
-    </button>
-    <div class="breadcrumb-trail" id="canvas-breadcrumb-trail"></div>
-  </nav>
+      <nav id="canvas-breadcrumb-bar" class="canvas-breadcrumb-bar" style="display: none;" aria-label="画布导航">
+        <button type="button" class="breadcrumb-back-btn" id="btn-canvas-back" title="返回上一级">
+          <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.2" fill="none">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <div class="breadcrumb-trail" id="canvas-breadcrumb-trail"></div>
+      </nav>
+    </div>
+
+    <!-- 正上方：克制高频工具栏 + 更多(•••)收纳菜单 -->
+    <header class="hud-bar hud-center-bar">
+      <div class="hud-actions">
+        <button class="hud-btn hud-btn-labeled" id="btn-add-node" data-tooltip="新建节点 (双击画布)">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <span class="hud-btn-label">节点</span>
+        </button>
+        <button class="hud-btn hud-normal-only" id="btn-add-subcanvas" data-tooltip="新建子画布">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
+        </button>
+        <div class="hud-divider"></div>
+        <button class="hud-btn" id="btn-undo" data-tooltip="撤销 (Ctrl+Z)">
+          <svg viewBox="0 0 24 24"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
+        </button>
+        <button class="hud-btn" id="btn-redo" data-tooltip="重做 (Ctrl+Y)">
+          <svg viewBox="0 0 24 24"><path d="M21 7v6h-6"></path><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"></path></svg>
+        </button>
+        <div class="hud-divider"></div>
+        <button class="hud-btn hud-focus-entry-btn" id="btn-focus-mode" data-tooltip="专注模式 (F)">
+          <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+        </button>
+        <button class="hud-btn hud-btn-labeled" id="btn-library" data-tooltip="节点库 (L)">
+          <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+          <span class="hud-btn-label">库</span>
+        </button>
+        <div class="hud-divider hud-normal-only"></div>
+        <div class="hud-more-wrap hud-normal-only">
+          <button class="hud-btn" id="btn-hud-more" data-tooltip="更多操作" aria-haspopup="true" aria-expanded="false">
+            <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"></circle></svg>
+          </button>
+          <div class="hud-more-menu" id="hud-more-menu" role="menu">
+            <button type="button" class="context-menu-item" id="btn-open" role="menuitem">
+              <div class="context-menu-label">
+                <svg class="context-menu-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                <span>导入 .pinpoint</span>
+              </div>
+            </button>
+            <button type="button" class="context-menu-item" id="btn-export" role="menuitem">
+              <div class="context-menu-label">
+                <svg class="context-menu-icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                <span>导出画布 (.pinpoint)</span>
+              </div>
+            </button>
+            <div class="context-menu-divider"></div>
+            <button type="button" class="context-menu-item context-menu-item-danger" id="btn-reset" role="menuitem">
+              <div class="context-menu-label">
+                <svg class="context-menu-icon" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+                <span>重置画布</span>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="hud-focus-session" id="focus-session-controls">
+        <div class="hud-divider"></div>
+        <button class="hud-btn hud-focus-confirm-btn" id="btn-focus-confirm" data-tooltip="确认并退出专注模式">
+          <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </button>
+        <button class="hud-btn hud-focus-cancel-btn" id="btn-focus-cancel" data-tooltip="取消修改并退出">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 右上角：保存状态与偏好设置 -->
+    <div class="hud-corner-right" id="hud-corner-right">
+      <div class="hud-bar hud-pill-group">
+        <button class="hud-btn hud-save-pill" id="btn-save" data-tooltip="保存 (Ctrl+S)">
+          <span class="save-status-dot" aria-hidden="true"></span>
+          <span class="hud-btn-label" id="save-status-label">已保存</span>
+        </button>
+        <div class="hud-divider"></div>
+        <button class="hud-btn" id="btn-settings" data-tooltip="偏好设置 (Ctrl+,)">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- 画布层级抽屉面板（风格与库抽屉保持一致） -->
   <aside id="canvases-drawer" class="library-drawer canvases-drawer pos-left" aria-label="画布">
@@ -104,6 +140,7 @@
       </div>
     </div>
     <div class="canvases-tree-list" id="canvas-tree-list"></div>
+    <div class="library-resize-handle" id="canvases-resize-handle" title="拖拽调整宽度（双击恢复默认）" aria-label="调整画布面板宽度"></div>
   </aside>
 
   <!-- 多选卡片对齐工具栏 -->
@@ -161,27 +198,19 @@
   <!-- 鼠标直接拉选框 -->
   <div id="marquee-box"></div>
 
-  <!-- 划选/改色浮动工具栏（无颜色 + 常用色 + 1调色盘 + 确认应用按钮） -->
+  <!-- 划选/改色浮动工具栏（左侧预设一点即用 + 右侧素雅调色盘展开确认） -->
   <div id="selection-popover">
-    <div class="popover-colors-row">
-      <button class="popover-color-btn popover-none-btn" data-color="none" title="无颜色 / 默认">
-        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.6" fill="none"></circle><line x1="4.5" y1="4.5" x2="15.5" y2="15.5" stroke="currentColor" stroke-width="1.6"></line></svg>
-      </button>
-      <div class="popover-divider"></div>
-      <button class="popover-color-btn" data-color="#30d158" style="--btn-color: #30d158;" title="绿色"></button>
-      <button class="popover-color-btn" data-color="#0a84ff" style="--btn-color: #0a84ff;" title="蓝色"></button>
-      <button class="popover-color-btn" data-color="#bf5af2" style="--btn-color: #bf5af2;" title="紫色"></button>
-      <button class="popover-color-btn" data-color="#ffd60a" style="--btn-color: #ffd60a;" title="黄色"></button>
-      <button class="popover-color-btn" data-color="#ff9f0a" style="--btn-color: #ff9f0a;" title="橙色"></button>
-      <div class="popover-divider"></div>
-      <label class="popover-palette-btn" title="自定义调色盘">
-        <input type="color" class="popover-color-picker" value="#30d158" />
+    <div class="popover-colors-row"></div>
+    <div class="popover-custom-drawer" id="popover-custom-drawer">
+      <label class="popover-custom-swatch-wrap" title="选择自定义颜色">
+        <input type="color" class="popover-color-picker" id="popover-color-picker" value="#5ca479" />
+        <span class="popover-custom-swatch" id="popover-custom-swatch"></span>
       </label>
+      <span class="popover-custom-hex" id="popover-custom-hex">#5CA479</span>
+      <button type="button" class="popover-apply-btn" id="popover-apply-btn" title="确认应用自定义颜色">
+        <span>确认</span>
+      </button>
     </div>
-    <button class="popover-apply-btn" id="popover-apply-btn" title="确认应用此颜色">
-      <span class="apply-color-dot"></span>
-      <span>应用</span>
-    </button>
   </div>
 
   <!-- 胶囊操作条（点击胶囊后显示删除按钮） -->
@@ -383,7 +412,14 @@
         <!-- 左侧分类导航 -->
         <aside class="settings-sidebar">
           <nav class="settings-nav">
-            <button class="settings-nav-item is-active" data-tab="palette">
+            <button class="settings-nav-item is-active" data-tab="appearance">
+              <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                <circle cx="12" cy="12" r="4"></circle>
+                <path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41"></path>
+              </svg>
+              <span>外观主题</span>
+            </button>
+            <button class="settings-nav-item" data-tab="palette">
               <svg class="settings-nav-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
                 <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"></circle>
                 <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"></circle>
@@ -443,8 +479,74 @@
 
         <!-- 右侧具体内容 -->
         <main class="settings-main">
+          <!-- 外观与主题 -->
+          <div class="settings-tab-panel is-active" id="tab-panel-appearance">
+            <div class="settings-section-header">
+              <h3 class="settings-section-title">外观与主题</h3>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <h4 class="settings-section-title" style="font-size: 12px;">界面基调</h4>
+              </div>
+              <div class="minimap-pos-grid">
+                <button class="minimap-pos-card theme-mode-card is-active" data-theme="dark" type="button">
+                  <div class="theme-mockup dark"><span class="theme-mockup-card"></span></div>
+                  <span>暗色（默认）</span>
+                </button>
+                <button class="minimap-pos-card theme-mode-card" data-theme="light" type="button">
+                  <div class="theme-mockup light"><span class="theme-mockup-card"></span></div>
+                  <span>浅色（暖纸白）</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <h4 class="settings-section-title" style="font-size: 12px;">界面主控色</h4>
+              </div>
+              <div class="settings-card-group">
+                <div class="settings-row">
+                  <div class="settings-row-info">
+                    <span class="settings-row-label">主控强调色</span>
+                    <span class="settings-row-sub">统一用于按钮高亮、选区、开关及聚焦提示</span>
+                  </div>
+                  <div class="accent-picker-row">
+                    <button type="button" class="accent-preset-dot is-active" data-accent="#4c8dff" style="background: #4c8dff;" title="克制蓝（默认）"></button>
+                    <button type="button" class="accent-preset-dot" data-accent="#d95a4a" style="background: #d95a4a;" title="暖红"></button>
+                    <button type="button" class="accent-preset-dot" data-accent="#529e72" style="background: #529e72;" title="鼠尾草绿"></button>
+                    <button type="button" class="accent-preset-dot" data-accent="#c78d3b" style="background: #c78d3b;" title="暖琥珀"></button>
+                    <label class="accent-custom-label" title="自定义主控色">
+                      <input type="color" id="settings-accent-input" value="#4c8dff" />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-header">
+                <h4 class="settings-section-title" style="font-size: 12px;">画布背景纹理</h4>
+              </div>
+              <div class="toast-pos-grid">
+                <button class="minimap-pos-card toast-pos-card canvas-tex-card" data-tex="solid" type="button">
+                  <div class="tex-mockup tex-mockup-solid"></div>
+                  <span>纯素无纹</span>
+                </button>
+                <button class="minimap-pos-card toast-pos-card canvas-tex-card is-active" data-tex="dots" type="button">
+                  <div class="tex-mockup tex-mockup-dots"></div>
+                  <span>极淡点阵</span>
+                </button>
+                <button class="minimap-pos-card toast-pos-card canvas-tex-card" data-tex="grid" type="button">
+                  <div class="tex-mockup tex-mockup-grid"></div>
+                  <span>单层细线</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- 常用配色方案 -->
-          <div class="settings-tab-panel is-active" id="tab-panel-palette">
+          <div class="settings-tab-panel" id="tab-panel-palette">
             <div class="settings-section-header">
               <div class="settings-title-with-info">
                 <h3 class="settings-section-title">常用配色</h3>
@@ -768,29 +870,19 @@
     </div>
   </div>
 
-  <!-- 全局小地图浮动窗口 -->
+  <!-- 全局小地图浮动窗口（无标题栏，悬停显露角落操作） -->
   <aside id="minimap-widget" class="minimap-widget pos-bottom-right" aria-label="画板小地图">
-    <div class="minimap-header" id="minimap-header">
-      <div class="minimap-title-row">
-        <svg class="minimap-header-icon" viewBox="0 0 24 24">
-          <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon>
-          <line x1="8" y1="2" x2="8" y2="18"></line>
-          <line x1="16" y1="6" x2="16" y2="22"></line>
-        </svg>
-        <span>小地图</span>
-      </div>
-      <div class="minimap-actions">
-        <button class="minimap-action-btn" id="btn-minimap-fit" data-tooltip="适应画布">
-          <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
-        </button>
-        <button class="minimap-action-btn" id="btn-minimap-close" data-tooltip="关闭">
-          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-        </button>
-      </div>
-    </div>
     <div class="minimap-body" id="minimap-canvas-container">
       <canvas id="minimap-canvas" class="minimap-canvas"></canvas>
       <div id="minimap-viewport-indicator" class="minimap-viewport-indicator" title="拖拽平移视口"></div>
+    </div>
+    <div class="minimap-actions">
+      <button class="minimap-action-btn" id="btn-minimap-fit" data-tooltip="适应画布">
+        <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+      </button>
+      <button class="minimap-action-btn" id="btn-minimap-close" data-tooltip="关闭">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
     </div>
   </aside>
 

@@ -178,12 +178,12 @@ export function computeLocalThumbnail(canvasData) {
   };
 }
 
-export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#30d158']) {
+export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#5ca479']) {
   if (!canvasEl) return;
   // Use board-space layout dimensions (clientWidth/clientHeight) rather than
   // getBoundingClientRect(), which is scaled by #board's CSS zoom transform.
   const W = Math.max(120, Math.round(canvasEl.clientWidth || canvasEl.offsetWidth || 300));
-  const H = Math.max(80, Math.round(canvasEl.clientHeight || canvasEl.offsetHeight || 180));
+  const H = Math.max(60, Math.round(canvasEl.clientHeight || canvasEl.offsetHeight || 150));
   const dpr = window.devicePixelRatio || 1;
 
   if (canvasEl.width !== Math.round(W * dpr) || canvasEl.height !== Math.round(H * dpr)) {
@@ -198,15 +198,7 @@ export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#30d158']
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, W, H);
 
-  // Subtle background grid dots (echoing infinite canvas)
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-  const step = 16;
-  for (let gx = 10; gx < W; gx += step) {
-    for (let gy = 10; gy < H; gy += step) {
-      ctx.fillRect(gx, gy, 1, 1);
-    }
-  }
-
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
   const cards = thumbnail?.cards || [];
   const groups = thumbnail?.groups || [];
   const connections = thumbnail?.connections || [];
@@ -225,9 +217,9 @@ export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#30d158']
   const worldW = Math.max(maxX - minX, 200);
   const worldH = Math.max(maxY - minY, 140);
   const innerPad = 10;
-  const scale = Math.min((W - innerPad * 2) / worldW, (H - innerPad * 2 - 14) / worldH);
+  const scale = Math.min((W - innerPad * 2) / worldW, (H - innerPad * 2) / worldH);
   const offsetX = (W - worldW * scale) / 2;
-  const offsetY = (H - 12 - worldH * scale) / 2;
+  const offsetY = (H - worldH * scale) / 2;
 
   // 1. Groups
   if (groups.length > 0) {
@@ -237,11 +229,10 @@ export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#30d158']
       const gy = offsetY + (g.y - minY) * scale;
       const gw = Math.max(g.width * scale, 10);
       const gh = Math.max(g.height * scale, 8);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.035)';
-      ctx.strokeStyle = g.headerColor ? g.headerColor : 'rgba(255, 255, 255, 0.22)';
+      ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.035)' : 'rgba(255, 255, 255, 0.03)';
+      ctx.strokeStyle = g.headerColor ? g.headerColor : (isLight ? 'rgba(37, 34, 30, 0.2)' : 'rgba(255, 255, 255, 0.18)');
       ctx.globalAlpha = g.headerColor ? 0.45 : 1;
       ctx.lineWidth = 1;
-      ctx.setLineDash([2.5, 2.5]);
       drawRoundRect(ctx, gx, gy, gw, gh, 3);
       ctx.fill();
       ctx.stroke();
@@ -252,13 +243,13 @@ export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#30d158']
   // 2. Connections
   if (connections.length > 0) {
     ctx.save();
-    ctx.lineWidth = 1.1;
+    ctx.lineWidth = 1.15;
     for (const conn of connections) {
       const m1x = offsetX + (conn.x1 - minX) * scale;
       const m1y = offsetY + (conn.y1 - minY) * scale;
       const m2x = offsetX + (conn.x2 - minX) * scale;
       const m2y = offsetY + (conn.y2 - minY) * scale;
-      ctx.strokeStyle = conn.color || '#30d158';
+      ctx.strokeStyle = conn.color || '#5c91cf';
       ctx.beginPath();
       ctx.moveTo(m1x, m1y);
       const dx = (m2x - m1x) * 0.5;
@@ -270,7 +261,7 @@ export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#30d158']
 
   // 3. Cards & Nested Subcanvases
   ctx.save();
-  const neutralHeaderColor = 'rgba(152, 152, 157, 0.55)';
+  const neutralHeaderColor = isLight ? 'rgba(37, 34, 30, 0.14)' : 'rgba(255, 255, 255, 0.14)';
   for (const card of cards) {
     const cx = offsetX + (card.x - minX) * scale;
     const cy = offsetY + (card.y - minY) * scale;
@@ -279,23 +270,16 @@ export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#30d158']
     const radius = Math.min(2.5, mw / 2);
 
     if (card.kind === 'subcanvas') {
-      ctx.fillStyle = card.headerColor ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.05)';
+      ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.04)' : 'rgba(255, 255, 255, 0.05)';
       drawRoundRect(ctx, cx, cy, mw, mh, radius);
       ctx.fill();
 
-      ctx.strokeStyle = card.headerColor || 'rgba(180, 180, 190, 0.55)';
+      ctx.strokeStyle = card.headerColor || (isLight ? 'rgba(37, 34, 30, 0.28)' : 'rgba(255, 255, 255, 0.25)');
       ctx.lineWidth = 1;
       drawRoundRect(ctx, cx, cy, mw, mh, radius);
       ctx.stroke();
-
-      // Tiny inner subcanvas frame hint
-      if (mw >= 12 && mh >= 10) {
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-        ctx.lineWidth = 0.75;
-        ctx.strokeRect(cx + 2.5, cy + 2.5, Math.max(4, mw - 5), Math.max(3, mh - 5));
-      }
     } else {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.fillStyle = isLight ? 'rgba(255, 255, 255, 0.92)' : 'rgba(255, 255, 255, 0.08)';
       drawRoundRect(ctx, cx, cy, mw, mh, radius);
       ctx.fill();
 
@@ -304,7 +288,7 @@ export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#30d158']
       drawTopRoundedRect(ctx, cx, cy, mw, headerH, radius);
       ctx.fill();
 
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+      ctx.strokeStyle = isLight ? 'rgba(37, 34, 30, 0.18)' : 'rgba(255, 255, 255, 0.16)';
       ctx.lineWidth = 0.75;
       drawRoundRect(ctx, cx, cy, mw, mh, radius);
       ctx.stroke();

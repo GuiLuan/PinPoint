@@ -4,11 +4,17 @@ import { computeLocalThumbnail } from './subcanvas.js';
 
 const API_BASE = '/api/v1';
 
-export const DEFAULT_PALETTE = ['#30d158', '#0a84ff', '#bf5af2', '#ffd60a', '#ff9f0a'];
+export const DEFAULT_PALETTE = ['#5ca479', '#5c91cf', '#967bc2', '#c7a24f', '#c77b5c'];
 export const PRESET_POOL = [
-  '#30d158', '#0a84ff', '#bf5af2', '#ffd60a', '#ff9f0a',
-  '#ff453a', '#64d2ff', '#ac8e68', '#ff375f', '#5e5ce6'
+  '#5ca479', '#5c91cf', '#967bc2', '#c7a24f', '#c77b5c',
+  '#c96b6b', '#5fa8b8', '#9c8d77', '#b87495', '#767ac7'
 ];
+
+export const DEFAULT_APPEARANCE_SETTINGS = {
+  theme: 'dark',
+  accentColor: '#4c8dff',
+  canvasTexture: 'dots'
+};
 
 export const DEFAULT_SAVE_SETTINGS = {
   mode: 'auto',
@@ -26,6 +32,7 @@ export const DEFAULT_SETTINGS = {
   alignMode: false,
   gridSnapMode: false,
   palette: [...DEFAULT_PALETTE],
+  appearance: { ...DEFAULT_APPEARANCE_SETTINGS },
   minimap: {
     enabled: true,
     position: 'bottom-right',
@@ -139,10 +146,23 @@ class StateManager {
     const toastDur = typeof ts.durationSec === 'number' && !Number.isNaN(ts.durationSec)
       ? Math.max(2, Math.min(30, Math.round(ts.durationSec)))
       : 5;
+    const ap = s.appearance || {};
+    const theme = ap.theme === 'light' ? 'light' : 'dark';
+    const accentColor = (typeof ap.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(ap.accentColor.trim()))
+      ? ap.accentColor.trim().toLowerCase()
+      : DEFAULT_APPEARANCE_SETTINGS.accentColor;
+    const canvasTexture = ['solid', 'dots', 'grid'].includes(ap.canvasTexture)
+      ? ap.canvasTexture
+      : DEFAULT_APPEARANCE_SETTINGS.canvasTexture;
     return {
       alignMode: !!s.alignMode,
       gridSnapMode: !!s.gridSnapMode,
       palette,
+      appearance: {
+        theme,
+        accentColor,
+        canvasTexture
+      },
       minimap: {
         enabled: mm.enabled ?? true,
         position: ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(mm.position) ? mm.position : 'bottom-right',
@@ -1003,6 +1023,29 @@ class StateManager {
     this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
     return this.state.settings.gridSnapMode;
+  }
+
+  getAppearanceSettings() {
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
+    if (!this.state.settings.appearance) {
+      this.state.settings.appearance = { ...DEFAULT_APPEARANCE_SETTINGS };
+    }
+    return this.state.settings.appearance;
+  }
+
+  setAppearanceSettings(patch) {
+    const ap = this.getAppearanceSettings();
+    if (patch.theme === 'dark' || patch.theme === 'light') {
+      ap.theme = patch.theme;
+    }
+    if (typeof patch.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(patch.accentColor.trim())) {
+      ap.accentColor = patch.accentColor.trim().toLowerCase();
+    }
+    if (['solid', 'dots', 'grid'].includes(patch.canvasTexture)) {
+      ap.canvasTexture = patch.canvasTexture;
+    }
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
   }
 
   getMinimapSettings() {

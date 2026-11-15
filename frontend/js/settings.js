@@ -81,6 +81,9 @@ class SettingsManager {
       window.__wires?.render?.();
     });
 
+    // Appearance settings listeners
+    this.bindAppearanceListeners();
+
     // Minimap settings listeners
     this.bindMinimapListeners();
 
@@ -102,7 +105,8 @@ class SettingsManager {
       });
     });
 
-    this.currentTab = 'palette';
+    this.currentTab = 'appearance';
+    this.syncAppearanceSettings();
     this.renderPaletteSlots();
     this.syncAssistanceToggles();
     this.syncMinimapSettings();
@@ -125,7 +129,9 @@ class SettingsManager {
       panel.classList.toggle('is-active', match);
     });
 
-    if (tabId === 'palette') {
+    if (tabId === 'appearance') {
+      this.syncAppearanceSettings();
+    } else if (tabId === 'palette') {
       this.updatePreviewMockup();
     } else if (tabId === 'minimap') {
       this.syncMinimapSettings();
@@ -144,7 +150,8 @@ class SettingsManager {
 
   open() {
     if (!this.overlayEl) return;
-    this.switchTab(this.currentTab || 'palette');
+    this.switchTab(this.currentTab || 'appearance');
+    this.syncAppearanceSettings();
     this.renderPaletteSlots();
     this.syncAssistanceToggles();
     this.syncMinimapSettings();
@@ -169,6 +176,7 @@ class SettingsManager {
 
   syncUI() {
     if (this.isOpen()) {
+      this.syncAppearanceSettings();
       this.renderPaletteSlots();
       this.syncAssistanceToggles();
       this.syncMinimapSettings();
@@ -176,6 +184,72 @@ class SettingsManager {
       this.syncSaveSettings();
       this.syncToastSettings();
     }
+  }
+
+  bindAppearanceListeners() {
+    if (!this.overlayEl) return;
+    const panel = this.overlayEl.querySelector('#tab-panel-appearance');
+    if (!panel) return;
+
+    panel.addEventListener('click', (e) => {
+      const themeCard = e.target.closest('.theme-mode-card');
+      if (themeCard) {
+        e.preventDefault();
+        const theme = themeCard.getAttribute('data-theme');
+        if (theme === 'dark' || theme === 'light') {
+          store.setAppearanceSettings({ theme });
+          this.syncAppearanceSettings();
+        }
+        return;
+      }
+
+      const accentDot = e.target.closest('.accent-preset-dot');
+      if (accentDot) {
+        e.preventDefault();
+        const accent = accentDot.getAttribute('data-accent');
+        if (accent) {
+          store.setAppearanceSettings({ accentColor: accent });
+          this.syncAppearanceSettings();
+        }
+        return;
+      }
+
+      const texCard = e.target.closest('.canvas-tex-card');
+      if (texCard) {
+        e.preventDefault();
+        const tex = texCard.getAttribute('data-tex');
+        if (tex) {
+          store.setAppearanceSettings({ canvasTexture: tex });
+          this.syncAppearanceSettings();
+        }
+      }
+    });
+
+    const accentInput = panel.querySelector('#settings-accent-input');
+    accentInput?.addEventListener('input', (e) => {
+      store.setAppearanceSettings({ accentColor: e.target.value });
+      this.syncAppearanceSettings();
+    });
+  }
+
+  syncAppearanceSettings() {
+    if (!this.overlayEl) return;
+    const ap = store.getAppearanceSettings();
+
+    this.overlayEl.querySelectorAll('.theme-mode-card').forEach(card => {
+      card.classList.toggle('is-active', card.getAttribute('data-theme') === ap.theme);
+    });
+
+    this.overlayEl.querySelectorAll('.accent-preset-dot').forEach(dot => {
+      dot.classList.toggle('is-active', dot.getAttribute('data-accent')?.toLowerCase() === ap.accentColor?.toLowerCase());
+    });
+
+    const accentInput = this.overlayEl.querySelector('#settings-accent-input');
+    if (accentInput && ap.accentColor) accentInput.value = ap.accentColor;
+
+    this.overlayEl.querySelectorAll('.canvas-tex-card').forEach(card => {
+      card.classList.toggle('is-active', card.getAttribute('data-tex') === ap.canvasTexture);
+    });
   }
 
   bindMinimapListeners() {
@@ -578,23 +652,19 @@ class SettingsManager {
     const capsuleMockup = this.overlayEl.querySelector('#preview-capsule-mockup');
 
     if (cardMockup && headerMockup) {
-      cardMockup.style.setProperty('--card-theme-border', hexToRgba(primaryColor, 0.75));
-      cardMockup.style.setProperty('--card-theme-glow', hexToRgba(primaryColor, 0.45));
-      const bg1 = hexToRgba(primaryColor, 0.24);
-      const bg2 = hexToRgba(primaryColor, 0.10);
-      const borderOutline = hexToRgba(primaryColor, 0.70);
-      const borderDivider = hexToRgba(primaryColor, 0.35);
+      cardMockup.style.background = hexToRgba(primaryColor, 0.055);
+      cardMockup.style.borderColor = hexToRgba(primaryColor, 0.36);
+      cardMockup.style.boxShadow = 'var(--elev-card)';
 
-      headerMockup.style.background = `linear-gradient(180deg, ${bg1} 0%, ${bg2} 100%)`;
-      headerMockup.style.borderColor = borderOutline;
-      headerMockup.style.borderTopColor = primaryColor;
-      headerMockup.style.borderBottomColor = borderDivider;
+      headerMockup.style.background = hexToRgba(primaryColor, 0.11);
+      headerMockup.style.borderBottomColor = hexToRgba(primaryColor, 0.18);
+      headerMockup.style.color = 'var(--text-primary)';
     }
 
     if (capsuleMockup) {
       capsuleMockup.style.setProperty('--capsule-pin', secondaryColor);
-      capsuleMockup.style.backgroundColor = hexToRgba(secondaryColor, 0.14);
-      capsuleMockup.style.borderColor = hexToRgba(secondaryColor, 0.38);
+      capsuleMockup.style.backgroundColor = hexToRgba(secondaryColor, 0.16);
+      capsuleMockup.style.borderColor = 'transparent';
     }
   }
 }

@@ -372,6 +372,9 @@ class MinimapManager {
 
     this.lastWorldBounds = { minX, minY, maxX, maxY, scale, offsetX, offsetY, W, H };
 
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    const accentColor = store.getAppearanceSettings?.().accentColor || '#4c8dff';
+
     // 1. Draw Groups
     if (store.state.groups && store.state.groups.length > 0) {
       this.ctx.save();
@@ -380,10 +383,9 @@ class MinimapManager {
         const gy = offsetY + (g.y - minY) * scale;
         const gw = g.width * scale;
         const gh = g.height * scale;
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
-        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        this.ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.04)' : 'rgba(255, 255, 255, 0.04)';
+        this.ctx.strokeStyle = isLight ? 'rgba(37, 34, 30, 0.2)' : 'rgba(255, 255, 255, 0.18)';
         this.ctx.lineWidth = 1;
-        this.ctx.setLineDash([2, 2]);
         this.drawRoundRect(this.ctx, gx, gy, gw, gh, 3);
         this.ctx.fill();
         this.ctx.stroke();
@@ -403,7 +405,7 @@ class MinimapManager {
           const m1y = offsetY + (p1.y - minY) * scale;
           const m2x = offsetX + (p2.x - minX) * scale;
           const m2y = offsetY + (p2.y - minY) * scale;
-          this.ctx.strokeStyle = conn.color || '#30d158';
+          this.ctx.strokeStyle = conn.color || '#5ca479';
           this.ctx.beginPath();
           this.ctx.moveTo(m1x, m1y);
           const dx = (m2x - m1x) * 0.5;
@@ -416,7 +418,7 @@ class MinimapManager {
 
     // 3. Draw Cards
     this.ctx.save();
-    const neutralHeaderColor = 'rgba(152, 152, 157, 0.55)';
+    const neutralHeaderColor = isLight ? 'rgba(37, 34, 30, 0.18)' : 'rgba(152, 152, 157, 0.45)';
     for (const card of cards) {
       const isSub = card.kind === 'subcanvas';
       const cw = card.width || 320;
@@ -429,21 +431,12 @@ class MinimapManager {
       const radius = Math.min(2.5, mw / 2);
 
       if (isSub) {
-        this.ctx.fillStyle = card.headerColor ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.05)';
+        this.ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.05)' : 'rgba(255, 255, 255, 0.05)';
         this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
         this.ctx.fill();
-        this.ctx.strokeStyle = card.headerColor || 'rgba(180, 180, 190, 0.55)';
-        this.ctx.lineWidth = 1;
-        this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
-        this.ctx.stroke();
-        if (mw >= 10 && mh >= 8) {
-          this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-          this.ctx.lineWidth = 0.75;
-          this.ctx.strokeRect(cx + 2, cy + 2, Math.max(4, mw - 4), Math.max(3, mh - 4));
-        }
       } else {
         // Card body background
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+        this.ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.08)' : 'rgba(255, 255, 255, 0.1)';
         this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
         this.ctx.fill();
 
@@ -457,12 +450,14 @@ class MinimapManager {
       // Selection or normal border
       const isSelected = nodes?.selectedCardIds?.has(card.id);
       if (isSelected) {
-        this.ctx.strokeStyle = '#0a84ff';
+        this.ctx.strokeStyle = accentColor;
         this.ctx.lineWidth = 1.5;
         this.drawRoundRect(this.ctx, cx - 0.5, cy - 0.5, mw + 1, mh + 1, radius);
         this.ctx.stroke();
       } else {
-        this.ctx.strokeStyle = isSub ? (card.headerColor || 'rgba(10, 132, 255, 0.6)') : 'rgba(255, 255, 255, 0.22)';
+        this.ctx.strokeStyle = isSub
+          ? (card.headerColor || accentColor)
+          : (isLight ? 'rgba(37, 34, 30, 0.2)' : 'rgba(255, 255, 255, 0.18)');
         this.ctx.lineWidth = 0.75;
         this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
         this.ctx.stroke();

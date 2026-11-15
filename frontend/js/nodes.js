@@ -43,7 +43,7 @@ class NodeManager {
     this.selectedCapsule = null;
     this.targetHeaderCard = null;
     this.targetGroup = null;
-    this.selectedColor = '#30d158';
+    this.selectedColor = '#5ca479';
     this.selectedCardIds = new Set();
     this.activeMarquee = null;
     this.activeDrag = null;
@@ -190,9 +190,17 @@ class NodeManager {
       const rightColor = card.headerColor || rightConn?.color || '#98989d';
 
       if (card.headerColor) {
-        cardEl.style.setProperty('--card-theme-border', hexToRgba(card.headerColor, 0.75));
-        cardEl.style.setProperty('--card-theme-glow', hexToRgba(card.headerColor, 0.45));
+        cardEl.style.setProperty('--card-theme-color', card.headerColor);
+        cardEl.style.setProperty('--card-theme-bg', hexToRgba(card.headerColor, 0.055));
+        cardEl.style.setProperty('--card-theme-header-bg', hexToRgba(card.headerColor, 0.11));
+        cardEl.style.setProperty('--card-theme-header-border', hexToRgba(card.headerColor, 0.18));
+        cardEl.style.setProperty('--card-theme-border', hexToRgba(card.headerColor, 0.36));
+        cardEl.style.setProperty('--card-theme-glow', hexToRgba(card.headerColor, 0.25));
       } else {
+        cardEl.style.removeProperty('--card-theme-color');
+        cardEl.style.removeProperty('--card-theme-bg');
+        cardEl.style.removeProperty('--card-theme-header-bg');
+        cardEl.style.removeProperty('--card-theme-header-border');
         cardEl.style.removeProperty('--card-theme-border');
         cardEl.style.removeProperty('--card-theme-glow');
       }
@@ -203,8 +211,7 @@ class NodeManager {
         cardEl.style.height = `${portalH}px`;
         if (card.headerColor) {
           cardEl.style.setProperty('--portal-accent', card.headerColor);
-          cardEl.style.setProperty('--portal-border', hexToRgba(card.headerColor, 0.6));
-          cardEl.style.setProperty('--portal-tint', hexToRgba(card.headerColor, 0.08));
+          cardEl.style.setProperty('--portal-border', hexToRgba(card.headerColor, 0.42));
         }
 
         const thumb = store.getThumbnailForSubcanvas(card);
@@ -215,14 +222,16 @@ class NodeManager {
           : '';
 
         cardEl.innerHTML = `
-          <div class="subcanvas-portal-stage">
-            <canvas class="subcanvas-thumbnail-canvas"></canvas>
-            ${isEmpty ? `<div class="subcanvas-portal-empty"><svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="1.5" fill="none"><rect x="4" y="4" width="16" height="16" rx="4"></rect><line x1="12" y1="9" x2="12" y2="15"></line><line x1="9" y1="12" x2="15" y2="12"></line></svg></div>` : ''}
+          <div class="subcanvas-portal-stack" aria-hidden="true"></div>
+          <div class="subcanvas-portal-frame">
+            <div class="subcanvas-portal-stage">
+              <canvas class="subcanvas-thumbnail-canvas"></canvas>
+              ${isEmpty ? `<div class="subcanvas-portal-empty"><svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="1.6" fill="none"><rect x="4" y="4" width="16" height="16" rx="4"></rect><line x1="12" y1="9" x2="12" y2="15"></line><line x1="9" y1="12" x2="15" y2="12"></line></svg></div>` : ''}
+            </div>
             <div class="subcanvas-portal-caption">
               <svg class="subcanvas-portal-icon" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
-                <rect x="3" y="3" width="18" height="18" rx="4"></rect>
-                <rect x="7.5" y="7.5" width="4" height="4" rx="1"></rect>
-                <rect x="12.5" y="12.5" width="4" height="4" rx="1"></rect>
+                <rect x="3" y="3" width="18" height="18" rx="3"></rect>
+                <path d="M9 12h6"></path>
               </svg>
               <span class="header-title subcanvas-portal-title" title="双击重命名"></span>
               <input class="header-title-input subcanvas-portal-title-input" placeholder="未命名子画布" style="display: none;" />
@@ -405,20 +414,11 @@ class NodeManager {
         return;
       }
 
-      // Normal Card Node
-      cardEl.className = 'note-card' + (this.selectedCardIds.has(card.id) ? ' selected' : '');
-
-      let headerStyle = '';
-      if (card.headerColor) {
-        const bg1 = hexToRgba(card.headerColor, 0.24);
-        const bg2 = hexToRgba(card.headerColor, 0.10);
-        const borderOutline = hexToRgba(card.headerColor, 0.70);
-        const borderDivider = hexToRgba(card.headerColor, 0.35);
-        headerStyle = `style="background: linear-gradient(180deg, ${bg1} 0%, ${bg2} 100%); border-color: ${borderOutline}; border-top-color: ${card.headerColor}; border-bottom-color: ${borderDivider};"`;
-      }
+      // Normal Card Node (7A subtle whole tint + preserved left/right header port slots)
+      cardEl.className = 'note-card' + (card.headerColor ? ' has-theme-color' : '') + (this.selectedCardIds.has(card.id) ? ' selected' : '');
 
       cardEl.innerHTML = `
-        <div class="note-header" ${headerStyle}>
+        <div class="note-header">
           <div class="header-port-slot header-port-slot-left" title="连接端口 (左)">
             <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}"
                data-header-pin-id="${leftPinId}"
@@ -1145,8 +1145,9 @@ class NodeManager {
     const palette = store.getPalette();
     colorsRow.innerHTML = '';
 
-    // "无颜色 / 默认" button
+    // "无颜色 / 默认" button — applies immediately
     const noneBtn = document.createElement('button');
+    noneBtn.type = 'button';
     noneBtn.className = 'popover-color-btn popover-none-btn' + (this.selectedColor === null ? ' selected' : '');
     noneBtn.setAttribute('data-color', 'none');
     noneBtn.title = '无颜色 / 默认';
@@ -1159,6 +1160,7 @@ class NodeManager {
     noneBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.setSelectedColor(null);
+      this.applyColor();
     });
     colorsRow.appendChild(noneBtn);
 
@@ -1168,13 +1170,15 @@ class NodeManager {
 
     palette.forEach((color, idx) => {
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.className = 'popover-color-btn';
       btn.setAttribute('data-color', color);
       btn.style.setProperty('--btn-color', color);
-      btn.title = `配色 ${idx + 1} (${color})`;
+      btn.title = `配色 ${idx + 1} (${color}) · 点击立即应用`;
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         this.setSelectedColor(color);
+        this.applyColor();
       });
       colorsRow.appendChild(btn);
     });
@@ -1183,23 +1187,42 @@ class NodeManager {
     divider.className = 'popover-divider';
     colorsRow.appendChild(divider);
 
-    const label = document.createElement('label');
-    label.className = 'popover-palette-btn';
-    label.title = '自定义调色盘';
-    const input = document.createElement('input');
-    input.type = 'color';
-    input.className = 'popover-color-picker';
-    input.value = this.selectedColor || palette[0] || '#30d158';
+    const customToggle = document.createElement('button');
+    customToggle.type = 'button';
+    customToggle.className = 'popover-palette-btn';
+    customToggle.id = 'btn-popover-custom-toggle';
+    customToggle.title = '自定义颜色';
+    customToggle.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"></circle>
+        <circle cx="12" cy="8" r="1" fill="currentColor" stroke="none"></circle>
+        <circle cx="15.5" cy="11.5" r="1" fill="currentColor" stroke="none"></circle>
+        <circle cx="8.5" cy="11.5" r="1" fill="currentColor" stroke="none"></circle>
+      </svg>
+    `;
+    customToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const drawer = this.selectionPopoverEl.querySelector('#popover-custom-drawer');
+      if (drawer) {
+        const isOpen = drawer.classList.toggle('is-open');
+        customToggle.classList.toggle('is-open', isOpen);
+      }
+    });
+    colorsRow.appendChild(customToggle);
 
-    const handleCustomColor = (e) => {
-      const col = e.target.value;
-      if (col) this.setSelectedColor(col);
-    };
-    input.addEventListener('input', handleCustomColor);
-    input.addEventListener('change', handleCustomColor);
+    const drawerInput = this.selectionPopoverEl.querySelector('#popover-color-picker');
+    if (drawerInput && !drawerInput._bound) {
+      drawerInput._bound = true;
+      const handleCustomColor = (e) => {
+        const col = e.target.value;
+        if (col) this.setSelectedColor(col);
+      };
+      drawerInput.addEventListener('input', handleCustomColor);
+      drawerInput.addEventListener('change', handleCustomColor);
+    }
 
-    label.appendChild(input);
-    colorsRow.appendChild(label);
+    const drawer = this.selectionPopoverEl.querySelector('#popover-custom-drawer');
+    if (drawer) drawer.classList.remove('is-open');
 
     this.setSelectedColor(this.selectedColor);
   }
@@ -1223,22 +1246,17 @@ class NodeManager {
     const paletteBtn = this.selectionPopoverEl.querySelector('.popover-palette-btn');
     if (paletteBtn) {
       paletteBtn.classList.toggle('selected', this.selectedColor !== null && !matchedPreset);
-      const colorPicker = paletteBtn.querySelector('.popover-color-picker');
-      if (colorPicker && this.selectedColor && this.selectedColor.startsWith('#')) colorPicker.value = this.selectedColor;
     }
 
-    const dot = this.selectionPopoverEl.querySelector('.apply-color-dot');
-    if (dot) {
-      if (this.selectedColor) {
-        dot.style.backgroundColor = this.selectedColor;
-        dot.style.borderColor = 'transparent';
-        dot.innerHTML = '';
-      } else {
-        dot.style.backgroundColor = 'transparent';
-        dot.style.borderColor = 'rgba(255, 255, 255, 0.4)';
-        dot.innerHTML = `<svg viewBox="0 0 12 12" style="width:100%;height:100%;color:#ff453a;display:block;"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.8"></line></svg>`;
-      }
-    }
+    const picker = this.selectionPopoverEl.querySelector('#popover-color-picker');
+    const swatch = this.selectionPopoverEl.querySelector('#popover-custom-swatch');
+    const hexEl = this.selectionPopoverEl.querySelector('#popover-custom-hex');
+    const activeHex = (this.selectedColor && this.selectedColor.startsWith('#'))
+      ? this.selectedColor
+      : (store.getPalette()[0] || '#5ca479');
+    if (picker) picker.value = activeHex;
+    if (swatch) swatch.style.backgroundColor = activeHex;
+    if (hexEl) hexEl.textContent = activeHex.toUpperCase();
   }
 
   openPopoverForCapsule(capsule) {
@@ -1470,12 +1488,11 @@ class NodeManager {
   recolorCapsule(capsule, newColor) {
     const pinId = capsule.getAttribute('data-pin-id');
     const color = newColor || '#98989d';
-    const bg = newColor ? hexToRgba(newColor, 0.14) : 'rgba(255, 255, 255, 0.08)';
-    const border = newColor ? hexToRgba(newColor, 0.38) : 'rgba(255, 255, 255, 0.2)';
+    const bg = newColor ? hexToRgba(newColor, 0.16) : 'rgba(152, 152, 157, 0.14)';
 
     capsule.style.setProperty('--capsule-pin', color);
     capsule.style.backgroundColor = bg;
-    capsule.style.borderColor = border;
+    capsule.style.borderColor = 'transparent';
 
     // Update both outgoing and incoming connections connected to this capsule
     if (pinId) {
@@ -1501,15 +1518,14 @@ class NodeManager {
     store.scheduleAutoSave();
   }
 
-  createCapsuleFromSelection(color = '#30d158') {
+  createCapsuleFromSelection(color = '#5ca479') {
     if (!this.currentRange) return;
 
     const selectedText = this.currentRange.toString().trim();
     if (!selectedText) return;
 
     const pinId = `pin-${Date.now()}`;
-    const bg = hexToRgba(color, 0.14);
-    const border = hexToRgba(color, 0.38);
+    const bg = hexToRgba(color, 0.16);
 
     const capsule = document.createElement('span');
     capsule.className = 'text-capsule';
@@ -1517,7 +1533,7 @@ class NodeManager {
     capsule.setAttribute('contenteditable', 'false');
     capsule.style.setProperty('--capsule-pin', color);
     capsule.style.backgroundColor = bg;
-    capsule.style.borderColor = border;
+    capsule.style.borderColor = 'transparent';
     capsule.innerHTML = `<i class="capsule-pin"></i>${selectedText}`;
 
     this.currentRange.deleteContents();
@@ -1857,7 +1873,7 @@ class NodeManager {
 
     const GRID_SIZE = 24;
     const PADDING_X = 24;
-    const PADDING_TOP = 24;
+    const PADDING_TOP = 48;
     const PADDING_BOTTOM = 24;
     const MIN_WIDTH = 288;
 
@@ -1928,21 +1944,22 @@ class NodeManager {
 
       if (group.headerColor) {
         groupEl.style.setProperty('--group-theme', group.headerColor);
-        groupEl.style.setProperty('--group-border', hexToRgba(group.headerColor, 0.42));
-        groupEl.style.setProperty('--group-border-hover', hexToRgba(group.headerColor, 0.68));
+        groupEl.style.setProperty('--group-border', hexToRgba(group.headerColor, 0.34));
+        groupEl.style.setProperty('--group-border-hover', hexToRgba(group.headerColor, 0.56));
         groupEl.style.setProperty('--group-bg', hexToRgba(group.headerColor, 0.04));
         groupEl.style.setProperty('--group-bg-hover', hexToRgba(group.headerColor, 0.065));
-        groupEl.style.setProperty('--group-glow', hexToRgba(group.headerColor, 0.28));
-        groupEl.style.setProperty('--group-drop-bg', hexToRgba(group.headerColor, 0.09));
-        groupEl.style.setProperty('--group-drop-glow', hexToRgba(group.headerColor, 0.34));
-        groupEl.style.setProperty('--group-label-bg', blendHexOnDark(group.headerColor, 0.16, [22, 22, 26]));
-        groupEl.style.setProperty('--group-label-bg-hover', blendHexOnDark(group.headerColor, 0.24, [26, 26, 30]));
+        groupEl.style.setProperty('--group-glow', hexToRgba(group.headerColor, 0.24));
+        groupEl.style.setProperty('--group-drop-bg', hexToRgba(group.headerColor, 0.085));
+        groupEl.style.setProperty('--group-drop-glow', hexToRgba(group.headerColor, 0.28));
+        groupEl.style.setProperty('--group-label-bg', hexToRgba(group.headerColor, 0.14));
+        groupEl.style.setProperty('--group-label-bg-hover', hexToRgba(group.headerColor, 0.2));
       }
 
       const displayTitle = group.title || '未命名组';
 
       groupEl.innerHTML = `
         <div class="group-label">
+          <span class="group-label-dot" style="background-color: ${group.headerColor || 'var(--text-muted)'};"></span>
           <span class="group-title"></span>
           <input class="group-title-input" placeholder="未命名组" style="display: none;" />
         </div>
@@ -2067,23 +2084,12 @@ class NodeManager {
     });
   }
 
-  syncGroupLabelWidth(groupEl, boundsWidth) {
+  syncGroupLabelWidth(groupEl) {
     if (!groupEl) return;
     const labelEl = groupEl.querySelector('.group-label');
-    if (!labelEl) return;
-    if (!store.state.settings?.gridSnapMode || groupEl.classList.contains('is-renaming')) {
+    if (labelEl) {
       labelEl.style.width = '';
-      return;
     }
-    const GRID_SIZE = 24;
-    const gWidth = boundsWidth || parseFloat(groupEl.style.width) || 288;
-    const maxCells = Math.max(3, Math.floor(Math.min(264, gWidth - GRID_SIZE) / GRID_SIZE));
-    const minCells = 3; // 72px minimum tab width (3 grid cells)
-
-    labelEl.style.width = 'auto';
-    const naturalWidth = labelEl.offsetWidth || 72;
-    const cells = Math.min(maxCells, Math.max(minCells, Math.ceil((naturalWidth - 1) / GRID_SIZE)));
-    labelEl.style.width = `${cells * GRID_SIZE + 1}px`;
   }
 
   updateGroupDOMBounds(groupId) {

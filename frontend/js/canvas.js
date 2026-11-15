@@ -35,10 +35,18 @@ class CanvasManager {
     const { x, y, zoom } = store.state.viewport;
     this.boardEl.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
 
+    const tex = store.getAppearanceSettings?.().canvasTexture || 'dots';
     const minorSize = 24 * zoom;
-    const majorSize = 120 * zoom;
-    this.viewportEl.style.backgroundSize = `${minorSize}px ${minorSize}px, ${minorSize}px ${minorSize}px, ${majorSize}px ${majorSize}px, ${majorSize}px ${majorSize}px`;
-    this.viewportEl.style.backgroundPosition = `${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px`;
+    if (tex === 'solid') {
+      this.viewportEl.style.backgroundSize = '';
+      this.viewportEl.style.backgroundPosition = '';
+    } else if (tex === 'dots') {
+      this.viewportEl.style.backgroundSize = `${minorSize}px ${minorSize}px`;
+      this.viewportEl.style.backgroundPosition = `${x}px ${y}px`;
+    } else {
+      this.viewportEl.style.backgroundSize = `${minorSize}px ${minorSize}px, ${minorSize}px ${minorSize}px`;
+      this.viewportEl.style.backgroundPosition = `${x}px ${y}px, ${x}px ${y}px`;
+    }
 
     if (this.onTransform) this.onTransform();
   }

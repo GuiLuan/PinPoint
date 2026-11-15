@@ -205,8 +205,10 @@ class LibraryManager {
 
   open() {
     if (!this.drawerEl) return;
+    window.__closeCanvasesDrawer?.();
     this.drawerEl.classList.add('is-open');
     this.toggleBtnEl?.classList.add('is-active');
+    window.__syncDrawerLayout?.();
     this.setFocusScope('library');
     this.updateSelectionState();
     this.renderList();
@@ -219,6 +221,7 @@ class LibraryManager {
     this.setFocusScope('canvas');
     this.drawerEl.classList.remove('is-open');
     this.toggleBtnEl?.classList.remove('is-active');
+    window.__syncDrawerLayout?.();
   }
 
   toggle() {
@@ -878,12 +881,18 @@ class LibraryManager {
         : `<span class="library-item-name" title="点击重命名">${escapeHtml(item.name)}</span>`;
 
       const listMetaHtml = layout === 'list'
-        ? `<span class="library-item-submeta">${metaParts.join(' · ')}</span>${item.description ? `<span class="library-item-desc" title="${escapeHtml(item.description)}">${escapeHtml(item.description)}</span>` : ''}`
+        ? `<span class="library-item-submeta">${metaParts.join(' · ')}</span>`
         : '';
 
-      tileEl.innerHTML = `
-        <div class="library-tile-visual">
-          ${this.buildPreviewSvg(item)}
+      const primaryTint = item.cards?.find(c => c.headerColor)?.headerColor || '#5c91cf';
+
+      if (layout === 'list') {
+        tileEl.innerHTML = `
+          <span class="library-list-dot" style="background-color: ${escapeHtml(primaryTint)};"></span>
+          <div class="library-tile-caption">
+            ${nameHtml}
+            ${listMetaHtml}
+          </div>
           <div class="library-tile-actions">
             <button type="button" class="library-tile-action-btn btn-lib-insert" title="插入到画布">
               <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
@@ -892,12 +901,25 @@ class LibraryManager {
               <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
             </button>
           </div>
-        </div>
-        <div class="library-tile-caption">
-          ${nameHtml}
-          ${listMetaHtml}
-        </div>
-      `;
+        `;
+      } else {
+        tileEl.innerHTML = `
+          <div class="library-tile-visual">
+            ${this.buildPreviewSvg(item)}
+            <div class="library-tile-actions">
+              <button type="button" class="library-tile-action-btn btn-lib-insert" title="插入到画布">
+                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              </button>
+              <button type="button" class="library-tile-action-btn danger btn-lib-delete" title="从库中删除">
+                <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              </button>
+            </div>
+          </div>
+          <div class="library-tile-caption">
+            ${nameHtml}
+          </div>
+        `;
+      }
 
       tileEl.addEventListener('click', (e) => {
         if (isEditing || e.target?.closest?.('button, input')) return;
@@ -907,7 +929,7 @@ class LibraryManager {
 
       // Drag from library onto canvas (single or multi-selected items)
       tileEl.addEventListener('dragstart', (e) => {
-        if (isEditing || e.target?.closest?.('.library-tile-caption, button, input')) {
+        if (isEditing || e.target?.closest?.('.library-item-name, button, input')) {
           e.preventDefault();
           return;
         }
@@ -963,7 +985,7 @@ class LibraryManager {
       });
 
       tileEl.addEventListener('dblclick', (e) => {
-        if (e.target.closest('button, input, .library-tile-caption')) return;
+        if (e.target.closest('button, input, .library-item-name')) return;
         this.instantiateItem(item.id);
       });
 
@@ -1170,6 +1192,7 @@ class LibraryManager {
           const delta = isRight ? (startX - ev.clientX) : (ev.clientX - startX);
           const nextWidth = this.clampWidth(startWidth + delta);
           this.drawerEl.style.width = `${nextWidth}px`;
+          window.__syncDrawerLayout?.();
         };
 
         const onMouseUp = () => {
