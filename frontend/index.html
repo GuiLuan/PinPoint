@@ -69,14 +69,14 @@
           <div class="hud-more-menu" id="hud-more-menu" role="menu">
             <button type="button" class="context-menu-item" id="btn-open" role="menuitem">
               <div class="context-menu-label">
-                <svg class="context-menu-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                <span>导入 .pinpoint</span>
+                <svg class="context-menu-icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                <span>导入</span>
               </div>
             </button>
             <button type="button" class="context-menu-item" id="btn-export" role="menuitem">
               <div class="context-menu-label">
                 <svg class="context-menu-icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                <span>导出画布 (.pinpoint)</span>
+                <span>导出</span>
               </div>
             </button>
             <div class="context-menu-divider"></div>
@@ -128,6 +128,12 @@
         <span class="library-count-badge" id="canvases-count-badge">1</span>
       </div>
       <div class="library-header-actions">
+        <button type="button" class="library-header-btn library-header-btn-danger" id="btn-canvases-delete-selected" data-tooltip="删除选中画布 (Delete)" aria-label="删除选中画布" style="display: none;">
+          <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+        </button>
+        <button type="button" class="library-header-btn" id="btn-canvases-check-mode" data-tooltip="勾选显示画布" aria-label="勾选显示画布" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+        </button>
         <button type="button" class="library-header-btn library-close-btn" id="btn-close-canvases" data-tooltip="收起 (Esc)" aria-label="收起画布">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
@@ -139,7 +145,14 @@
         <input type="search" id="canvases-search-input" class="library-search-input" placeholder="搜索画布..." />
       </div>
     </div>
-    <div class="canvases-tree-list" id="canvas-tree-list"></div>
+    <div class="canvases-check-banner" id="canvases-check-banner" style="display: none;">
+      <span class="canvases-check-hint">勾选要显示的画布</span>
+      <div class="canvases-check-actions">
+        <button type="button" class="canvases-check-text-btn" id="btn-canvases-check-all">全选</button>
+        <button type="button" class="canvases-check-text-btn is-primary" id="btn-canvases-check-done">完成</button>
+      </div>
+    </div>
+    <div class="canvases-tree-list" id="canvas-tree-list" tabindex="-1"></div>
     <div class="library-resize-handle" id="canvases-resize-handle" title="拖拽调整宽度（双击恢复默认）" aria-label="调整画布面板宽度"></div>
   </aside>
 
@@ -183,6 +196,10 @@
     </button>
     <button class="hud-btn" id="btn-align-focus" data-tooltip="进入专注模式 (F)">
       <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+    </button>
+    <div class="hud-divider"></div>
+    <button class="hud-btn hud-btn-danger" id="btn-delete-selected" data-tooltip="删除选中 (Delete)">
+      <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
     </button>
   </div>
 
@@ -841,28 +858,31 @@
             </div>
           </div>
 
-          <!-- 快捷键指南 -->
+          <!-- 快捷键配置 -->
           <div class="settings-tab-panel" id="tab-panel-shortcuts">
             <div class="settings-section-header">
-              <h3 class="settings-section-title">快捷键</h3>
+              <div class="settings-title-with-info">
+                <h3 class="settings-section-title">快捷键</h3>
+                <span class="info-hint" data-tooltip="点击右侧按键框后按下新的组合键即可修改，按 Esc 取消录入"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
+              </div>
+              <button class="settings-action-btn secondary" id="btn-reset-shortcuts" type="button">
+                <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+                <span>恢复默认</span>
+              </button>
             </div>
 
-            <div class="shortcuts-grid">
-              <div class="shortcut-item"><kbd>Ctrl + ,</kbd><span>偏好设置</span></div>
-              <div class="shortcut-item"><kbd>F2</kbd><span>重命名当前/选中节点</span></div>
-              <div class="shortcut-item"><kbd>Ctrl + C / V / X</kbd><span>复制 / 粘贴 / 剪切节点</span></div>
-              <div class="shortcut-item"><kbd>Alt + 拖拽</kbd><span>快速克隆并拖动节点</span></div>
-              <div class="shortcut-item"><kbd>Ctrl + G</kbd><span>将选中节点创建为组</span></div>
-              <div class="shortcut-item"><kbd>Ctrl + Shift + G</kbd><span>解散当前选中组</span></div>
-              <div class="shortcut-item"><kbd>Ctrl + A</kbd><span>全选所有节点</span></div>
-              <div class="shortcut-item"><kbd>双击画布</kbd><span>快速新建节点</span></div>
-              <div class="shortcut-item"><kbd>Ctrl + 拖拽</kbd><span>反转对齐磁吸</span></div>
-              <div class="shortcut-item"><kbd>Delete</kbd><span>删除选中节点/胶囊</span></div>
-              <div class="shortcut-item"><kbd>Ctrl + Z / Y</kbd><span>撤销 / 重做</span></div>
-              <div class="shortcut-item"><kbd>Ctrl + S</kbd><span>保存图谱文件</span></div>
-              <div class="shortcut-item"><kbd>F</kbd><span>进入专注模式 (需选中节点)</span></div>
-              <div class="shortcut-item"><kbd>L</kbd><span>打开 / 收起库</span></div>
-              <div class="shortcut-item"><kbd>Shift + L</kbd><span>将选中节点保存到库</span></div>
+            <div class="shortcuts-grid" id="shortcuts-list-container"></div>
+
+            <div class="settings-section" style="margin-top: 14px;">
+              <div class="settings-section-header">
+                <h4 class="settings-section-title" style="font-size: 12px;">鼠标与画布手势</h4>
+              </div>
+              <div class="shortcuts-grid shortcuts-readonly-grid">
+                <div class="shortcut-item"><span class="shortcut-label">快速新建节点</span><kbd>双击画布</kbd></div>
+                <div class="shortcut-item"><span class="shortcut-label">平移画布</span><kbd>Space + 拖拽</kbd></div>
+                <div class="shortcut-item"><span class="shortcut-label">克隆并拖动节点</span><kbd>Alt + 拖拽</kbd></div>
+                <div class="shortcut-item"><span class="shortcut-label">反转对齐磁吸</span><kbd>Ctrl + 拖拽</kbd></div>
+              </div>
             </div>
           </div>
         </main>

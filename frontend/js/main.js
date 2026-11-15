@@ -35,6 +35,11 @@ async function initApp() {
   const btnCanvasesEl = document.getElementById('btn-canvases');
   const canvasesDrawerEl = document.getElementById('canvases-drawer');
   const btnCloseCanvasesEl = document.getElementById('btn-close-canvases');
+  const btnCanvasesDeleteSelectedEl = document.getElementById('btn-canvases-delete-selected');
+  const btnCanvasesCheckModeEl = document.getElementById('btn-canvases-check-mode');
+  const canvasesCheckBannerEl = document.getElementById('canvases-check-banner');
+  const btnCanvasesCheckAllEl = document.getElementById('btn-canvases-check-all');
+  const btnCanvasesCheckDoneEl = document.getElementById('btn-canvases-check-done');
   const canvasesSearchInputEl = document.getElementById('canvases-search-input');
   const canvasesCountBadgeEl = document.getElementById('canvases-count-badge');
   const canvasTreeListEl = document.getElementById('canvas-tree-list');
@@ -86,15 +91,16 @@ async function initApp() {
     html.setAttribute('data-theme', ap.theme || 'dark');
     html.setAttribute('data-canvas-texture', ap.canvasTexture || 'dots');
 
+    const isLight = ap.theme === 'light';
     const accent = ap.accentColor || '#4c8dff';
     html.style.setProperty('--accent', accent);
-    html.style.setProperty('--accent-soft', hexToRgba(accent, 0.14));
-    html.style.setProperty('--accent-border', hexToRgba(accent, 0.5));
+    html.style.setProperty('--accent-soft', hexToRgba(accent, isLight ? 0.16 : 0.14));
+    html.style.setProperty('--accent-border', hexToRgba(accent, isLight ? 0.56 : 0.5));
     html.style.setProperty('--accent-text', accent);
 
     const metaTheme = document.querySelector('meta[name="theme-color"]');
     if (metaTheme) {
-      metaTheme.setAttribute('content', ap.theme === 'light' ? '#f6f5f2' : '#17181a');
+      metaTheme.setAttribute('content', isLight ? '#ebe6dd' : '#17181a');
     }
 
     canvas.applyTransform();
@@ -246,9 +252,171 @@ async function initApp() {
     }
   }
 
+  const HIDDEN_TREE_CANVASES_KEY = 'pinpoint-hidden-tree-canvases';
+  function loadHiddenTreeCanvasIds() {
+    try {
+      const raw = localStorage.getItem(HIDDEN_TREE_CANVASES_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return new Set(arr.filter(id => typeof id === 'string' && id));
+      }
+    } catch (e) {}
+    return new Set();
+  }
+  function saveHiddenTreeCanvasIds(idSet) {
+    try {
+      localStorage.setItem(HIDDEN_TREE_CANVASES_KEY, JSON.stringify([...idSet]));
+    } catch (e) {}
+  }
+
   let canvasesSearchQuery = '';
   const collapsedCanvasIds = new Set();
   let pendingCanvasTreeRender = false;
+  let isCanvasesCheckMode = false;
+  const hiddenTreeCanvasIds = loadHiddenTreeCanvasIds();
+  let selectedTreeCanvasIds = new Set();
+  let treeSelectionAnchorId = null;
+  let canvasesFocusActive = false;
+  let lastRenderedTreeRowIds = [];
+
+  function syncCanvasesSelectionVisuals(allRows = store.getCanvasHierarchy()) {
+    const validIds = new Set(allRows.map(r => r.id));
+    for (const id of [...selectedTreeCanvasIds]) {
+      if (!validIds.has(id)) selectedTreeCanvasIds.delete(id);
+    }
+    if (treeSelectionAnchorId && !validIds.has(treeSelectionAnchorId)) {
+      treeSelectionAnchorId = null;
+    }
+
+    const checkedTotal = allRows.filter(r => !hiddenTreeCanvasIds.has(r.id)).length;
+    if (canvasesCountBadgeEl) {
+      if (isCanvasesCheckMode) {
+        canvasesCountBadgeEl.textContent = `${checkedTotal}/${allRows.length}`;
+      } else if (selectedTreeCanvasIds.size > 0 && checkedTotal > 0) {
+        canvasesCountBadgeEl.textContent = `已选 ${selectedTreeCanvasIds.size} / ${checkedTotal}`;
+      } else {
+        canvasesCountBadgeEl.textContent = String(checkedTotal);
+      }
+    }
+
+    if (btnCanvasesDeleteSelectedEl) {
+      const hasDeletable = [...selectedTreeCanvasIds].some(id => id !== 'root');
+      btnCanvasesDeleteSelectedEl.style.display = (!isCanvasesCheckMode && hasDeletable) ? 'flex' : 'none';
+    }
+
+    if (canvasTreeListEl) {
+      canvasTreeListEl.querySelectorAll('.canvas-tree-row').forEach(rowEl => {
+        const cid = rowEl.dataset.canvasId;
+        rowEl.classList.toggle('is-selected', Boolean(cid && selectedTreeCanvasIds.has(cid)));
+      });
+    }
+  }
+
+  async function deleteSelectedTreeCanvases() {
+    if (selectedTreeCanvasIds.size === 0) return false;
+    const res = await store.deleteCanvases([...selectedTreeCanvasIds]);
+    if (res?.deletedIds?.length) {
+      res.deletedIds.forEach(id => selectedTreeCanvasIds.delete(id));
+      if (treeSelectionAnchorId && res.deletedIds.includes(treeSelectionAnchorId)) {
+        treeSelectionAnchorId = null;
+      }
+      nodes.filterSelectionAfterRestore();
+      nodes.render();
+      wires.render();
+      nodes.updateAlignmentBar();
+      renderCanvasNavigation();
+      store.scheduleAutoSave();
+      return true;
+    }
+    return Boolean(res?.rootSkipped);
+  }
+
+  window.__canvases = {
+    isOpen: () => isCanvasesDrawerOpen(),
+    toggle: () => toggleCanvasesDrawer(),
+    blurScope: () => {
+      canvasesFocusActive = false;
+    },
+    handleSelectAllShortcut: (e) => {
+      if (!isCanvasesDrawerOpen()) return false;
+      const inCanvases = canvasesFocusActive || canvasesDrawerEl?.contains(document.activeElement);
+      if (!inCanvases) return false;
+      if (lastRenderedTreeRowIds.length === 0) return false;
+      e.preventDefault();
+      selectedTreeCanvasIds = new Set(lastRenderedTreeRowIds);
+      treeSelectionAnchorId = lastRenderedTreeRowIds[0] || null;
+      syncCanvasesSelectionVisuals();
+      return true;
+    },
+    handleDeleteShortcut: (e) => {
+      if (!isCanvasesDrawerOpen()) return false;
+      const inCanvases = canvasesFocusActive || canvasesDrawerEl?.contains(document.activeElement);
+      if (!inCanvases || selectedTreeCanvasIds.size === 0) return false;
+      e.preventDefault();
+      deleteSelectedTreeCanvases();
+      return true;
+    },
+    handleEscape: () => {
+      if (!isCanvasesDrawerOpen()) return false;
+      const inCanvases = canvasesFocusActive || canvasesDrawerEl?.contains(document.activeElement);
+      if (selectedTreeCanvasIds.size > 0 && inCanvases) {
+        selectedTreeCanvasIds.clear();
+        treeSelectionAnchorId = null;
+        syncCanvasesSelectionVisuals();
+        return true;
+      }
+      if (inCanvases || (nodes.selectedCardIds.size === 0 && !nodes.selectedCapsule)) {
+        closeCanvasesDrawer();
+        return true;
+      }
+      return false;
+    }
+  };
+
+  function syncShortcutTooltips() {
+    const fmt = (key, fallbackLabel) => {
+      const b = store.getShortcut(key);
+      return b ? `${fallbackLabel} (${b})` : fallbackLabel;
+    };
+    const setTip = (id, key, label) => {
+      const el = document.getElementById(id);
+      if (el) el.setAttribute('data-tooltip', fmt(key, label));
+    };
+    setTip('btn-canvases', 'toggleCanvases', '全部画布');
+    setTip('btn-library', 'toggleLibrary', '节点库');
+    setTip('btn-focus-mode', 'toggleFocusMode', '专注模式');
+    setTip('btn-undo', 'undo', '撤销');
+    setTip('btn-redo', 'redo', '重做');
+    setTip('btn-settings', 'openSettings', '偏好设置');
+    setTip('btn-create-group', 'createGroup', '创建组');
+    setTip('btn-save-to-library', 'saveToLibrary', '保存到库');
+    setTip('btn-align-focus', 'toggleFocusMode', '进入专注模式');
+    setTip('btn-delete-selected', 'deleteSelected', '删除选中');
+    setTip('btn-canvases-delete-selected', 'deleteSelected', '删除选中画布');
+
+    const menuSettingsEl = document.getElementById('menu-open-settings');
+    if (menuSettingsEl) {
+      const b = store.getShortcut('openSettings');
+      menuSettingsEl.title = fmt('openSettings', '偏好设置');
+      const scSpan = menuSettingsEl.querySelector('.context-menu-shortcut');
+      if (scSpan) scSpan.textContent = b || '';
+    }
+    library.updateSelectionState?.();
+    sync.updateStatusDot?.();
+  }
+
+  function setCanvasesCheckMode(active) {
+    isCanvasesCheckMode = !!active;
+    if (btnCanvasesCheckModeEl) {
+      btnCanvasesCheckModeEl.classList.toggle('is-active', isCanvasesCheckMode);
+      btnCanvasesCheckModeEl.setAttribute('aria-pressed', isCanvasesCheckMode ? 'true' : 'false');
+      btnCanvasesCheckModeEl.setAttribute('data-tooltip', isCanvasesCheckMode ? '完成勾选' : '勾选显示画布');
+    }
+    if (canvasesCheckBannerEl) {
+      canvasesCheckBannerEl.style.display = isCanvasesCheckMode ? 'flex' : 'none';
+    }
+    renderCanvasTreeDrawer();
+  }
 
   function isCanvasesDrawerOpen() {
     return !!canvasesDrawerEl?.classList.contains('is-open');
@@ -273,6 +441,7 @@ async function initApp() {
     applySharedSidePanelSettings();
     canvasesDrawerEl.classList.add('is-open');
     btnCanvasesEl?.classList.add('is-active');
+    canvasesFocusActive = true;
     syncEdgeDrawerOffsets();
     renderCanvasTreeDrawer();
     await store.refreshCanvasTree();
@@ -281,6 +450,14 @@ async function initApp() {
 
   function closeCanvasesDrawer() {
     if (!canvasesDrawerEl) return;
+    canvasesFocusActive = false;
+    if (isCanvasesCheckMode) {
+      isCanvasesCheckMode = false;
+      btnCanvasesCheckModeEl?.classList.remove('is-active');
+      btnCanvasesCheckModeEl?.setAttribute('aria-pressed', 'false');
+      btnCanvasesCheckModeEl?.setAttribute('data-tooltip', '勾选显示画布');
+      if (canvasesCheckBannerEl) canvasesCheckBannerEl.style.display = 'none';
+    }
     canvasesDrawerEl.classList.remove('is-open');
     btnCanvasesEl?.classList.remove('is-active');
     if (document.activeElement === btnCanvasesEl) {
@@ -332,7 +509,9 @@ async function initApp() {
     if (isCanvasesDrawerOpen()) {
       renderCanvasTreeDrawer();
     } else if (canvasesCountBadgeEl) {
-      canvasesCountBadgeEl.textContent = String(store.getCanvasHierarchy().length);
+      const allRows = store.getCanvasHierarchy();
+      const visibleCount = allRows.filter(r => !hiddenTreeCanvasIds.has(r.id)).length;
+      canvasesCountBadgeEl.textContent = String(visibleCount);
     }
   }
 
@@ -348,22 +527,51 @@ async function initApp() {
     }
     pendingCanvasTreeRender = false;
     const allRows = store.getCanvasHierarchy();
+    const checkedTotal = allRows.filter(r => !hiddenTreeCanvasIds.has(r.id)).length;
     if (canvasesCountBadgeEl) {
-      canvasesCountBadgeEl.textContent = String(allRows.length);
+      canvasesCountBadgeEl.textContent = isCanvasesCheckMode
+        ? `${checkedTotal}/${allRows.length}`
+        : String(checkedTotal);
     }
 
     const rowMap = new Map(allRows.map(r => [r.id, r]));
-    const childrenSet = new Set();
-    allRows.forEach(r => {
-      if (r.parentCanvasId) childrenSet.add(r.parentCanvasId);
+    const baseRows = isCanvasesCheckMode
+      ? allRows
+      : allRows.filter(r => !hiddenTreeCanvasIds.has(r.id));
+    const visibleIdSet = new Set(baseRows.map(r => r.id));
+
+    const visibleChildrenSet = new Set();
+    baseRows.forEach(r => {
+      let pid = r.parentCanvasId;
+      const seen = new Set();
+      while (pid && !seen.has(pid)) {
+        seen.add(pid);
+        if (visibleIdSet.has(pid)) {
+          visibleChildrenSet.add(pid);
+          break;
+        }
+        pid = rowMap.get(pid)?.parentCanvasId || null;
+      }
     });
+
+    const getVisibleDepth = (row) => {
+      let depth = 0;
+      let pid = row.parentCanvasId;
+      const seen = new Set();
+      while (pid && !seen.has(pid)) {
+        seen.add(pid);
+        if (visibleIdSet.has(pid)) depth += 1;
+        pid = rowMap.get(pid)?.parentCanvasId || null;
+      }
+      return depth;
+    };
 
     const isHiddenByCollapse = (row) => {
       let pid = row.parentCanvasId;
       const seen = new Set();
       while (pid && !seen.has(pid)) {
         seen.add(pid);
-        if (collapsedCanvasIds.has(pid)) return true;
+        if (visibleIdSet.has(pid) && collapsedCanvasIds.has(pid)) return true;
         pid = rowMap.get(pid)?.parentCanvasId || null;
       }
       return false;
@@ -371,21 +579,42 @@ async function initApp() {
 
     const q = canvasesSearchQuery.trim().toLowerCase();
     const rows = q
-      ? allRows.filter(r => (r.title || '').toLowerCase().includes(q))
-      : allRows.filter(r => !isHiddenByCollapse(r));
+      ? baseRows.filter(r => (r.title || '').toLowerCase().includes(q))
+      : baseRows.filter(r => !isHiddenByCollapse(r));
+    lastRenderedTreeRowIds = rows.map(r => r.id);
 
     canvasTreeListEl.innerHTML = '';
     if (rows.length === 0) {
-      canvasTreeListEl.innerHTML = `<div class="library-empty-state"><p>没有匹配的画布</p></div>`;
+      if (!q && allRows.length > 0 && !isCanvasesCheckMode) {
+        canvasTreeListEl.innerHTML = `
+          <div class="library-empty-state">
+            <p>已隐藏全部画布</p>
+            <button type="button" class="canvases-empty-action-btn" id="btn-empty-enter-check">勾选要显示的画布</button>
+          </div>
+        `;
+        canvasTreeListEl.querySelector('#btn-empty-enter-check')?.addEventListener('click', () => {
+          setCanvasesCheckMode(true);
+        });
+      } else {
+        canvasTreeListEl.innerHTML = `<div class="library-empty-state"><p>没有匹配的画布</p></div>`;
+      }
+      syncCanvasesSelectionVisuals(allRows);
       return;
     }
 
     rows.forEach(row => {
-      const hasChildren = childrenSet.has(row.id);
+      const hasChildren = visibleChildrenSet.has(row.id);
       const isCollapsed = collapsedCanvasIds.has(row.id);
+      const visibleDepth = q ? 0 : getVisibleDepth(row);
+      const isChecked = !hiddenTreeCanvasIds.has(row.id);
+
       const itemEl = document.createElement('div');
-      itemEl.className = 'canvas-tree-row' + (row.id === store.activeCanvasId ? ' is-active' : '');
-      itemEl.style.paddingLeft = `${6 + (q ? 0 : (row.depth || 0) * 14)}px`;
+      itemEl.dataset.canvasId = row.id;
+      itemEl.className = 'canvas-tree-row'
+        + (row.id === store.activeCanvasId ? ' is-active' : '')
+        + (selectedTreeCanvasIds.has(row.id) ? ' is-selected' : '')
+        + (isCanvasesCheckMode && !isChecked ? ' is-unchecked' : '');
+      itemEl.style.paddingLeft = `${6 + visibleDepth * 14}px`;
 
       const dirtyMark = row.dirty ? '<span class="canvas-tree-dirty-dot" title="未保存"></span>' : '';
       const totalSub = (row.cardCount ?? 0) + (row.subcanvasCount ?? 0);
@@ -397,11 +626,18 @@ async function initApp() {
              </svg>
            </button>`
         : '<span class="canvas-tree-toggle-spacer"></span>';
+      const checkHtml = isCanvasesCheckMode
+        ? `<label class="canvas-tree-check-wrap" title="${isChecked ? '在画布树中隐藏' : '在画布树中显示'}">
+             <input type="checkbox" class="canvas-tree-checkbox" ${isChecked ? 'checked' : ''} aria-label="显示 ${escapeHtml(row.title)}" />
+             <span class="canvas-tree-checkbox-box" aria-hidden="true"></span>
+           </label>`
+        : '';
 
       itemEl.innerHTML = `
         ${toggleHtml}
+        ${checkHtml}
         <button type="button" class="canvas-tree-jump-btn">
-          <span class="canvas-tree-icon">${row.depth > 0 ? '↳' : '◈'}</span>
+          <span class="canvas-tree-icon">${visibleDepth > 0 ? '↳' : '◈'}</span>
           <span class="canvas-tree-name">${escapeHtml(row.title)}</span>
           <input type="text" class="canvas-tree-rename-input" style="display: none;" value="${escapeHtml(row.title)}" />
           ${dirtyMark}
@@ -423,6 +659,25 @@ async function initApp() {
           </button>
         </div>
       `;
+
+      const checkWrapEl = itemEl.querySelector('.canvas-tree-check-wrap');
+      const checkboxEl = itemEl.querySelector('.canvas-tree-checkbox');
+      checkWrapEl?.addEventListener('mousedown', (e) => e.stopPropagation());
+      checkWrapEl?.addEventListener('click', (e) => e.stopPropagation());
+      checkboxEl?.addEventListener('change', (e) => {
+        e.stopPropagation();
+        if (checkboxEl.checked) {
+          hiddenTreeCanvasIds.delete(row.id);
+        } else {
+          hiddenTreeCanvasIds.add(row.id);
+        }
+        saveHiddenTreeCanvasIds(hiddenTreeCanvasIds);
+        itemEl.classList.toggle('is-unchecked', !checkboxEl.checked);
+        const nextChecked = allRows.filter(r => !hiddenTreeCanvasIds.has(r.id)).length;
+        if (canvasesCountBadgeEl) {
+          canvasesCountBadgeEl.textContent = `${nextChecked}/${allRows.length}`;
+        }
+      });
 
       const toggleBtn = itemEl.querySelector('.canvas-tree-toggle-btn');
       toggleBtn?.addEventListener('click', (e) => {
@@ -483,6 +738,58 @@ async function initApp() {
       jumpBtn?.addEventListener('click', (e) => {
         if (renameInput && renameInput.style.display !== 'none') return;
         e.stopPropagation();
+        canvasesFocusActive = true;
+        canvasTreeListEl.focus({ preventScroll: true });
+
+        const isCtrl = !!(e.ctrlKey || e.metaKey);
+        const isShift = !!e.shiftKey;
+        const orderedIds = lastRenderedTreeRowIds;
+
+        if (isShift) {
+          e.preventDefault();
+          const anchorValid = treeSelectionAnchorId && orderedIds.includes(treeSelectionAnchorId);
+          const fallbackAnchor = orderedIds.includes(store.activeCanvasId) ? store.activeCanvasId : row.id;
+          const anchorId = anchorValid ? treeSelectionAnchorId : fallbackAnchor;
+          if (!anchorValid) treeSelectionAnchorId = anchorId;
+
+          const aIdx = orderedIds.indexOf(anchorId);
+          const bIdx = orderedIds.indexOf(row.id);
+          if (aIdx >= 0 && bIdx >= 0) {
+            const start = Math.min(aIdx, bIdx);
+            const end = Math.max(aIdx, bIdx);
+            const rangeIds = orderedIds.slice(start, end + 1);
+            if (isCtrl) {
+              rangeIds.forEach(id => selectedTreeCanvasIds.add(id));
+            } else {
+              selectedTreeCanvasIds = new Set(rangeIds);
+            }
+          } else {
+            selectedTreeCanvasIds = new Set([row.id]);
+            treeSelectionAnchorId = row.id;
+          }
+          syncCanvasesSelectionVisuals(allRows);
+          return;
+        }
+
+        if (isCtrl) {
+          e.preventDefault();
+          if (selectedTreeCanvasIds.has(row.id)) {
+            selectedTreeCanvasIds.delete(row.id);
+            if (treeSelectionAnchorId === row.id) {
+              const remaining = [...selectedTreeCanvasIds];
+              treeSelectionAnchorId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+            }
+          } else {
+            selectedTreeCanvasIds.add(row.id);
+            treeSelectionAnchorId = row.id;
+          }
+          syncCanvasesSelectionVisuals(allRows);
+          return;
+        }
+
+        selectedTreeCanvasIds.clear();
+        treeSelectionAnchorId = row.id;
+        syncCanvasesSelectionVisuals(allRows);
         store.navigateToCanvas(row.id);
       });
 
@@ -495,6 +802,7 @@ async function initApp() {
 
       canvasTreeListEl.appendChild(itemEl);
     });
+    syncCanvasesSelectionVisuals(allRows);
   }
 
   window.__updateSaveUI = ({ connected, dirty, saving, label }) => {
@@ -530,7 +838,37 @@ async function initApp() {
     closeCanvasesDrawer();
   });
 
-  canvasesDrawerEl?.addEventListener('mousedown', (e) => e.stopPropagation());
+  btnCanvasesDeleteSelectedEl?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteSelectedTreeCanvases();
+  });
+
+  btnCanvasesCheckModeEl?.addEventListener('click', () => {
+    setCanvasesCheckMode(!isCanvasesCheckMode);
+  });
+
+  btnCanvasesCheckAllEl?.addEventListener('click', () => {
+    hiddenTreeCanvasIds.clear();
+    saveHiddenTreeCanvasIds(hiddenTreeCanvasIds);
+    renderCanvasTreeDrawer();
+  });
+
+  btnCanvasesCheckDoneEl?.addEventListener('click', () => {
+    setCanvasesCheckMode(false);
+  });
+
+  canvasesDrawerEl?.addEventListener('mousedown', (e) => {
+    canvasesFocusActive = true;
+    e.stopPropagation();
+  });
+  canvasTreeListEl?.addEventListener('click', (e) => {
+    canvasesFocusActive = true;
+    if (e.target === canvasTreeListEl && selectedTreeCanvasIds.size > 0) {
+      selectedTreeCanvasIds.clear();
+      treeSelectionAnchorId = null;
+      syncCanvasesSelectionVisuals();
+    }
+  });
   canvasesDrawerEl?.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
   canvasesSearchInputEl?.addEventListener('input', (e) => {
     canvasesSearchQuery = e.target.value || '';
@@ -583,12 +921,6 @@ async function initApp() {
       syncEdgeDrawerOffsets();
     });
   }
-
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && isCanvasesDrawerOpen()) {
-      closeCanvasesDrawer();
-    }
-  });
 
   btnCanvasBackEl?.addEventListener('click', () => {
     const crumbs = store.breadcrumbs || [];
@@ -670,7 +1002,7 @@ async function initApp() {
     }
   }
 
-  // HUD Button: Import .pinpoint into current canvas
+  // HUD Button: Import .pinpoint as child subcanvas of current canvas
   document.getElementById('btn-open')?.addEventListener('click', async () => {
     if (store.isFocusMode) {
       showToast('请先退出专注模式后再导入', 'warning');
@@ -679,16 +1011,15 @@ async function initApp() {
     if (document.activeElement && typeof document.activeElement.blur === 'function') {
       document.activeElement.blur();
     }
-    if (store.hasUnsavedChanges()) {
-      const confirmed = confirm('当前存在未保存的更改，导入将覆盖当前画布内容。\n\n确定要继续导入吗？');
-      if (!confirmed) return;
-    }
     const res = await store.openFromFile();
     if (res?.success) {
-      updateStatus(res.fileName);
+      if (res.card?.id) {
+        nodes.selectedCardIds = new Set([res.card.id]);
+      }
       canvas.applyTransform();
       nodes.render();
       wires.render();
+      nodes.updateAlignmentBar();
       renderCanvasNavigation();
     }
   });
@@ -777,6 +1108,7 @@ async function initApp() {
     } else if (event.type === 'STATE_RESTORED') {
       nodes.filterSelectionAfterRestore();
       applyAppearanceSettings();
+      syncShortcutTooltips();
       canvas.applyTransform();
       nodes.render();
       wires.render();
@@ -785,6 +1117,7 @@ async function initApp() {
       if (store.isFocusMode) nodes.updateFocusModeUI();
     } else if (event.type === 'SETTINGS_CHANGED') {
       applyAppearanceSettings();
+      syncShortcutTooltips();
       settings.syncUI();
       nodes.renderPopoverPalette();
       nodes.updateContextMenuToggles();
@@ -798,6 +1131,7 @@ async function initApp() {
         canvas.applyTransform();
       } else if (event.sourceEvent === 'SETTINGS_CHANGED') {
         applyAppearanceSettings();
+        syncShortcutTooltips();
         settings.syncUI();
         nodes.renderPopoverPalette();
         nodes.updateContextMenuToggles();
@@ -834,6 +1168,7 @@ async function initApp() {
 
   // Initial render
   applyAppearanceSettings();
+  syncShortcutTooltips();
   applySharedSidePanelSettings();
   canvas.applyTransform();
   nodes.render();

@@ -252,6 +252,7 @@ class LibraryManager {
   }
 
   setFocusScope(scope) {
+    if (scope === 'library') window.__canvases?.blurScope?.();
     this.lastFocusScope = scope === 'library' ? 'library' : 'canvas';
   }
 
@@ -350,14 +351,16 @@ class LibraryManager {
   updateSelectionState() {
     if (!this.saveCtaBtnEl) return;
     const count = nodes.selectedCardIds.size;
+    const sc = store.getShortcut?.('saveToLibrary');
+    const suffix = sc ? ` (${sc})` : '';
     if (count > 0) {
       this.saveCtaBtnEl.disabled = false;
       this.saveCtaBtnEl.classList.add('is-ready');
-      this.saveCtaBtnEl.setAttribute('data-tooltip', `将选中的 ${count} 个节点保存到库 (Shift+L)`);
+      this.saveCtaBtnEl.setAttribute('data-tooltip', `将选中的 ${count} 个节点保存到库${suffix}`);
     } else {
       this.saveCtaBtnEl.disabled = true;
       this.saveCtaBtnEl.classList.remove('is-ready');
-      this.saveCtaBtnEl.setAttribute('data-tooltip', '选中画布节点后保存到库 (Shift+L)');
+      this.saveCtaBtnEl.setAttribute('data-tooltip', `选中画布节点后保存到库${suffix}`);
     }
   }
 

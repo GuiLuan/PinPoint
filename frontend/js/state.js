@@ -1,6 +1,7 @@
 import { computeFocusExitLayout } from './focusLayout.js';
 import { idbCache } from './cache.js';
 import { computeLocalThumbnail } from './subcanvas.js';
+import { DEFAULT_SHORTCUTS, normalizeShortcutString } from './shortcuts.js';
 
 const API_BASE = '/api/v1';
 
@@ -44,7 +45,8 @@ export const DEFAULT_SETTINGS = {
     width: 348
   },
   save: { ...DEFAULT_SAVE_SETTINGS },
-  toast: { ...DEFAULT_TOAST_SETTINGS }
+  toast: { ...DEFAULT_TOAST_SETTINGS },
+  shortcuts: { ...DEFAULT_SHORTCUTS }
 };
 
 const DEFAULT_ROOT_STATE = {
@@ -154,6 +156,13 @@ class StateManager {
     const canvasTexture = ['solid', 'dots', 'grid'].includes(ap.canvasTexture)
       ? ap.canvasTexture
       : DEFAULT_APPEARANCE_SETTINGS.canvasTexture;
+    const scRaw = s.shortcuts || {};
+    const shortcuts = { ...DEFAULT_SHORTCUTS };
+    for (const k of Object.keys(DEFAULT_SHORTCUTS)) {
+      if (typeof scRaw[k] === 'string') {
+        shortcuts[k] = scRaw[k].trim() === '' ? '' : (normalizeShortcutString(scRaw[k]) || DEFAULT_SHORTCUTS[k]);
+      }
+    }
     return {
       alignMode: !!s.alignMode,
       gridSnapMode: !!s.gridSnapMode,
@@ -180,7 +189,8 @@ class StateManager {
       toast: {
         position: toastPos,
         durationSec: toastDur
-      }
+      },
+      shortcuts
     };
   }
 
@@ -708,6 +718,182 @@ class StateManager {
     return true;
   }
 
+  async deleteCanvases(canvasIds) {
+    if (this.isFocusMode) {
+      this.emitToast('当前处于专注模式，请先退出专注模式后再删除画布', 'warning');
+      return { blocked: true, reason: 'focus-mode' };
+    }
+    const rawList = Array.isArray(canvasIds) ? canvasIds : [canvasIds];
+    const uniqueIds = [...new Set(rawList.filter(Boolean))];
+    if (uniqueIds.length === 0) return { deletedCount: 0, deletedIds: [] };
+
+    const deletableIds = uniqueIds.filter(id => id !== 'root');
+    if (deletableIds.length === 0) {
+      this.emitToast('主画布不能删除', 'warning');
+      return { deletedCount: 0, deletedIds: [], rootSkipped: true };
+    }
+
+    const hierarchy = this.getCanvasHierarchy();
+    const rowMap = new Map(hierarchy.map(r => [r.id, r]));
+    const validTargets = deletableIds.filter(id => rowMap.has(id));
+    if (validTargets.length === 0) return { deletedCount: 0, deletedIds: [] };
+
+    const targetSet = new Set(validTargets);
+    const hasSelectedAncestor = (cid) => {
+      let pid = rowMap.get(cid)?.parentCanvasId;
+      const seen = new Set([cid]);
+      while (pid && !seen.has(pid)) {
+        seen.add(pid);
+        if (targetSet.has(pid)) return true;
+        pid = rowMap.get(pid)?.parentCanvasId || null;
+      }
+      return false;
+    };
+    const topTargets = validTargets.filter(id => !hasSelectedAncestor(id));
+
+    const allDeletedIds = new Set();
+    for (const sid of topTargets) {
+      allDeletedIds.add(sid);
+      for (const did of this._collectDescendantCanvasIdsLocal(sid)) {
+        allDeletedIds.add(did);
+      }
+    }
+
+    // If the currently active canvas is inside a deleted subtree, switch to nearest surviving ancestor
+    if (allDeletedIds.has(this.activeCanvasId)) {
+      let safeParent = rowMap.get(this.activeCanvasId)?.parentCanvasId || 'root';
+      const seen = new Set([this.activeCanvasId]);
+      while (safeParent && allDeletedIds.has(safeParent) && !seen.has(safeParent)) {
+        seen.add(safeParent);
+        safeParent = rowMap.get(safeParent)?.parentCanvasId || 'root';
+      }
+      if (!safeParent || allDeletedIds.has(safeParent)) safeParent = 'root';
+      await this.navigateToCanvas(safeParent);
+    }
+
+    const activeCardIdsToRemove = [];
+    const nonActiveByParent = new Map();
+
+    for (const sid of topTargets) {
+      const pid = rowMap.get(sid)?.parentCanvasId;
+      if (!pid) {
+        this._markSubcanvasSubtreeDeleted(sid);
+        continue;
+      }
+      if (pid === this.activeCanvasId) {
+        const cardIds = this.state.cards
+          .filter(c => c.kind === 'subcanvas' && c.subcanvasId === sid)
+          .map(c => c.id);
+        activeCardIdsToRemove.push(...cardIds);
+      } else {
+        if (!nonActiveByParent.has(pid)) nonActiveByParent.set(pid, []);
+        nonActiveByParent.get(pid).push(sid);
+      }
+    }
+
+    // Update any non-active parent canvases so their portal cards and connections stay consistent
+    for (const [pid, childSids] of nonActiveByParent.entries()) {
+      let parentEntry = this.canvasesCache.get(pid);
+      if (!parentEntry) {
+        try {
+          const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(pid)}`);
+          if (res.ok) {
+            const json = await res.json();
+            if (json?.ok && json.data) {
+              parentEntry = {
+                id: pid,
+                parentCanvasId: json.data.parentCanvasId ?? null,
+                title: json.data.title || (pid === 'root' ? '主画布' : '子画布'),
+                breadcrumbs: json.data.breadcrumbs || [{ id: pid, title: json.data.title || '画布' }],
+                viewport: json.data.viewport || { x: 0, y: 0, zoom: 1.0 },
+                cards: json.data.cards || [],
+                connections: json.data.connections || [],
+                groups: json.data.groups || [],
+                dirty: false,
+                updatedAt: Date.now()
+              };
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (parentEntry) {
+        const childSidSet = new Set(childSids);
+        const removedCardIds = new Set(
+          (parentEntry.cards || [])
+            .filter(c => c.kind === 'subcanvas' && childSidSet.has(c.subcanvasId))
+            .map(c => c.id)
+        );
+        parentEntry.cards = (parentEntry.cards || []).filter(c => !removedCardIds.has(c.id));
+        const removedGroupPinIds = new Set();
+        if (Array.isArray(parentEntry.groups)) {
+          parentEntry.groups.forEach(g => {
+            g.cardIds = (g.cardIds || []).filter(id => !removedCardIds.has(id));
+            if (g.cardIds.length < 2) {
+              removedGroupPinIds.add(`pin-group-left-${g.id}`);
+              removedGroupPinIds.add(`pin-group-right-${g.id}`);
+            }
+          });
+          parentEntry.groups = parentEntry.groups.filter(g => g.cardIds.length >= 2);
+        }
+        const findOwnerInEntry = (pinId) => {
+          if (!pinId) return null;
+          if (pinId.startsWith('pin-head-')) {
+            return pinId.replace(/^pin-head-(?:left-|right-)?/, '');
+          }
+          if (pinId.startsWith('pin-group-')) {
+            return pinId.replace(/^pin-group-(?:left-|right-)?/, '');
+          }
+          for (const c of parentEntry.cards || []) {
+            if (c.contentHtml && c.contentHtml.includes(pinId)) return c.id;
+          }
+          return null;
+        };
+        parentEntry.connections = (parentEntry.connections || []).filter(conn => {
+          if (removedGroupPinIds.has(conn.fromPinId) || removedGroupPinIds.has(conn.toPinId)) return false;
+          const o1 = findOwnerInEntry(conn.fromPinId);
+          const o2 = findOwnerInEntry(conn.toPinId);
+          return (!o1 || !removedCardIds.has(o1)) && (!o2 || !removedCardIds.has(o2));
+        });
+        parentEntry.dirty = true;
+        parentEntry.updatedAt = Date.now();
+        this.canvasesCache.set(pid, parentEntry);
+        this.dirtyCanvasIds.add(pid);
+        await idbCache.putCanvas(parentEntry);
+      }
+
+      for (const sid of childSids) {
+        this._markSubcanvasSubtreeDeleted(sid);
+      }
+    }
+
+    if (activeCardIdsToRemove.length > 0) {
+      this.removeCards(activeCardIdsToRemove);
+    }
+
+    // Mark any remaining topTargets (e.g. if parent wasn't cached offline)
+    for (const sid of topTargets) {
+      if (!this.pendingDeletedCanvasIds.has(sid)) {
+        this._markSubcanvasSubtreeDeleted(sid);
+      }
+    }
+
+    if (activeCardIdsToRemove.length === 0) {
+      this._saveActiveToCacheMap(this.dirtyCanvasIds.has(this.activeCanvasId));
+      await this.flushCacheToIDBNow();
+      this.listeners.forEach(fn => fn({ type: 'DIRTY_CHANGED', dirtyCanvasIds: [...this.dirtyCanvasIds] }, this.state));
+      this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+    }
+
+    const skippedRootNote = uniqueIds.includes('root') ? '（已保留主画布）' : '';
+    this.emitToast(`已删除 ${topTargets.length} 个子画布${skippedRootNote}`, 'success');
+    return {
+      deletedCount: topTargets.length,
+      deletedIds: [...allDeletedIds],
+      activeModified: activeCardIdsToRemove.length > 0
+    };
+  }
+
   async createSubcanvas({ x, y, title = '未命名子画布', headerColor = null, width = 300, height = 180, cardIds = null } = {}) {
     if (this.isFocusMode) {
       this.emitToast('请先退出专注模式后再新建子画布', 'warning');
@@ -1044,6 +1230,54 @@ class StateManager {
     if (['solid', 'dots', 'grid'].includes(patch.canvasTexture)) {
       ap.canvasTexture = patch.canvasTexture;
     }
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+  }
+
+  getShortcuts() {
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
+    if (!this.state.settings.shortcuts) {
+      this.state.settings.shortcuts = { ...DEFAULT_SHORTCUTS };
+    }
+    for (const k of Object.keys(DEFAULT_SHORTCUTS)) {
+      if (typeof this.state.settings.shortcuts[k] !== 'string') {
+        this.state.settings.shortcuts[k] = DEFAULT_SHORTCUTS[k];
+      }
+    }
+    return this.state.settings.shortcuts;
+  }
+
+  getShortcut(actionKey) {
+    const map = this.getShortcuts();
+    return typeof map[actionKey] === 'string' ? map[actionKey] : (DEFAULT_SHORTCUTS[actionKey] || '');
+  }
+
+  setShortcut(actionKey, binding) {
+    if (!(actionKey in DEFAULT_SHORTCUTS)) return false;
+    const sc = this.getShortcuts();
+    const clean = binding === '' ? '' : normalizeShortcutString(binding);
+    if (binding !== '' && !clean) return false;
+    sc[actionKey] = clean;
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+    return true;
+  }
+
+  setShortcuts(patch) {
+    if (!patch || typeof patch !== 'object') return;
+    const sc = this.getShortcuts();
+    for (const [k, v] of Object.entries(patch)) {
+      if (k in DEFAULT_SHORTCUTS && typeof v === 'string') {
+        sc[k] = v === '' ? '' : (normalizeShortcutString(v) || sc[k]);
+      }
+    }
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+  }
+
+  resetShortcuts() {
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
+    this.state.settings.shortcuts = { ...DEFAULT_SHORTCUTS };
     this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
   }
@@ -1694,74 +1928,202 @@ class StateManager {
     return { success: true, fileName: suggestedName };
   }
 
-  async openFromFile() {
+  async importAsSubcanvas(data, fileName = '导入的子画布.pinpoint', { x, y } = {}) {
     if (this.isFocusMode) {
-      this.emitToast('当前处于专注模式，请先确认并退出专注模式后再打开文件', 'warning');
+      this.emitToast('当前处于专注模式，请先确认并退出专注模式后再导入文件', 'warning');
+      return { blocked: true, reason: 'focus-mode' };
+    }
+    if (!data || !Array.isArray(data.cards) || !Array.isArray(data.connections)) {
+      this.emitToast('无效的 .pinpoint 文件格式', 'warning');
+      return { error: new Error('Invalid format') };
+    }
+
+    const newSubcanvasId = this._nextId('canvas');
+    const cardId = this._nextId('card');
+    const baseName = String(fileName || '').replace(/\.(pinpoint|json)$/i, '').trim();
+    const rawTitle = typeof data.title === 'string' ? data.title.trim() : '';
+    const cleanTitle = (rawTitle && rawTitle !== '主画布') ? rawTitle : (baseName || rawTitle || '导入的子画布');
+
+    // Build collision-free remapping for any nested subcanvases in the imported bundle
+    const subIdMap = new Map();
+    if (data.canvasId && typeof data.canvasId === 'string') {
+      subIdMap.set(data.canvasId, newSubcanvasId);
+    }
+    const registerSubId = (oldSid) => {
+      if (!oldSid || typeof oldSid !== 'string') return;
+      if (!subIdMap.has(oldSid)) {
+        subIdMap.set(oldSid, this._nextId('canvas'));
+      }
+    };
+
+    const rawSubs = (data.subcanvases && typeof data.subcanvases === 'object') ? data.subcanvases : {};
+    for (const sid of Object.keys(rawSubs)) {
+      registerSubId(sid);
+    }
+    for (const c of data.cards) {
+      if (c?.kind === 'subcanvas' && c.subcanvasId) registerSubId(c.subcanvasId);
+    }
+    for (const sub of Object.values(rawSubs)) {
+      if (sub && Array.isArray(sub.cards)) {
+        for (const c of sub.cards) {
+          if (c?.kind === 'subcanvas' && c.subcanvasId) registerSubId(c.subcanvasId);
+        }
+      }
+    }
+
+    const normalizeImportedGraph = (rawGraph) => {
+      const cards = clone(rawGraph.cards || []).map(c => {
+        const next = { ...c };
+        if (next.kind === 'subcanvas' && next.subcanvasId) {
+          next.subcanvasId = subIdMap.get(next.subcanvasId) || next.subcanvasId;
+        }
+        return next;
+      });
+      const groups = clone(rawGraph.groups || []);
+      const connections = clone(rawGraph.connections || []).filter(c => this.validateConnection(c, cards, groups));
+      const vp = rawGraph.viewport || {};
+      return {
+        viewport: {
+          x: Number.isFinite(Number(vp.x)) ? Number(vp.x) : 0,
+          y: Number.isFinite(Number(vp.y)) ? Number(vp.y) : 0,
+          zoom: Number.isFinite(Number(vp.zoom)) && Number(vp.zoom) > 0 ? Number(vp.zoom) : 1.0
+        },
+        cards,
+        groups,
+        connections
+      };
+    };
+
+    const rootNorm = normalizeImportedGraph(data);
+    const childEntry = {
+      id: newSubcanvasId,
+      parentCanvasId: this.activeCanvasId,
+      title: cleanTitle,
+      breadcrumbs: [...this.breadcrumbs, { id: newSubcanvasId, title: cleanTitle }],
+      viewport: rootNorm.viewport,
+      cards: rootNorm.cards,
+      connections: rootNorm.connections,
+      groups: rootNorm.groups,
+      dirty: true,
+      updatedAt: Date.now()
+    };
+
+    const importedEntries = new Map();
+    importedEntries.set(newSubcanvasId, childEntry);
+
+    for (const [oldSid, rawSub] of Object.entries(rawSubs)) {
+      if (!rawSub || !Array.isArray(rawSub.cards)) continue;
+      const mappedSid = subIdMap.get(oldSid);
+      if (!mappedSid || mappedSid === newSubcanvasId) continue;
+      const normSub = normalizeImportedGraph(rawSub);
+      const mappedParent = (rawSub.parentCanvasId && subIdMap.get(rawSub.parentCanvasId)) || newSubcanvasId;
+      importedEntries.set(mappedSid, {
+        id: mappedSid,
+        parentCanvasId: mappedParent === mappedSid ? newSubcanvasId : mappedParent,
+        title: (typeof rawSub.title === 'string' && rawSub.title.trim()) ? rawSub.title.trim() : '子画布',
+        viewport: normSub.viewport,
+        cards: normSub.cards,
+        connections: normSub.connections,
+        groups: normSub.groups,
+        dirty: true,
+        updatedAt: Date.now()
+      });
+    }
+
+    // BFS from newSubcanvasId to keep parentCanvasId & breadcrumbs consistent for all nested subcanvases
+    const queue = [newSubcanvasId];
+    const visited = new Set([newSubcanvasId]);
+    while (queue.length > 0) {
+      const curId = queue.shift();
+      const curEntry = importedEntries.get(curId);
+      if (!curEntry) continue;
+      for (const c of curEntry.cards) {
+        if (c.kind === 'subcanvas' && c.subcanvasId && !visited.has(c.subcanvasId)) {
+          visited.add(c.subcanvasId);
+          const subEntry = importedEntries.get(c.subcanvasId);
+          if (subEntry) {
+            subEntry.parentCanvasId = curId;
+            subEntry.breadcrumbs = [...(curEntry.breadcrumbs || []), { id: subEntry.id, title: subEntry.title }];
+            queue.push(c.subcanvasId);
+          }
+        }
+      }
+    }
+
+    // Compute thumbnails bottom-up (post-order by reverse BFS order)
+    const order = [...visited];
+    for (let i = order.length - 1; i >= 0; i--) {
+      const entry = importedEntries.get(order[i]);
+      if (!entry) continue;
+      for (const c of entry.cards) {
+        if (c.kind === 'subcanvas' && c.subcanvasId) {
+          const subEntry = importedEntries.get(c.subcanvasId);
+          if (subEntry) {
+            c.thumbnail = computeLocalThumbnail(subEntry);
+          }
+        }
+      }
+    }
+
+    for (const [sid, entry] of importedEntries.entries()) {
+      this.canvasesCache.set(sid, entry);
+      this.dirtyCanvasIds.add(sid);
+      await idbCache.putCanvas(entry);
+    }
+
+    // Place the new subcanvas portal near viewport center (nudge if colliding)
+    const vp = this.state.viewport || { x: 0, y: 0, zoom: 1.0 };
+    const zoom = vp.zoom > 0 ? vp.zoom : 1.0;
+    let posX = x ?? ((-vp.x + window.innerWidth / 2) / zoom - 150);
+    let posY = y ?? ((-vp.y + window.innerHeight / 2) / zoom - 90);
+    posX = Math.round(posX);
+    posY = Math.round(posY);
+    while (this.state.cards.some(c => Math.abs((c.x || 0) - posX) < 24 && Math.abs((c.y || 0) - posY) < 24)) {
+      posX += 32;
+      posY += 32;
+    }
+    if (this.state.settings?.gridSnapMode) {
+      const GRID_SIZE = 24;
+      posX = Math.round(posX / GRID_SIZE) * GRID_SIZE;
+      posY = Math.round(posY / GRID_SIZE) * GRID_SIZE;
+    }
+
+    const card = {
+      id: cardId,
+      kind: 'subcanvas',
+      subcanvasId: newSubcanvasId,
+      title: cleanTitle,
+      x: posX,
+      y: posY,
+      width: 300,
+      height: 180,
+      contentHtml: '',
+      thumbnail: computeLocalThumbnail(childEntry)
+    };
+
+    this.state.cards.push(card);
+    this.commit();
+    this._saveActiveToCacheMap(true);
+    this.notify({ type: 'CARD_ADDED', card });
+    this.notify({ type: 'FILE_OPENED', fileName, card });
+    this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.getCanvasHierarchy() }, this.state));
+    this.emitToast(`已将「${cleanTitle}」作为子画布导入`, 'success');
+    return { success: true, fileName, card, subcanvasId: newSubcanvasId };
+  }
+
+  async openFromFile({ x, y } = {}) {
+    if (this.isFocusMode) {
+      this.emitToast('当前处于专注模式，请先确认并退出专注模式后再导入文件', 'warning');
       return { blocked: true, reason: 'focus-mode' };
     }
 
-    const applyImportedData = async (data, fileName) => {
-      if (!data || !Array.isArray(data.cards) || !Array.isArray(data.connections)) {
-        this.emitToast('无效的 .pinpoint 文件格式', 'warning');
-        return { error: new Error('Invalid format') };
-      }
-
-      // If backend is online, import via backend API so SQLite persists full subtree cleanly
+    const parseAndImport = async (content, fileName) => {
       try {
-        const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(this.activeCanvasId)}/import`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data)
-        });
-        if (res.ok) {
-          const refreshed = await fetch(`${API_BASE}/canvases/${encodeURIComponent(this.activeCanvasId)}`);
-          if (refreshed.ok) {
-            const json = await refreshed.json();
-            if (json?.ok && json.data) {
-              this.dirtyCanvasIds.delete(this.activeCanvasId);
-              this.pendingDeletedCanvasIds.clear();
-              this.applyRemoteCanvas(json.data, 'GRAPH_REPLACED');
-              await this.refreshCanvasTree();
-              this.emitToast(`已导入「${fileName}」`, 'success');
-              return { success: true, fileName };
-            }
-          }
-        }
-      } catch (e) {}
-
-      // Fallback offline: import into cache and mark dirty
-      const cards = clone(data.cards);
-      const groups = clone(data.groups || []);
-      this.state.viewport = clone(data.viewport || { x: 0, y: 0, zoom: 1.0 });
-      this.state.cards = cards;
-      this.state.groups = groups;
-      this.state.connections = clone(data.connections).filter(c => this.validateConnection(c, cards, groups));
-      if (data.subcanvases && typeof data.subcanvases === 'object') {
-        for (const [sid, sub] of Object.entries(data.subcanvases)) {
-          if (sub && Array.isArray(sub.cards)) {
-            const entry = {
-              id: sid,
-              parentCanvasId: sub.parentCanvasId || this.activeCanvasId,
-              title: sub.title || '子画布',
-              viewport: sub.viewport || { x: 0, y: 0, zoom: 1.0 },
-              cards: sub.cards,
-              connections: sub.connections || [],
-              groups: sub.groups || [],
-              dirty: true,
-              updatedAt: Date.now()
-            };
-            this.canvasesCache.set(sid, entry);
-            this.dirtyCanvasIds.add(sid);
-            idbCache.putCanvas(entry);
-          }
-        }
+        return await this.importAsSubcanvas(JSON.parse(content), fileName, { x, y });
+      } catch (e) {
+        this.emitToast('无效的 .pinpoint 文件格式', 'warning');
+        return { error: e };
       }
-      this._refreshSubcanvasThumbnailsOnActive();
-      this.undoStack = [this.snapshot()];
-      this.redoStack = [];
-      this.markDirty(this.activeCanvasId);
-      this.notify({ type: 'FILE_OPENED', fileName });
-      return { success: true, fileName };
     };
 
     if (window.showOpenFilePicker) {
@@ -1775,7 +2137,7 @@ class StateManager {
         });
         const file = await handle.getFile();
         const content = await file.text();
-        return await applyImportedData(JSON.parse(content), handle.name);
+        return await parseAndImport(content, handle.name);
       } catch (err) {
         if (err.name === 'AbortError') return { aborted: true };
       }
@@ -1788,12 +2150,8 @@ class StateManager {
       input.onchange = async () => {
         const file = input.files?.[0];
         if (!file) return resolve({ aborted: true });
-        try {
-          const content = await file.text();
-          resolve(await applyImportedData(JSON.parse(content), file.name));
-        } catch (e) {
-          resolve({ error: e });
-        }
+        const content = await file.text();
+        resolve(await parseAndImport(content, file.name));
       };
       input.click();
     });

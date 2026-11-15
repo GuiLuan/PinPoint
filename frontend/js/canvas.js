@@ -1,4 +1,5 @@
 import { store } from './state.js';
+import { matchesShortcut } from './shortcuts.js';
 
 class CanvasManager {
   constructor() {
@@ -123,12 +124,13 @@ class CanvasManager {
     }, { passive: false });
 
     window.addEventListener('keydown', (e) => {
+      if (window.__settings?.isRecordingShortcut?.()) return;
       const isEditingText = e.target?.closest?.('input, textarea, [contenteditable="true"]');
       if (e.code === 'Space' && !e.repeat && !isEditingText) {
         this.isSpacePressed = true;
         this.viewportEl.style.cursor = 'grab';
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      if (matchesShortcut(e, store.getShortcut('saveGraph'))) {
         e.preventDefault();
         window.__sync?.saveAllToBackend?.({ manual: true });
       }

@@ -1,10 +1,12 @@
 import { store, DEFAULT_PALETTE } from './state.js';
 import { hexToRgba } from './nodes.js';
+import { SHORTCUT_DEFINITIONS, formatShortcutDisplay, formatShortcutFromEvent } from './shortcuts.js';
 
 class SettingsManager {
   constructor() {
     this.overlayEl = null;
     this.modalEl = null;
+    this.recordingShortcutKey = null;
   }
 
   init(overlayEl) {
@@ -96,6 +98,9 @@ class SettingsManager {
     // Toast Notification settings listeners
     this.bindToastListeners();
 
+    // Shortcuts settings listeners
+    this.bindShortcutsListeners();
+
     // Nav tabs switching
     this.overlayEl.querySelectorAll('.settings-nav-item').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -113,6 +118,7 @@ class SettingsManager {
     this.syncLibrarySettings();
     this.syncSaveSettings();
     this.syncToastSettings();
+    this.syncShortcuts();
   }
 
   switchTab(tabId) {
@@ -141,6 +147,8 @@ class SettingsManager {
       this.syncSaveSettings();
     } else if (tabId === 'toast') {
       this.syncToastSettings();
+    } else if (tabId === 'shortcuts') {
+      this.syncShortcuts();
     }
   }
 
@@ -148,8 +156,13 @@ class SettingsManager {
     return this.overlayEl && this.overlayEl.classList.contains('is-open');
   }
 
+  isRecordingShortcut() {
+    return Boolean(this.recordingShortcutKey);
+  }
+
   open() {
     if (!this.overlayEl) return;
+    this.recordingShortcutKey = null;
     this.switchTab(this.currentTab || 'appearance');
     this.syncAppearanceSettings();
     this.renderPaletteSlots();
@@ -158,11 +171,13 @@ class SettingsManager {
     this.syncLibrarySettings();
     this.syncSaveSettings();
     this.syncToastSettings();
+    this.syncShortcuts();
     this.overlayEl.classList.add('is-open');
   }
 
   close() {
     if (!this.overlayEl) return;
+    this.recordingShortcutKey = null;
     this.overlayEl.classList.remove('is-open');
   }
 
@@ -183,6 +198,7 @@ class SettingsManager {
       this.syncLibrarySettings();
       this.syncSaveSettings();
       this.syncToastSettings();
+      this.syncShortcuts();
     }
   }
 
@@ -556,6 +572,132 @@ class SettingsManager {
 
     if (alignPill) alignPill.classList.toggle('is-active', alignActive);
     if (gridPill) gridPill.classList.toggle('is-active', gridActive);
+  }
+
+  bindShortcutsListeners() {
+    if (!this.overlayEl) return;
+    const panel = this.overlayEl.querySelector('#tab-panel-shortcuts');
+    if (!panel) return;
+
+    panel.addEventListener('click', (e) => {
+      const clearBtn = e.target.closest('.shortcut-clear-btn');
+      if (clearBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const key = clearBtn.getAttribute('data-shortcut-key');
+        if (key) {
+          this.recordingShortcutKey = null;
+          store.setShortcut(key, '');
+          this.syncShortcuts();
+        }
+        return;
+      }
+
+      const keyBtn = e.target.closest('.shortcut-key-btn');
+      if (keyBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const key = keyBtn.getAttribute('data-shortcut-key');
+        if (!key) return;
+        this.recordingShortcutKey = (this.recordingShortcutKey === key) ? null : key;
+        this.syncShortcuts();
+        return;
+      }
+
+      if (this.recordingShortcutKey) {
+        this.recordingShortcutKey = null;
+        this.syncShortcuts();
+      }
+    });
+
+    const resetBtn = panel.querySelector('#btn-reset-shortcuts');
+    resetBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      this.recordingShortcutKey = null;
+      store.resetShortcuts();
+      this.syncShortcuts();
+      store.emitToast('已恢复默认快捷键', 'success');
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (!this.recordingShortcutKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.key === 'Escape') {
+        this.recordingShortcutKey = null;
+        this.syncShortcuts();
+        return;
+      }
+
+      const combo = formatShortcutFromEvent(e);
+      if (!combo) return;
+
+      const targetKey = this.recordingShortcutKey;
+      const currentMap = store.getShortcuts();
+      const conflictEntry = SHORTCUT_DEFINITIONS.find(
+        def => def.key !== targetKey && currentMap[def.key] && currentMap[def.key].toUpperCase() === combo.toUpperCase()
+      );
+
+      this.recordingShortcutKey = null;
+      if (conflictEntry) {
+        store.setShortcuts({ [conflictEntry.key]: '', [targetKey]: combo });
+        store.emitToast(`已绑定为「${formatShortcutDisplay(combo)}」，原「${conflictEntry.label}」已清空`, 'info');
+      } else {
+        store.setShortcut(targetKey, combo);
+      }
+      this.syncShortcuts();
+    }, true);
+  }
+
+  syncShortcuts() {
+    if (!this.overlayEl) return;
+    const container = this.overlayEl.querySelector('#shortcuts-list-container');
+    if (!container) return;
+
+    const shortcuts = store.getShortcuts();
+    container.innerHTML = '';
+
+    for (const def of SHORTCUT_DEFINITIONS) {
+      const binding = shortcuts[def.key] || '';
+      const isRecording = this.recordingShortcutKey === def.key;
+
+      const row = document.createElement('div');
+      row.className = 'shortcut-item shortcut-item-editable' + (isRecording ? ' is-recording' : '');
+
+      const labelEl = document.createElement('span');
+      labelEl.className = 'shortcut-label';
+      labelEl.textContent = def.label;
+
+      const rightWrap = document.createElement('div');
+      rightWrap.className = 'shortcut-controls';
+
+      const keyBtn = document.createElement('button');
+      keyBtn.type = 'button';
+      keyBtn.className = 'shortcut-key-btn' + (isRecording ? ' is-recording' : '') + (!binding ? ' is-empty' : '');
+      keyBtn.setAttribute('data-shortcut-key', def.key);
+      keyBtn.title = isRecording ? '请按下新的快捷键，按 Esc 取消' : '点击修改快捷键';
+
+      const kbd = document.createElement('kbd');
+      kbd.textContent = isRecording ? '按下按键...' : formatShortcutDisplay(binding);
+      keyBtn.appendChild(kbd);
+      rightWrap.appendChild(keyBtn);
+
+      if (binding && !isRecording) {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'shortcut-clear-btn';
+        clearBtn.setAttribute('data-shortcut-key', def.key);
+        clearBtn.title = '清空此快捷键';
+        clearBtn.setAttribute('aria-label', `清空 ${def.label} 快捷键`);
+        clearBtn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+        rightWrap.appendChild(clearBtn);
+      }
+
+      row.appendChild(labelEl);
+      row.appendChild(rightWrap);
+      container.appendChild(row);
+    }
   }
 
   renderPaletteSlots() {

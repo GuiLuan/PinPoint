@@ -418,7 +418,7 @@ class MinimapManager {
 
     // 3. Draw Cards
     this.ctx.save();
-    const neutralHeaderColor = isLight ? 'rgba(37, 34, 30, 0.18)' : 'rgba(152, 152, 157, 0.45)';
+    const neutralHeaderColor = isLight ? 'rgba(28, 25, 22, 0.26)' : 'rgba(152, 152, 157, 0.45)';
     for (const card of cards) {
       const isSub = card.kind === 'subcanvas';
       const cw = card.width || 320;
@@ -431,12 +431,12 @@ class MinimapManager {
       const radius = Math.min(2.5, mw / 2);
 
       if (isSub) {
-        this.ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.05)' : 'rgba(255, 255, 255, 0.05)';
+        this.ctx.fillStyle = isLight ? 'rgba(28, 25, 22, 0.07)' : 'rgba(255, 255, 255, 0.05)';
         this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
         this.ctx.fill();
       } else {
         // Card body background
-        this.ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.08)' : 'rgba(255, 255, 255, 0.1)';
+        this.ctx.fillStyle = isLight ? 'rgba(28, 25, 22, 0.11)' : 'rgba(255, 255, 255, 0.1)';
         this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
         this.ctx.fill();
 
@@ -457,7 +457,7 @@ class MinimapManager {
       } else {
         this.ctx.strokeStyle = isSub
           ? (card.headerColor || accentColor)
-          : (isLight ? 'rgba(37, 34, 30, 0.2)' : 'rgba(255, 255, 255, 0.18)');
+          : (isLight ? 'rgba(28, 25, 22, 0.28)' : 'rgba(255, 255, 255, 0.18)');
         this.ctx.lineWidth = 0.75;
         this.drawRoundRect(this.ctx, cx, cy, mw, mh, radius);
         this.ctx.stroke();

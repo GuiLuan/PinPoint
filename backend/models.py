@@ -38,6 +38,24 @@ VALID_SAVE_MODES = {"auto", "manual"}
 DEFAULT_SAVE_SETTINGS = {"mode": "auto", "intervalSec": 1}
 VALID_TOAST_POSITIONS = {"top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"}
 DEFAULT_TOAST_SETTINGS = {"position": "bottom-left", "durationSec": 5}
+DEFAULT_SHORTCUTS = {
+    "toggleCanvases": "C",
+    "toggleLibrary": "L",
+    "saveToLibrary": "Shift+L",
+    "toggleFocusMode": "F",
+    "openSettings": "Ctrl+,",
+    "saveGraph": "Ctrl+S",
+    "undo": "Ctrl+Z",
+    "redo": "Ctrl+Y",
+    "selectAll": "Ctrl+A",
+    "copy": "Ctrl+C",
+    "cut": "Ctrl+X",
+    "paste": "Ctrl+V",
+    "createGroup": "Ctrl+G",
+    "ungroup": "Ctrl+Shift+G",
+    "renameCard": "F2",
+    "deleteSelected": "Delete",
+}
 VALID_ALIGN_TYPES = {
     "left", "center-h", "right",
     "top", "center-v", "bottom",
@@ -75,6 +93,7 @@ DEFAULT_STATE: dict[str, Any] = {
             "intervalSec": 1,
         },
         "toast": dict(DEFAULT_TOAST_SETTINGS),
+        "shortcuts": dict(DEFAULT_SHORTCUTS),
     },
     "cards": [
         {

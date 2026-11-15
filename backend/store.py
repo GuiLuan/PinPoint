@@ -21,6 +21,7 @@ from .models import (
     DEFAULT_COLOR_NEUTRAL,
     DEFAULT_PALETTE,
     DEFAULT_SAVE_SETTINGS,
+    DEFAULT_SHORTCUTS,
     DEFAULT_STATE,
     DEFAULT_SUBCANVAS_HEIGHT,
     DEFAULT_SUBCANVAS_WIDTH,
@@ -320,6 +321,12 @@ class GraphStore:
         if canvas_tex not in VALID_CANVAS_TEXTURES:
             canvas_tex = DEFAULT_APPEARANCE_SETTINGS["canvasTexture"]
 
+        sc_raw = s.get("shortcuts") if isinstance(s.get("shortcuts"), dict) else {}
+        shortcuts = dict(DEFAULT_SHORTCUTS)
+        for k in DEFAULT_SHORTCUTS:
+            if k in sc_raw and isinstance(sc_raw[k], str):
+                shortcuts[k] = sc_raw[k].strip()[:40]
+
         return {
             "alignMode": bool(s.get("alignMode", False)),
             "gridSnapMode": bool(s.get("gridSnapMode", False)),
@@ -347,6 +354,7 @@ class GraphStore:
                 "position": toast_pos,
                 "durationSec": toast_dur,
             },
+            "shortcuts": shortcuts,
         }
 
     def _normalize_viewport(self, raw_vp: dict[str, Any] | None) -> dict[str, Any]:
@@ -2204,6 +2212,16 @@ class GraphStore:
                     if ct not in VALID_CANVAS_TEXTURES:
                         raise ApiError(400, "INVALID_CANVAS_TEXTURE", f"canvasTexture must be one of {sorted(VALID_CANVAS_TEXTURES)}.")
                     ap["canvasTexture"] = ct
+            if "shortcuts" in patch:
+                sc_patch = patch["shortcuts"]
+                if not isinstance(sc_patch, dict):
+                    raise ApiError(400, "INVALID_SHORTCUTS", "'shortcuts' must be an object.")
+                sc = settings.setdefault("shortcuts", dict(DEFAULT_SHORTCUTS))
+                for k, v in sc_patch.items():
+                    if k in DEFAULT_SHORTCUTS:
+                        if not isinstance(v, str):
+                            raise ApiError(400, "INVALID_SHORTCUT_VALUE", f"Shortcut '{k}' must be a string.")
+                        sc[k] = v.strip()[:40]
 
             for st in self._canvases.values():
                 st["settings"] = self.settings

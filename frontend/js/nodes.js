@@ -3,6 +3,7 @@ import { canvas } from './canvas.js';
 import { wires } from './wires.js';
 import { computeRectsBoundingBox } from './focusLayout.js';
 import { renderThumbnailCanvas, computeLocalThumbnail } from './subcanvas.js';
+import { matchesShortcut } from './shortcuts.js';
 
 export function hexToRgba(hex, alpha = 1) {
   if (!hex) return `rgba(48, 209, 88, ${alpha})`;
@@ -189,13 +190,14 @@ class NodeManager {
       const leftColor = card.headerColor || leftConn?.color || '#98989d';
       const rightColor = card.headerColor || rightConn?.color || '#98989d';
 
+      const isLightTheme = document.documentElement.getAttribute('data-theme') === 'light';
       if (card.headerColor) {
         cardEl.style.setProperty('--card-theme-color', card.headerColor);
-        cardEl.style.setProperty('--card-theme-bg', hexToRgba(card.headerColor, 0.055));
-        cardEl.style.setProperty('--card-theme-header-bg', hexToRgba(card.headerColor, 0.11));
-        cardEl.style.setProperty('--card-theme-header-border', hexToRgba(card.headerColor, 0.18));
-        cardEl.style.setProperty('--card-theme-border', hexToRgba(card.headerColor, 0.36));
-        cardEl.style.setProperty('--card-theme-glow', hexToRgba(card.headerColor, 0.25));
+        cardEl.style.setProperty('--card-theme-bg', hexToRgba(card.headerColor, isLightTheme ? 0.08 : 0.055));
+        cardEl.style.setProperty('--card-theme-header-bg', hexToRgba(card.headerColor, isLightTheme ? 0.18 : 0.11));
+        cardEl.style.setProperty('--card-theme-header-border', hexToRgba(card.headerColor, isLightTheme ? 0.28 : 0.18));
+        cardEl.style.setProperty('--card-theme-border', hexToRgba(card.headerColor, isLightTheme ? 0.48 : 0.36));
+        cardEl.style.setProperty('--card-theme-glow', hexToRgba(card.headerColor, isLightTheme ? 0.28 : 0.25));
       } else {
         cardEl.style.removeProperty('--card-theme-color');
         cardEl.style.removeProperty('--card-theme-bg');
@@ -318,6 +320,7 @@ class NodeManager {
           if (e.button !== 0) return;
           e.preventDefault();
           e.stopPropagation();
+          this._blurActiveTextEditor();
           wires.clearFocus();
           wires.dismissDropMenu(true);
           this.clearCapsuleSelection();
@@ -327,9 +330,15 @@ class NodeManager {
           this.hideGroupContextMenu();
           this.hideSubcanvasContextMenu();
 
-          if (e.shiftKey) {
-            this.selectCard(card.id, true);
-          } else if (!this.selectedCardIds.has(card.id)) {
+          const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
+          const wasSelected = this.selectedCardIds.has(card.id);
+          if (isMultiToggle) {
+            if (!wasSelected) {
+              this.selectedCardIds.add(card.id);
+              this.updateSelectionVisuals();
+              this.updateAlignmentBar();
+            }
+          } else if (!wasSelected) {
             this.selectCard(card.id, false);
           }
 
@@ -339,6 +348,8 @@ class NodeManager {
             startX: e.clientX,
             startY: e.clientY,
             isAlt: e.altKey,
+            wasMultiToggle: isMultiToggle,
+            toggleOffOnClick: isMultiToggle && wasSelected,
             cloned: false,
             initialPositions: new Map(
               [...this.selectedCardIds].map(id => {
@@ -496,9 +507,17 @@ class NodeManager {
       });
 
       cardEl.addEventListener('mousedown', (e) => {
-        if (e.shiftKey && !e.target.closest('.header-pin, .header-port-slot, .capsule-pin')) {
+        if (e.button !== 0) return;
+        if (e.target.closest('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .capsule-pin, .text-capsule, .header-title-input')) return;
+        const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
+        if (isMultiToggle) {
+          this._blurActiveTextEditor();
           e.preventDefault();
+          e.stopPropagation();
+          window.getSelection()?.removeAllRanges();
           this.selectCard(card.id, true);
+        } else if (!this.selectedCardIds.has(card.id) || this.selectedCardIds.size > 1) {
+          this.selectCard(card.id, false);
         }
       });
 
@@ -517,6 +536,7 @@ class NodeManager {
         if (e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
+        this._blurActiveTextEditor();
         wires.clearFocus();
         wires.dismissDropMenu(true);
         this.clearCapsuleSelection();
@@ -526,9 +546,15 @@ class NodeManager {
         this.hideGroupContextMenu();
         this.hideSubcanvasContextMenu();
 
-        if (e.shiftKey) {
-          this.selectCard(card.id, true);
-        } else if (!this.selectedCardIds.has(card.id)) {
+        const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
+        const wasSelected = this.selectedCardIds.has(card.id);
+        if (isMultiToggle) {
+          if (!wasSelected) {
+            this.selectedCardIds.add(card.id);
+            this.updateSelectionVisuals();
+            this.updateAlignmentBar();
+          }
+        } else if (!wasSelected) {
           this.selectCard(card.id, false);
         }
 
@@ -538,6 +564,8 @@ class NodeManager {
           startX: e.clientX,
           startY: e.clientY,
           isAlt: e.altKey,
+          wasMultiToggle: isMultiToggle,
+          toggleOffOnClick: isMultiToggle && wasSelected,
           cloned: false,
           initialPositions: new Map(
             [...this.selectedCardIds].map(id => {
@@ -719,6 +747,7 @@ class NodeManager {
       capsule.addEventListener('click', (e) => {
         if (e.target.closest('.capsule-pin')) return;
         e.stopPropagation();
+        this._blurActiveTextEditor();
         this.selectCapsule(capsule);
       });
     });
@@ -1373,8 +1402,23 @@ class NodeManager {
       }
 
       const anchor = selection.anchorNode;
-      const bodyEl = anchor?.nodeType === 3 ? anchor.parentElement.closest('.note-body') : anchor?.closest('.note-body');
-      if (!bodyEl) {
+      const focus = selection.focusNode;
+      const anchorBody = anchor?.nodeType === 3 ? anchor.parentElement?.closest('.note-body') : anchor?.closest?.('.note-body');
+      const focusBody = focus?.nodeType === 3 ? focus.parentElement?.closest('.note-body') : focus?.closest?.('.note-body');
+      if (!anchorBody || anchorBody !== focusBody) {
+        if (!this.targetCapsule && !this.targetHeaderCard && !this.targetGroup) this.hideSelectionPopover();
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      const anchorCapsule = anchor?.nodeType === 3 ? anchor.parentElement?.closest('.text-capsule') : anchor?.closest?.('.text-capsule');
+      const focusCapsule = focus?.nodeType === 3 ? focus.parentElement?.closest('.text-capsule') : focus?.closest?.('.text-capsule');
+      const intersectsExisting = Boolean(
+        anchorCapsule ||
+        focusCapsule ||
+        Array.from(anchorBody.querySelectorAll('.text-capsule')).some(cap => range.intersectsNode(cap))
+      );
+      if (intersectsExisting) {
         if (!this.targetCapsule && !this.targetHeaderCard && !this.targetGroup) this.hideSelectionPopover();
         return;
       }
@@ -1382,7 +1426,7 @@ class NodeManager {
       this.targetCapsule = null;
       this.targetHeaderCard = null;
       this.targetGroup = null;
-      this.currentRange = selection.getRangeAt(0).cloneRange();
+      this.currentRange = range.cloneRange();
       this.renderPopoverPalette();
       this.setSelectedColor(this.selectedColor || store.getPalette()[0] || '#30d158');
       this.updatePopoverPosition();
@@ -1521,10 +1565,10 @@ class NodeManager {
   createCapsuleFromSelection(color = '#5ca479') {
     if (!this.currentRange) return;
 
-    const selectedText = this.currentRange.toString().trim();
+    const selectedText = this.currentRange.toString().replace(/\s*\n+\s*/g, ' ').trim();
     if (!selectedText) return;
 
-    const pinId = `pin-${Date.now()}`;
+    const pinId = store._nextId ? store._nextId('pin') : `pin-${Date.now()}`;
     const bg = hexToRgba(color, 0.16);
 
     const capsule = document.createElement('span');
@@ -1534,7 +1578,10 @@ class NodeManager {
     capsule.style.setProperty('--capsule-pin', color);
     capsule.style.backgroundColor = bg;
     capsule.style.borderColor = 'transparent';
-    capsule.innerHTML = `<i class="capsule-pin"></i>${selectedText}`;
+    const pinEl = document.createElement('i');
+    pinEl.className = 'capsule-pin';
+    capsule.appendChild(pinEl);
+    capsule.appendChild(document.createTextNode(selectedText));
 
     this.currentRange.deleteContents();
     this.currentRange.insertNode(capsule);
@@ -1557,7 +1604,18 @@ class NodeManager {
     store.scheduleAutoSave();
   }
 
+  _blurActiveTextEditor() {
+    window.__canvases?.blurScope?.();
+    const active = document.activeElement;
+    if (active && active !== document.body && typeof active.blur === 'function') {
+      if (active.isContentEditable || active.closest?.('input, textarea, select, [contenteditable]')) {
+        active.blur();
+      }
+    }
+  }
+
   selectCard(cardId, isShift = false) {
+    window.__canvases?.blurScope?.();
     if (isShift) {
       if (this.selectedCardIds.has(cardId)) {
         this.selectedCardIds.delete(cardId);
@@ -2047,6 +2105,7 @@ class NodeManager {
         if (e.button !== 0 || canvas.isSpacePressed) return;
         e.preventDefault();
         e.stopPropagation();
+        this._blurActiveTextEditor();
         wires.clearFocus();
         wires.dismissDropMenu(true);
         this.clearCapsuleSelection();
@@ -2054,9 +2113,27 @@ class NodeManager {
         this.hideSelectionPopover();
         this.hideCanvasContextMenu();
         this.hideGroupContextMenu();
-        this.clearSelection();
 
+        const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
         const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
+        const memberIds = memberCards.map(c => c.id);
+        let toggleOffGroupIds = null;
+
+        if (isMultiToggle) {
+          const allSelected = memberIds.length > 0 && memberIds.every(id => this.selectedCardIds.has(id));
+          if (allSelected) {
+            toggleOffGroupIds = memberIds;
+          } else {
+            memberIds.forEach(id => this.selectedCardIds.add(id));
+            this.updateSelectionVisuals();
+            this.updateAlignmentBar();
+          }
+        } else {
+          this.selectedCardIds = new Set(memberIds);
+          this.updateSelectionVisuals();
+          this.updateAlignmentBar();
+        }
+
         const initMinX = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.x)) : 0;
         const initMinY = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.y)) : 0;
         this.activeDrag = {
@@ -2065,6 +2142,7 @@ class NodeManager {
           startX: e.clientX,
           startY: e.clientY,
           isAlt: e.altKey,
+          toggleOffGroupIds,
           cloned: false,
           initMinX,
           initMinY,
@@ -2228,6 +2306,12 @@ class NodeManager {
     btnAlignFocus?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.enterFocusMode();
+    });
+
+    const btnDeleteSelected = this.alignmentBarEl.querySelector('#btn-delete-selected');
+    btnDeleteSelected?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.deleteSelectedCards();
     });
   }
 
@@ -2672,13 +2756,14 @@ class NodeManager {
       if (!isBg) return;
       if (e.button !== 0 || canvas.isSpacePressed) return;
 
+      this._blurActiveTextEditor();
       this.clearCapsuleSelection();
       wires.dismissDropMenu(true);
 
       this.activeMarquee = {
         startX: e.clientX,
         startY: e.clientY,
-        isShift: e.shiftKey,
+        isAdditive: e.shiftKey || e.ctrlKey || e.metaKey,
         initialSelection: new Set(this.selectedCardIds),
         moved: false
       };
@@ -2713,7 +2798,7 @@ class NodeManager {
             if (overlap) intersected.add(card.id);
           });
 
-          if (this.activeMarquee.isShift) {
+          if (this.activeMarquee.isAdditive) {
             this.selectedCardIds = new Set([...this.activeMarquee.initialSelection, ...intersected]);
           } else {
             this.selectedCardIds = intersected;
@@ -3012,7 +3097,7 @@ class NodeManager {
     window.addEventListener('mouseup', (e) => {
       if (this.activeMarquee) {
         this.marqueeBoxEl.style.display = 'none';
-        if (!this.activeMarquee.moved && !this.activeMarquee.isShift) {
+        if (!this.activeMarquee.moved && !this.activeMarquee.isAdditive) {
           this.clearSelection();
         }
         this.activeMarquee = null;
@@ -3024,8 +3109,14 @@ class NodeManager {
 
         if (this.activeDrag.type === 'MOVE_CARDS') {
           const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
-          if (dist < 4 && !e.shiftKey && this.selectedCardIds.size > 1 && !this.activeDrag.cloned) {
-            this.selectCard(this.activeDrag.leadCardId, false);
+          if (dist < 4 && !this.activeDrag.cloned) {
+            if (this.activeDrag.toggleOffOnClick) {
+              this.selectedCardIds.delete(this.activeDrag.leadCardId);
+              this.updateSelectionVisuals();
+              this.updateAlignmentBar();
+            } else if (!this.activeDrag.wasMultiToggle && !(e.shiftKey || e.ctrlKey || e.metaKey) && this.selectedCardIds.size > 1) {
+              this.selectCard(this.activeDrag.leadCardId, false);
+            }
           }
           this.activeDrag.initialPositions.forEach((_, id) => {
             document.getElementById(`card-dom-${id}`)?.classList.remove('active');
@@ -3061,6 +3152,12 @@ class NodeManager {
             }
           }
         } else if (this.activeDrag.type === 'MOVE_GROUP') {
+          const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
+          if (dist < 4 && this.activeDrag.toggleOffGroupIds) {
+            this.activeDrag.toggleOffGroupIds.forEach(id => this.selectedCardIds.delete(id));
+            this.updateSelectionVisuals();
+            this.updateAlignmentBar();
+          }
           document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
           this.updateGroupDOMBounds(this.activeDrag.groupId);
         } else if (this.activeDrag.type === 'RESIZE_CARD') {
@@ -3076,15 +3173,17 @@ class NodeManager {
     });
 
     window.addEventListener('keydown', (e) => {
-      // Shortcut to toggle settings modal: Ctrl+, or Cmd+,
-      if ((e.ctrlKey || e.metaKey) && (e.key === ',' || e.code === 'Comma')) {
+      if (window.__settings?.isRecordingShortcut?.()) return;
+
+      // Shortcut to toggle settings modal
+      if (matchesShortcut(e, store.getShortcut('openSettings'))) {
         e.preventDefault();
         window.__settings?.toggle?.();
         return;
       }
 
-      // Shortcut to edit card header title: F2 (when card selected or editing text inside body)
-      if (e.key === 'F2') {
+      // Shortcut to edit card header title
+      if (matchesShortcut(e, store.getShortcut('renameCard'))) {
         const cardEl = document.activeElement?.closest?.('.note-card') || e.target?.closest?.('.note-card');
         let targetCardId = null;
         if (cardEl) {
@@ -3109,31 +3208,38 @@ class NodeManager {
         activeEl?.closest?.('input, textarea, select, [contenteditable]')
       );
 
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !isEditingText) {
+      if (!isEditingText && matchesShortcut(e, store.getShortcut('undo'))) {
         e.preventDefault();
         store.undo();
         return;
       }
 
-      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) && !isEditingText) {
+      const allShortcuts = store.getShortcuts();
+      const hasBound = (combo) => Object.values(allShortcuts).some(v => v && v.toUpperCase() === combo.toUpperCase());
+
+      const redoBinding = store.getShortcut('redo');
+      const isRedoAlias = redoBinding === 'Ctrl+Y' && !hasBound('Ctrl+Shift+Z') &&
+        (e.ctrlKey || e.metaKey) && !e.altKey && e.shiftKey && (e.code === 'KeyZ' || e.key?.toLowerCase() === 'z');
+      if (!isEditingText && (matchesShortcut(e, redoBinding) || isRedoAlias)) {
         e.preventDefault();
         store.redo();
         return;
       }
 
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
-        if (!isEditingText) {
-          if (window.__library?.handleSelectAllShortcut?.(e)) {
-            return;
-          }
-          e.preventDefault();
-          this.selectAllCards();
+      if (!isEditingText && matchesShortcut(e, store.getShortcut('selectAll'))) {
+        if (window.__canvases?.handleSelectAllShortcut?.(e)) {
           return;
         }
+        if (window.__library?.handleSelectAllShortcut?.(e)) {
+          return;
+        }
+        e.preventDefault();
+        this.selectAllCards();
+        return;
       }
 
-      // Copy: Ctrl+C
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && !isEditingText) {
+      // Copy
+      if (!isEditingText && matchesShortcut(e, store.getShortcut('copy'))) {
         if (this.selectedCardIds.size > 0) {
           e.preventDefault();
           this.copySelectedCards();
@@ -3141,8 +3247,8 @@ class NodeManager {
         }
       }
 
-      // Cut: Ctrl+X
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x' && !isEditingText) {
+      // Cut
+      if (!isEditingText && matchesShortcut(e, store.getShortcut('cut'))) {
         if (this.selectedCardIds.size > 0) {
           e.preventDefault();
           this.cutSelectedCards();
@@ -3150,8 +3256,8 @@ class NodeManager {
         }
       }
 
-      // Paste: Ctrl+V
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && !isEditingText) {
+      // Paste
+      if (!isEditingText && matchesShortcut(e, store.getShortcut('paste'))) {
         if (this.clipboard && this.clipboard.cards?.length > 0) {
           e.preventDefault();
           this.pasteCards();
@@ -3159,8 +3265,8 @@ class NodeManager {
         }
       }
 
-      // Focus Mode: F (when cards selected and not in focus mode)
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'f' && !isEditingText) {
+      // Focus Mode
+      if (!isEditingText && matchesShortcut(e, store.getShortcut('toggleFocusMode'))) {
         if (!store.isFocusMode && this.selectedCardIds.size > 0) {
           e.preventDefault();
           this.enterFocusMode();
@@ -3168,23 +3274,29 @@ class NodeManager {
         }
       }
 
-      // Library Drawer Toggle: L (without Shift/Ctrl/Meta/Alt, when not editing text)
-      const isKeyL = e.code === 'KeyL' || e.key?.toLowerCase() === 'l';
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && isKeyL && !isEditingText && !window.__settings?.isOpen?.()) {
+      // Canvases Drawer Toggle
+      if (!isEditingText && !window.__settings?.isOpen?.() && matchesShortcut(e, store.getShortcut('toggleCanvases'))) {
+        e.preventDefault();
+        window.__canvases?.toggle?.();
+        return;
+      }
+
+      // Library Drawer Toggle
+      if (!isEditingText && !window.__settings?.isOpen?.() && matchesShortcut(e, store.getShortcut('toggleLibrary'))) {
         e.preventDefault();
         window.__library?.toggle?.();
         return;
       }
 
-      // Save selected cards to Library: Shift+L (only when not editing text)
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.shiftKey && isKeyL && !isEditingText && !window.__settings?.isOpen?.()) {
+      // Save selected cards to Library
+      if (!isEditingText && !window.__settings?.isOpen?.() && matchesShortcut(e, store.getShortcut('saveToLibrary'))) {
         e.preventDefault();
         window.__library?.openSaveForm?.();
         return;
       }
 
-      // Group: Ctrl+G
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g' && !e.shiftKey && !isEditingText) {
+      // Group
+      if (!isEditingText && matchesShortcut(e, store.getShortcut('createGroup'))) {
         if (this.selectedCardIds.size >= 2) {
           e.preventDefault();
           this.createGroupFromSelected();
@@ -3192,8 +3304,8 @@ class NodeManager {
         }
       }
 
-      // Ungroup: Ctrl+Shift+G
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g' && e.shiftKey && !isEditingText) {
+      // Ungroup
+      if (!isEditingText && matchesShortcut(e, store.getShortcut('ungroup'))) {
         if (this.selectedCardIds.size > 0) {
           e.preventDefault();
           this.ungroupSelected();
@@ -3201,7 +3313,14 @@ class NodeManager {
         }
       }
 
-      if (e.key === 'Delete' || e.key === 'Backspace') {
+      const deleteBinding = store.getShortcut('deleteSelected');
+      const isDeleteAlias = deleteBinding === 'Delete' && !hasBound('Backspace') &&
+        !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key === 'Backspace';
+      if (matchesShortcut(e, deleteBinding) || isDeleteAlias) {
+        if (window.__settings?.isOpen?.()) return;
+        if (!isEditingText && window.__canvases?.handleDeleteShortcut?.(e)) {
+          return;
+        }
         if (this.selectedCapsule) {
           e.preventDefault();
           this.deleteCapsule(this.selectedCapsule);
@@ -3216,7 +3335,15 @@ class NodeManager {
           window.__settings.close();
           return;
         }
+        if (window.__canvases?.handleEscape?.()) {
+          return;
+        }
         if (window.__library?.handleEscape?.()) {
+          return;
+        }
+        if (isEditingText) {
+          activeEl?.blur?.();
+          targetEl?.blur?.();
           return;
         }
         this.hideCanvasContextMenu();

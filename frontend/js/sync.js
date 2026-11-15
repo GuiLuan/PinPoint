@@ -83,15 +83,17 @@ class SyncManager {
   }
 
   updateStatusDot() {
+    const saveSc = store.getShortcut?.('saveGraph');
+    const scSuffix = saveSc ? ` (${saveSc})` : '';
     let statusClass = 'status-saved';
-    let label = '已保存 (Ctrl+S)';
+    let label = `已保存${scSuffix}`;
 
     if (!this.connected) {
       statusClass = 'status-offline';
       label = '服务已断开';
     } else if (store.hasUnsavedChanges()) {
       statusClass = 'status-unsaved';
-      label = '有未保存的更改 (Ctrl+S)';
+      label = `有未保存的更改${scSuffix}`;
     }
 
     if (this.statusDotEl) {
