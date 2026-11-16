@@ -1780,10 +1780,22 @@ class StateManager {
 
     for (const g of fullGroups) {
       const members = Array.isArray(g.cardIds) ? g.cardIds : [];
+      const hasBounds = typeof g.x === 'number' && !Number.isNaN(g.x) &&
+                        typeof g.y === 'number' && !Number.isNaN(g.y) &&
+                        typeof g.width === 'number' && !Number.isNaN(g.width) &&
+                        typeof g.height === 'number' && !Number.isNaN(g.height);
+      if (!hasBounds && members.length < 2) continue;
+
       const inCount = members.filter(id => focusIdSet.has(id)).length;
-      if (inCount === members.length && members.length >= 2) insideGroups.push(g);
-      else if (inCount === 0 && members.length >= 2) outsideGroups.push(g);
-      else if (members.length >= 2) partialGroups.push(g);
+      if (members.length === 0) {
+        outsideGroups.push(g);
+      } else if (inCount === members.length) {
+        insideGroups.push(g);
+      } else if (inCount === 0) {
+        outsideGroups.push(g);
+      } else {
+        partialGroups.push(g);
+      }
     }
 
     const insideEntityIds = new Set([...focusIdSet, ...insideGroups.map(g => g.id)]);
@@ -1840,7 +1852,7 @@ class StateManager {
       height: c._measuredHeight || c.height || 140
     }));
 
-    const { cardTargets } = computeFocusExitLayout({
+    const { cardTargets, groupTargets } = computeFocusExitLayout({
       beforeBox: session.beforeBox,
       afterBox,
       preFocusCardRects: session.preFocusCardRects,
@@ -1864,10 +1876,89 @@ class StateManager {
     const mergedCards = [...editedCards, ...restoredOutsideCards];
     const survivingCardIds = new Set(mergedCards.map(c => c.id));
 
-    const restoredOutsideGroups = clone(session.outsideGroups);
+    const restoredOutsideGroups = clone(session.outsideGroups).map(g => {
+      const gt = groupTargets?.get(g.id);
+      if (gt) {
+        g.x = gt.x;
+        g.y = gt.y;
+      }
+      return g;
+    });
+
+    // Build final rect lookup for partial group refitting
+    const focusRectById = new Map();
+    (focusCardRects || []).forEach((r, idx) => {
+      const fc = editedCards[idx];
+      if (fc && r) focusRectById.set(fc.id, r);
+    });
+    const outsideSizeById = new Map(outsideLayoutInput.map(c => [c.id, { width: c.width, height: c.height }]));
+    const getFinalCardRect = (c) => {
+      if (!c) return null;
+      const fr = focusRectById.get(c.id);
+      if (fr) return { x: c.x, y: c.y, width: fr.width || c.width || 310, height: fr.height || c.height || 140 };
+      const os = outsideSizeById.get(c.id);
+      if (os) return { x: c.x, y: c.y, width: os.width, height: os.height };
+      return { x: c.x, y: c.y, width: c.width || 310, height: c.height || 140 };
+    };
+    const mergedCardMap = new Map(mergedCards.map(c => [c.id, c]));
+
     const restoredPartialGroups = clone(session.partialGroups)
-      .map(g => ({ ...g, cardIds: (g.cardIds || []).filter(id => survivingCardIds.has(id)) }))
-      .filter(g => g.cardIds.length >= 2);
+      .map(g => {
+        const nextCardIds = (g.cardIds || []).filter(id => survivingCardIds.has(id));
+        const hasBounds = typeof g.x === 'number' && !Number.isNaN(g.x) &&
+                          typeof g.y === 'number' && !Number.isNaN(g.y) &&
+                          typeof g.width === 'number' && !Number.isNaN(g.width) &&
+                          typeof g.height === 'number' && !Number.isNaN(g.height);
+        const nextGroup = { ...g, cardIds: nextCardIds };
+        if (hasBounds && nextCardIds.length > 0) {
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const cid of nextCardIds) {
+            const rect = getFinalCardRect(mergedCardMap.get(cid));
+            if (!rect) continue;
+            if (rect.x < minX) minX = rect.x;
+            if (rect.y < minY) minY = rect.y;
+            if (rect.x + rect.width > maxX) maxX = rect.x + rect.width;
+            if (rect.y + rect.height > maxY) maxY = rect.y + rect.height;
+          }
+          if (Number.isFinite(minX)) {
+            const origX = g.x;
+            const origY = g.y;
+            const origW = g.width;
+            const origH = g.height;
+            const PADDING_X = 24;
+            const PADDING_TOP = 62;
+            const PADDING_BOTTOM = 24;
+            const newX = Math.round(minX - PADDING_X);
+            const newY = Math.round(minY - PADDING_TOP);
+            const newW = Math.round(Math.max(288, (maxX - minX) + PADDING_X * 2));
+            const newH = Math.round(Math.max(100, (maxY - minY) + PADDING_TOP + PADDING_BOTTOM));
+            nextGroup.x = newX;
+            nextGroup.y = newY;
+            nextGroup.width = newW;
+            nextGroup.height = newH;
+            groupTargets?.set(g.id, {
+              x: newX,
+              y: newY,
+              width: newW,
+              height: newH,
+              origX,
+              origY,
+              origWidth: origW,
+              origHeight: origH,
+              dx: newX - origX,
+              dy: newY - origY
+            });
+          }
+        }
+        return nextGroup;
+      })
+      .filter(g => {
+        const hasBounds = typeof g.x === 'number' && !Number.isNaN(g.x) &&
+                          typeof g.y === 'number' && !Number.isNaN(g.y) &&
+                          typeof g.width === 'number' && !Number.isNaN(g.width) &&
+                          typeof g.height === 'number' && !Number.isNaN(g.height);
+        return hasBounds || g.cardIds.length >= 2;
+      });
 
     const mergedGroups = [...editedGroups, ...restoredOutsideGroups, ...restoredPartialGroups];
     const validExternalConnections = clone(session.externalConnections)
@@ -1904,16 +1995,19 @@ class StateManager {
 
     const outsideCardIds = restoredOutsideCards.map(c => c.id);
     const externalConnIds = validExternalConnections.map(c => c.id);
+    const outsideGroupIds = restoredOutsideGroups.map(g => g.id);
 
     this.notify({
       type: 'FOCUS_MODE_EXITED',
       confirmed: true,
       cardTargets,
+      groupTargets,
       outsideCardIds,
+      outsideGroupIds,
       externalConnIds
     });
 
-    return { cardTargets, outsideCardIds, externalConnIds };
+    return { cardTargets, groupTargets, outsideCardIds, outsideGroupIds, externalConnIds };
   }
 
   cancelFocusMode() {

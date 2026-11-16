@@ -129,8 +129,11 @@ function resolveFocusCardCollisions(unit, focusCardRects, afterBox, margin = 24)
  * @param {Array} params.preFocusCardRects - Rects of original focus cards (for pre-existing overlap check)
  * @param {Array} params.focusCardRects - Rects of post-focus cards at exit
  * @param {Array} params.outsideCards - [{ id, x, y, width, height }]
- * @param {Array} params.outsideGroups - [{ id, cardIds }]
- * @returns {{ cardTargets: Map<string, { x: number, y: number, origX: number, origY: number, dx: number, dy: number }> }}
+ * @param {Array} params.outsideGroups - [{ id, cardIds, x?, y?, width?, height? }]
+ * @returns {{
+ *   cardTargets: Map<string, { x: number, y: number, origX: number, origY: number, dx: number, dy: number }>,
+ *   groupTargets: Map<string, { x: number, y: number, width: number, height: number, origX: number, origY: number, dx: number, dy: number }>
+ * }}
  */
 export function computeFocusExitLayout({
   beforeBox,
@@ -141,14 +144,23 @@ export function computeFocusExitLayout({
   outsideGroups = []
 }) {
   const cardTargets = new Map();
+  const groupTargets = new Map();
 
-  if (!outsideCards || outsideCards.length === 0) {
-    return { cardTargets };
+  const hasExplicitGroupBounds = (g) => (
+    g &&
+    typeof g.x === 'number' && !Number.isNaN(g.x) &&
+    typeof g.y === 'number' && !Number.isNaN(g.y) &&
+    typeof g.width === 'number' && !Number.isNaN(g.width) &&
+    typeof g.height === 'number' && !Number.isNaN(g.height)
+  );
+
+  if ((!outsideCards || outsideCards.length === 0) && (!outsideGroups || outsideGroups.length === 0)) {
+    return { cardTargets, groupTargets };
   }
 
-  // If no conceptual boxes or all focus cards were deleted, keep outside cards in place
+  // If no conceptual boxes or all focus cards were deleted, keep outside cards & groups in place
   if (!beforeBox || !afterBox || focusCardRects.length === 0) {
-    for (const c of outsideCards) {
+    for (const c of outsideCards || []) {
       cardTargets.set(c.id, {
         x: Math.round(c.x),
         y: Math.round(c.y),
@@ -158,28 +170,49 @@ export function computeFocusExitLayout({
         dy: 0
       });
     }
-    return { cardTargets };
+    for (const g of outsideGroups || []) {
+      if (!hasExplicitGroupBounds(g)) continue;
+      groupTargets.set(g.id, {
+        x: Math.round(g.x),
+        y: Math.round(g.y),
+        width: Math.round(g.width),
+        height: Math.round(g.height),
+        origX: g.x,
+        origY: g.y,
+        dx: 0,
+        dy: 0
+      });
+    }
+    return { cardTargets, groupTargets };
   }
 
-  const cardById = new Map(outsideCards.map(c => [c.id, c]));
+  const cardById = new Map((outsideCards || []).map(c => [c.id, c]));
   const assignedCardIds = new Set();
   const units = [];
 
-  // 1. Group wholly-outside groups into rigid units so internal spacing is preserved
-  for (const group of outsideGroups) {
-    if (!group || !Array.isArray(group.cardIds) || group.cardIds.length === 0) continue;
-    const members = group.cardIds
+  // 1. Group wholly-outside groups (including their explicit container bounds) into rigid units
+  for (const group of outsideGroups || []) {
+    if (!group) continue;
+    const members = (Array.isArray(group.cardIds) ? group.cardIds : [])
       .map(id => cardById.get(id))
       .filter(c => c && !assignedCardIds.has(c.id));
-    if (members.length === 0) continue;
+    const hasBounds = hasExplicitGroupBounds(group);
+    if (members.length === 0 && !hasBounds) continue;
 
-    const memberRects = members.map(c => makeRect(c.x, c.y, c.width, c.height));
-    const R0 = computeRectsBoundingBox(memberRects);
+    const rectsForUnion = members.map(c => makeRect(c.x, c.y, c.width, c.height));
+    if (hasBounds) {
+      rectsForUnion.push(makeRect(group.x, group.y, group.width, group.height));
+    }
+    const R0 = computeRectsBoundingBox(rectsForUnion);
+    if (!R0) continue;
+
     members.forEach(c => assignedCardIds.add(c.id));
 
     units.push({
       type: 'group',
       groupId: group.id,
+      group,
+      hasBounds,
       R0,
       R1: { ...R0 },
       members: members.map(c => ({
@@ -191,7 +224,7 @@ export function computeFocusExitLayout({
   }
 
   // 2. Remaining outside cards become individual units
-  for (const c of outsideCards) {
+  for (const c of outsideCards || []) {
     if (assignedCardIds.has(c.id)) continue;
     const R0 = makeRect(c.x, c.y, c.width, c.height);
     units.push({
@@ -243,10 +276,11 @@ export function computeFocusExitLayout({
     moveUnitTo(unit, R0.left + dx, R0.top + dy);
 
     // Check if this unit had pre-existing overlap with any original focus card
-    const hadPreFocusCardOverlap = unit.members.some(({ card }) => {
-      const cr = makeRect(card.x, card.y, card.width, card.height);
-      return preFocusCardRects.some(pfc => rectsOverlap(cr, pfc, 0));
-    });
+    const hadPreFocusCardOverlap = preFocusCardRects.some(pfc => rectsOverlap(unit.R0, pfc, 0)) ||
+      unit.members.some(({ card }) => {
+        const cr = makeRect(card.x, card.y, card.width, card.height);
+        return preFocusCardRects.some(pfc => rectsOverlap(cr, pfc, 0));
+      });
 
     if (!hadPreFocusCardOverlap) {
       resolveFocusCardCollisions(unit, focusCardRects, afterBox, 24);
@@ -314,17 +348,34 @@ export function computeFocusExitLayout({
 
   // Final safety check against focus cards after pairwise relaxation
   for (const unit of units) {
-    const hadPreFocusCardOverlap = unit.members.some(({ card }) => {
-      const cr = makeRect(card.x, card.y, card.width, card.height);
-      return preFocusCardRects.some(pfc => rectsOverlap(cr, pfc, 0));
-    });
+    const hadPreFocusCardOverlap = preFocusCardRects.some(pfc => rectsOverlap(unit.R0, pfc, 0)) ||
+      unit.members.some(({ card }) => {
+        const cr = makeRect(card.x, card.y, card.width, card.height);
+        return preFocusCardRects.some(pfc => rectsOverlap(cr, pfc, 0));
+      });
     if (!hadPreFocusCardOverlap) {
       resolveFocusCardCollisions(unit, focusCardRects, afterBox, 24);
     }
   }
 
-  // 5. Materialize per-card targets
+  // 5. Materialize per-card and per-group targets
   for (const unit of units) {
+    if (unit.type === 'group' && unit.hasBounds && unit.group) {
+      const gdx = Math.round(unit.R1.left - unit.R0.left);
+      const gdy = Math.round(unit.R1.top - unit.R0.top);
+      groupTargets.set(unit.groupId, {
+        x: Math.round(unit.group.x + gdx),
+        y: Math.round(unit.group.y + gdy),
+        width: Math.round(unit.group.width),
+        height: Math.round(unit.group.height),
+        origX: unit.group.x,
+        origY: unit.group.y,
+        origWidth: unit.group.width,
+        origHeight: unit.group.height,
+        dx: gdx,
+        dy: gdy
+      });
+    }
     for (const { card, relX, relY } of unit.members) {
       const targetX = Math.round(unit.R1.left + relX);
       const targetY = Math.round(unit.R1.top + relY);
@@ -339,5 +390,5 @@ export function computeFocusExitLayout({
     }
   }
 
-  return { cardTargets };
+  return { cardTargets, groupTargets };
 }

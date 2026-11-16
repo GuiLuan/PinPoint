@@ -2806,7 +2806,7 @@ class NodeManager {
     return true;
   }
 
-  animateFocusExit({ cardTargets, outsideCardIds, externalConnIds }) {
+  animateFocusExit({ cardTargets, groupTargets, outsideCardIds, outsideGroupIds, externalConnIds }) {
     if (this.focusExitAnimId) {
       cancelAnimationFrame(this.focusExitAnimId);
       this.focusExitAnimId = null;
@@ -2817,21 +2817,24 @@ class NodeManager {
     this.updateSelectionVisuals(true);
     this.updateAlignmentBar();
 
-    if (!outsideCardIds || outsideCardIds.length === 0) {
+    const hasMovedOutsideCards = Boolean(outsideCardIds && outsideCardIds.length > 0);
+    const hasMovedGroups = Boolean(groupTargets && groupTargets.size > 0);
+    if (!hasMovedOutsideCards && !hasMovedGroups) {
       wires.render();
       window.__minimap?.requestRender?.();
       return;
     }
 
-    const outsideIdSet = new Set(outsideCardIds);
+    const outsideIdSet = new Set(outsideCardIds || []);
+    const outsideGroupIdSet = new Set(outsideGroupIds || []);
     const affectedGroupIds = [];
     const whollyOutsideGroupIds = [];
 
     (store.state.groups || []).forEach(g => {
-      const hasOutside = g.cardIds.some(id => outsideIdSet.has(id));
+      const hasOutside = g.cardIds.some(id => outsideIdSet.has(id)) || groupTargets?.has(g.id) || outsideGroupIdSet.has(g.id);
       if (hasOutside) {
         affectedGroupIds.push(g.id);
-        if (g.cardIds.every(id => outsideIdSet.has(id))) {
+        if (outsideGroupIdSet.has(g.id) || (g.cardIds.length > 0 && g.cardIds.every(id => outsideIdSet.has(id)))) {
           whollyOutsideGroupIds.push(g.id);
         }
       }
@@ -2840,7 +2843,7 @@ class NodeManager {
     document.body.classList.add('focus-animating');
 
     const applyFrame = (eased, fade) => {
-      outsideCardIds.forEach(id => {
+      (outsideCardIds || []).forEach(id => {
         const target = cardTargets.get(id);
         const el = document.getElementById(`card-dom-${id}`);
         if (!target || !el) return;
@@ -2851,7 +2854,22 @@ class NodeManager {
         el.style.opacity = `${fade}`;
       });
 
-      affectedGroupIds.forEach(gid => this.updateGroupDOMBounds(gid));
+      affectedGroupIds.forEach(gid => {
+        const gt = groupTargets?.get(gid);
+        const gEl = document.getElementById(`group-dom-${gid}`);
+        if (gt && gEl) {
+          const curX = gt.origX + (gt.x - gt.origX) * eased;
+          const curY = gt.origY + (gt.y - gt.origY) * eased;
+          const curW = (gt.origWidth ?? gt.width) + (gt.width - (gt.origWidth ?? gt.width)) * eased;
+          const curH = (gt.origHeight ?? gt.height) + (gt.height - (gt.origHeight ?? gt.height)) * eased;
+          gEl.style.left = `${curX}px`;
+          gEl.style.top = `${curY}px`;
+          gEl.style.width = `${curW}px`;
+          gEl.style.height = `${curH}px`;
+        } else {
+          this.updateGroupDOMBounds(gid);
+        }
+      });
       whollyOutsideGroupIds.forEach(gid => {
         const gEl = document.getElementById(`group-dom-${gid}`);
         if (gEl) gEl.style.opacity = `${fade}`;
