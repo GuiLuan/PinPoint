@@ -2170,6 +2170,34 @@ class NodeManager {
     return true;
   }
 
+  syncGroupMembershipByBounds(group) {
+    if (!group) return false;
+    const bounds = this.calcGroupBounds(group);
+    if (!bounds) return false;
+    const prevIds = Array.isArray(group.cardIds) ? group.cardIds : [];
+    const prevSet = new Set(prevIds);
+    const nextIds = [];
+
+    for (const card of store.state.cards) {
+      const cardEl = document.getElementById(`card-dom-${card.id}`);
+      const cw = cardEl?.offsetWidth || card.width || 310;
+      const ch = cardEl?.offsetHeight || card.height || 140;
+      const cx = card.x + cw / 2;
+      const cy = card.y + ch / 2;
+      const isInside = cx >= bounds.x && cx <= bounds.x + bounds.width &&
+                       cy >= bounds.y && cy <= bounds.y + bounds.height;
+      if (isInside) {
+        nextIds.push(card.id);
+      }
+    }
+
+    const changed = nextIds.length !== prevIds.length || nextIds.some(id => !prevSet.has(id));
+    if (changed) {
+      group.cardIds = nextIds;
+    }
+    return changed;
+  }
+
   findGroupAtBoardPos(boardPos, preferMemberCardId = null) {
     if (!boardPos) return null;
     const groups = store.state.groups || [];
@@ -3492,6 +3520,20 @@ class NodeManager {
             group.width = w;
             group.height = h;
             this.updateGroupDOMBounds(group.id);
+            const groupEl = document.getElementById(`group-dom-${group.id}`);
+            if (groupEl) {
+              const prevSet = new Set(group.cardIds || []);
+              const hasNewMember = store.state.cards.some(c => {
+                if (prevSet.has(c.id)) return false;
+                const el = document.getElementById(`card-dom-${c.id}`);
+                const cw = el?.offsetWidth || c.width || 310;
+                const ch = el?.offsetHeight || c.height || 140;
+                const cx = c.x + cw / 2;
+                const cy = c.y + ch / 2;
+                return cx >= x && cx <= x + w && cy >= y && cy <= y + h;
+              });
+              groupEl.classList.toggle('group-drop-target', hasNewMember);
+            }
             wires.render();
           }
         }
@@ -3572,6 +3614,10 @@ class NodeManager {
         } else if (this.activeDrag.type === 'RESIZE_GROUP') {
           document.querySelectorAll('.group-resize-handle.active').forEach(h => h.classList.remove('active'));
           document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
+          const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
+          if (group) {
+            this.syncGroupMembershipByBounds(group);
+          }
           this.updateGroupDOMBounds(this.activeDrag.groupId);
         } else if (this.activeDrag.type === 'RESIZE_CARD') {
           document.querySelectorAll('.card-resize-handle.active').forEach(h => h.classList.remove('active'));
