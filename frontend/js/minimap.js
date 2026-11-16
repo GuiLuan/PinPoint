@@ -40,6 +40,7 @@ class MinimapManager {
       if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
+      canvas.stopAnimations();
       this.isDraggingViewport = true;
       this.dragStartMouse = { x: e.clientX, y: e.clientY };
       this.dragStartVp = { x: store.state.viewport.x, y: store.state.viewport.y };
@@ -53,6 +54,7 @@ class MinimapManager {
       if (e.button !== 0 || e.target === this.viewportBoxEl) return;
       e.preventDefault();
       e.stopPropagation();
+      canvas.stopAnimations();
       this.isDirectNavigating = true;
       // Lock navigation bounds at mousedown
       this.navBounds = this.lastWorldBounds ? { ...this.lastWorldBounds } : null;
@@ -113,7 +115,7 @@ class MinimapManager {
     if (!cards || cards.length === 0) return;
     const { x, y, zoom } = store.state.viewport;
     if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y) || isNaN(zoom) || zoom <= 0) {
-      this.fitToContent();
+      this.fitToContent({ animate: false });
       return;
     }
 
@@ -129,7 +131,7 @@ class MinimapManager {
     const screenCenterY = (-y + window.innerHeight / 2) / zoom;
     const dist = Math.hypot(screenCenterX - avgX, screenCenterY - avgY);
     if (dist > 8000) {
-      this.fitToContent();
+      this.fitToContent({ animate: false });
     }
   }
 
@@ -183,14 +185,19 @@ class MinimapManager {
     canvas.applyTransform();
   }
 
-  fitToContent() {
+  fitToContent({ animate = true } = {}) {
     const cards = store.state.cards;
     if (!cards || cards.length === 0) {
-      store.state.viewport.x = 0;
-      store.state.viewport.y = 0;
-      store.state.viewport.zoom = 1.0;
-      canvas.applyTransform();
-      store.scheduleAutoSave();
+      if (animate) {
+        canvas.animateToViewport({ x: 0, y: 0, zoom: 1.0 });
+      } else {
+        canvas.stopAnimations();
+        store.state.viewport.x = 0;
+        store.state.viewport.y = 0;
+        store.state.viewport.zoom = 1.0;
+        canvas.applyTransform();
+        store.scheduleAutoSave();
+      }
       return;
     }
 
@@ -223,12 +230,19 @@ class MinimapManager {
     const zoom = Math.min(Math.max(Math.min(availW / contentW, availH / contentH), 0.35), 1.3);
     const midX = (minX + maxX) / 2;
     const midY = (minY + maxY) / 2;
+    const targetX = availW / 2 - midX * zoom;
+    const targetY = availH / 2 - midY * zoom;
 
-    store.state.viewport.zoom = zoom;
-    store.state.viewport.x = availW / 2 - midX * zoom;
-    store.state.viewport.y = availH / 2 - midY * zoom;
-    canvas.applyTransform();
-    store.scheduleAutoSave();
+    if (animate) {
+      canvas.animateToViewport({ x: targetX, y: targetY, zoom });
+    } else {
+      canvas.stopAnimations();
+      store.state.viewport.zoom = zoom;
+      store.state.viewport.x = targetX;
+      store.state.viewport.y = targetY;
+      canvas.applyTransform();
+      store.scheduleAutoSave();
+    }
   }
 
   getPinWorldCenter(pinId) {

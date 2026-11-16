@@ -48,6 +48,8 @@ class NodeManager {
     this.selectedCardIds = new Set();
     this.activeMarquee = null;
     this.activeDrag = null;
+    this.pendingCtrlGroupDrag = null;
+    this._lastPointer = null;
     this.clipboard = null;
     this.pasteCount = 0;
     this.mouseBoardPos = { x: 0, y: 0 };
@@ -513,11 +515,26 @@ class NodeManager {
         if (e.target.closest('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .capsule-pin, .text-capsule, .header-title-input')) return;
         const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
         if (isMultiToggle) {
+          const wasSelected = this.selectedCardIds.has(card.id);
           this._blurActiveTextEditor();
           e.preventDefault();
           e.stopPropagation();
           window.getSelection()?.removeAllRanges();
           this.selectCard(card.id, true);
+
+          if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !canvas.isSpacePressed) {
+            const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
+            const hitGroup = this.findGroupAtBoardPos(boardPos, card.id);
+            if (hitGroup) {
+              this.pendingCtrlGroupDrag = {
+                group: hitGroup,
+                cardId: card.id,
+                wasSelected,
+                startX: e.clientX,
+                startY: e.clientY
+              };
+            }
+          }
         } else if (!this.selectedCardIds.has(card.id) || this.selectedCardIds.size > 1) {
           this.selectCard(card.id, false);
         }
@@ -1104,7 +1121,7 @@ class NodeManager {
       }, 30);
     });
 
-    // Right click on empty canvas to open context menu
+    // Right click on empty canvas (or anywhere inside a group container) to open context menu
     this.viewportEl.addEventListener('contextmenu', (e) => {
       const isBg = (e.target === this.viewportEl ||
                     e.target === document.getElementById('board') ||
@@ -1114,6 +1131,15 @@ class NodeManager {
 
       e.preventDefault();
       e.stopPropagation();
+      const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
+      const hitGroup = this.findGroupAtBoardPos(boardPos);
+      if (hitGroup) {
+        const groupEl = document.getElementById(`group-dom-${hitGroup.id}`);
+        const labelEl = groupEl?.querySelector('.group-label') || null;
+        const startRename = groupEl?.__startRename || null;
+        this.showGroupContextMenu(hitGroup, labelEl, startRename, e.clientX, e.clientY);
+        return;
+      }
       this.showCanvasContextMenu(e.clientX, e.clientY);
     });
   }
@@ -2061,7 +2087,7 @@ class NodeManager {
 
     const GRID_SIZE = 24;
     const PADDING_X = 24;
-    const PADDING_TOP = 48;
+    const PADDING_TOP = 62;
     const PADDING_BOTTOM = 24;
     const MIN_WIDTH = 288;
 
@@ -2144,6 +2170,92 @@ class NodeManager {
     return true;
   }
 
+  findGroupAtBoardPos(boardPos, preferMemberCardId = null) {
+    if (!boardPos) return null;
+    const groups = store.state.groups || [];
+    if (preferMemberCardId) {
+      for (let i = groups.length - 1; i >= 0; i--) {
+        const g = groups[i];
+        if (!Array.isArray(g.cardIds) || !g.cardIds.includes(preferMemberCardId)) continue;
+        const b = this.calcGroupBounds(g);
+        if (!b) continue;
+        if (boardPos.x >= b.x && boardPos.x <= b.x + b.width && boardPos.y >= b.y && boardPos.y <= b.y + b.height) {
+          return g;
+        }
+      }
+    }
+    for (let i = groups.length - 1; i >= 0; i--) {
+      const g = groups[i];
+      const b = this.calcGroupBounds(g);
+      if (!b) continue;
+      if (
+        boardPos.x >= b.x &&
+        boardPos.x <= b.x + b.width &&
+        boardPos.y >= b.y &&
+        boardPos.y <= b.y + b.height
+      ) {
+        return g;
+      }
+    }
+    return null;
+  }
+
+  startGroupDrag(group, e, { viaCtrlBody = false } = {}) {
+    if (!group) return;
+    const groupEl = document.getElementById(`group-dom-${group.id}`);
+    this._blurActiveTextEditor();
+    wires.clearFocus();
+    wires.dismissDropMenu(true);
+    this.clearCapsuleSelection();
+    window.getSelection()?.removeAllRanges();
+    this.hideSelectionPopover();
+    this.hideCanvasContextMenu();
+    this.hideGroupContextMenu();
+
+    const isMultiToggle = !viaCtrlBody && (e.shiftKey || e.ctrlKey || e.metaKey);
+    const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
+    const memberIds = memberCards.map(c => c.id);
+    let toggleOffGroupIds = null;
+
+    if (isMultiToggle) {
+      const allSelected = memberIds.length > 0 && memberIds.every(id => this.selectedCardIds.has(id));
+      if (allSelected) {
+        toggleOffGroupIds = memberIds;
+      } else {
+        memberIds.forEach(id => this.selectedCardIds.add(id));
+        this.updateSelectionVisuals();
+        this.updateAlignmentBar();
+      }
+    } else {
+      this.selectedCardIds = new Set(memberIds);
+      this.updateSelectionVisuals();
+      this.updateAlignmentBar();
+    }
+
+    const curBounds = this.calcGroupBounds(group) || { x: 0, y: 0, width: 288, height: 140 };
+    const initMinX = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.x)) : curBounds.x;
+    const initMinY = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.y)) : curBounds.y;
+    this.activeDrag = {
+      type: 'MOVE_GROUP',
+      groupId: group.id,
+      startX: e.clientX,
+      startY: e.clientY,
+      isAlt: e.altKey,
+      viaCtrlBody,
+      toggleOffGroupIds,
+      cloned: false,
+      initMinX,
+      initMinY,
+      initGroupX: curBounds.x,
+      initGroupY: curBounds.y,
+      initialPositions: new Map(memberCards.map(c => [c.id, { x: c.x, y: c.y }]))
+    };
+    groupEl?.classList.add('active');
+    if (this.viewportEl && !canvas.isSpacePressed) {
+      this.viewportEl.style.cursor = 'grabbing';
+    }
+  }
+
   renderGroups() {
     if (!this.groupsContainerEl) {
       this.groupsContainerEl = document.getElementById('groups-container');
@@ -2221,7 +2333,7 @@ class NodeManager {
       const labelEl = groupEl.querySelector('.group-label');
       const titleSpan = groupEl.querySelector('.group-title');
       const titleInput = groupEl.querySelector('.group-title-input');
-      labelEl.title = `${displayTitle} · 拖拽移动组 · 双击重命名 · 右键菜单`;
+      labelEl.title = `${displayTitle} · 拖拽移动组（或按住 Ctrl 拖拽组内）· 双击重命名 · 右键菜单`;
       titleSpan.textContent = displayTitle;
       titleInput.value = group.title || '';
 
@@ -2239,6 +2351,7 @@ class NodeManager {
         titleInput.focus();
         titleInput.select();
       };
+      groupEl.__startRename = startRename;
       const finishRename = () => {
         if (titleInput.style.display === 'none') return;
         const newTitle = titleInput.value.trim() || '未命名组';
@@ -2246,7 +2359,7 @@ class NodeManager {
         group.title = newTitle;
         prevTitle = newTitle;
         titleSpan.textContent = newTitle;
-        labelEl.title = `${newTitle} · 拖拽移动组 · 双击重命名 · 右键菜单`;
+        labelEl.title = `${newTitle} · 拖拽移动组（或按住 Ctrl 拖拽组内）· 双击重命名 · 右键菜单`;
         titleInput.style.display = 'none';
         titleSpan.style.display = '';
         groupEl.classList.remove('is-renaming');
@@ -2311,59 +2424,13 @@ class NodeManager {
         });
       });
 
-      // Drag group ONLY by top-left header label
+      // Drag group by top-left header label
       labelEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot') || e.target === titleInput) return;
         if (e.button !== 0 || canvas.isSpacePressed) return;
         e.preventDefault();
         e.stopPropagation();
-        this._blurActiveTextEditor();
-        wires.clearFocus();
-        wires.dismissDropMenu(true);
-        this.clearCapsuleSelection();
-        window.getSelection()?.removeAllRanges();
-        this.hideSelectionPopover();
-        this.hideCanvasContextMenu();
-        this.hideGroupContextMenu();
-
-        const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
-        const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
-        const memberIds = memberCards.map(c => c.id);
-        let toggleOffGroupIds = null;
-
-        if (isMultiToggle) {
-          const allSelected = memberIds.length > 0 && memberIds.every(id => this.selectedCardIds.has(id));
-          if (allSelected) {
-            toggleOffGroupIds = memberIds;
-          } else {
-            memberIds.forEach(id => this.selectedCardIds.add(id));
-            this.updateSelectionVisuals();
-            this.updateAlignmentBar();
-          }
-        } else {
-          this.selectedCardIds = new Set(memberIds);
-          this.updateSelectionVisuals();
-          this.updateAlignmentBar();
-        }
-
-        const curBounds = this.calcGroupBounds(group) || { x: 0, y: 0, width: 288, height: 140 };
-        const initMinX = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.x)) : curBounds.x;
-        const initMinY = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.y)) : curBounds.y;
-        this.activeDrag = {
-          type: 'MOVE_GROUP',
-          groupId: group.id,
-          startX: e.clientX,
-          startY: e.clientY,
-          isAlt: e.altKey,
-          toggleOffGroupIds,
-          cloned: false,
-          initMinX,
-          initMinY,
-          initGroupX: curBounds.x,
-          initGroupY: curBounds.y,
-          initialPositions: new Map(memberCards.map(c => [c.id, { x: c.x, y: c.y }]))
-        };
-        groupEl.classList.add('active');
+        this.startGroupDrag(group, e, { viaCtrlBody: false });
       });
 
       // Group pins
@@ -2982,6 +3049,17 @@ class NodeManager {
       this.clearCapsuleSelection();
       wires.dismissDropMenu(true);
 
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey) {
+        const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
+        const hitGroup = this.findGroupAtBoardPos(boardPos);
+        if (hitGroup) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.startGroupDrag(hitGroup, e, { viaCtrlBody: true });
+          return;
+        }
+      }
+
       this.activeMarquee = {
         startX: e.clientX,
         startY: e.clientY,
@@ -2992,8 +3070,58 @@ class NodeManager {
     });
   }
 
+  _updateCtrlGroupCursor(ctrlActive) {
+    if (!this.viewportEl || canvas.isSpacePressed || canvas.dragAction || this.activeMarquee || wires.activeDrag) return;
+    if (this.activeDrag?.type === 'MOVE_GROUP') {
+      this.viewportEl.style.cursor = 'grabbing';
+      return;
+    }
+    if (this.activeDrag) return;
+    if (!ctrlActive || !this._lastPointer) {
+      if (this.viewportEl.style.cursor === 'grab' || this.viewportEl.style.cursor === 'grabbing') {
+        this.viewportEl.style.cursor = '';
+      }
+      return;
+    }
+    const { clientX, clientY, target } = this._lastPointer;
+    const isBgOrCardBody = (
+      target === this.viewportEl ||
+      target === document.getElementById('board') ||
+      target?.id === 'wire-svg' ||
+      (target?.closest?.('.note-card') && !target.closest?.('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .capsule-pin, .text-capsule, .header-title-input'))
+    );
+    if (isBgOrCardBody && this.findGroupAtBoardPos(canvas.screenToBoard(clientX, clientY))) {
+      this.viewportEl.style.cursor = 'grab';
+    } else if (this.viewportEl.style.cursor === 'grab') {
+      this.viewportEl.style.cursor = '';
+    }
+  }
+
   bindGlobalGestures() {
     window.addEventListener('mousemove', (e) => {
+      this._lastPointer = { clientX: e.clientX, clientY: e.clientY, target: e.target };
+
+      if (this.pendingCtrlGroupDrag) {
+        const dist = Math.hypot(e.clientX - this.pendingCtrlGroupDrag.startX, e.clientY - this.pendingCtrlGroupDrag.startY);
+        if (dist > 4) {
+          const pending = this.pendingCtrlGroupDrag;
+          this.pendingCtrlGroupDrag = null;
+          // Restore the card's pre-toggle selection state before selecting the whole group
+          if (pending.wasSelected) this.selectedCardIds.add(pending.cardId);
+          else this.selectedCardIds.delete(pending.cardId);
+          this.startGroupDrag(pending.group, {
+            ...e,
+            clientX: pending.startX,
+            clientY: pending.startY,
+            shiftKey: false,
+            ctrlKey: true,
+            metaKey: false,
+            altKey: e.altKey
+          }, { viaCtrlBody: true });
+        }
+      }
+
+      this._updateCtrlGroupCursor((e.ctrlKey || e.metaKey) && !e.shiftKey);
       if (this.activeMarquee) {
         const dist = Math.hypot(e.clientX - this.activeMarquee.startX, e.clientY - this.activeMarquee.startY);
         if (dist > 4) {
@@ -3188,7 +3316,9 @@ class NodeManager {
 
             const alignMode = !!store.state.settings?.alignMode;
             const gridSnapMode = !!store.state.settings?.gridSnapMode;
-            const shouldAlign = alignMode ? !e.ctrlKey : e.ctrlKey;
+            const shouldAlign = this.activeDrag.viaCtrlBody
+              ? alignMode
+              : (alignMode ? !e.ctrlKey : e.ctrlKey);
 
             if (gridSnapMode) {
               const GRID_SIZE = 24;
@@ -3369,6 +3499,7 @@ class NodeManager {
     });
 
     window.addEventListener('mouseup', (e) => {
+      this.pendingCtrlGroupDrag = null;
       if (this.activeMarquee) {
         this.marqueeBoxEl.style.display = 'none';
         if (!this.activeMarquee.moved && !this.activeMarquee.isAdditive) {
@@ -3435,6 +3566,9 @@ class NodeManager {
           }
           document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
           this.updateGroupDOMBounds(this.activeDrag.groupId);
+          if (this.viewportEl && !canvas.isSpacePressed) {
+            this.viewportEl.style.cursor = '';
+          }
         } else if (this.activeDrag.type === 'RESIZE_GROUP') {
           document.querySelectorAll('.group-resize-handle.active').forEach(h => h.classList.remove('active'));
           document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
@@ -3452,6 +3586,9 @@ class NodeManager {
     });
 
     window.addEventListener('keydown', (e) => {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        this._updateCtrlGroupCursor(!e.shiftKey);
+      }
       if (window.__settings?.isRecordingShortcut?.()) return;
 
       // Shortcut to toggle settings modal
@@ -3636,11 +3773,17 @@ class NodeManager {
     });
 
     window.addEventListener('keyup', (e) => {
-      if (e.key === 'Control') {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        this._updateCtrlGroupCursor(false);
         if (!store.state.settings?.alignMode) {
           wires.clearGuideLines();
         }
       }
+    });
+
+    window.addEventListener('blur', () => {
+      this.pendingCtrlGroupDrag = null;
+      this._updateCtrlGroupCursor(false);
     });
   }
 }

@@ -141,6 +141,10 @@ html[data-canvas-texture="grid"] #viewport {
   transform-origin: 0 0;
 }
 
+#board.is-viewport-animating {
+  will-change: transform;
+}
+
 #groups-container { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 #wire-svg { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; z-index: 10; }
 #cards-container { position: absolute; inset: 0; pointer-events: none; z-index: 20; }
@@ -467,18 +471,18 @@ html[data-theme="light"] .node-group {
   box-shadow: 0 0 0 2px var(--group-glow, var(--accent-soft)) !important;
 }
 
-/* 8A: Embedded quiet pill label inside top-left */
+/* 8A: Embedded prominent header pill inside top-left */
 .group-label {
   position: absolute;
-  top: 10px;
-  left: 12px;
-  height: 26px;
-  max-width: calc(100% - 42px);
+  top: 12px;
+  left: 14px;
+  height: 36px;
+  max-width: calc(100% - 48px);
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 0 9px 0 4px;
-  border-radius: var(--r-sm);
+  gap: 6px;
+  padding: 0 14px 0 8px;
+  border-radius: 8px;
   background: var(--group-label-bg, var(--bg-surface-2));
   border: 1px solid var(--border-hairline);
   cursor: grab;
@@ -500,12 +504,13 @@ html[data-theme="light"] .node-group {
 }
 
 .group-title {
-  font-size: 12.5px;
+  font-size: 16px;
   font-weight: 600;
   line-height: 1.3;
+  letter-spacing: -0.01em;
   color: var(--text-primary);
   min-width: 0;
-  max-width: 220px;
+  max-width: 320px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -515,21 +520,22 @@ html[data-theme="light"] .node-group {
 .group-title-input {
   background: var(--bg-surface-1);
   border: 1px solid var(--group-theme, var(--accent));
-  border-radius: 4px;
+  border-radius: 5px;
   color: var(--text-primary);
-  font-size: 12.5px;
+  font-size: 16px;
   font-weight: 600;
   font-family: inherit;
-  padding: 1px 6px;
+  letter-spacing: -0.01em;
+  padding: 2px 8px;
   outline: none;
-  min-width: 90px;
-  max-width: 220px;
+  min-width: 110px;
+  max-width: 320px;
 }
 
 /* Group Header Connection Ports (Left dot = group-label-dot, Right dot = top-right of group) */
 .node-group .group-port-slot-left {
-  width: 16px;
-  height: 18px;
+  width: 18px;
+  height: 20px;
   position: relative;
   flex-shrink: 0;
   pointer-events: auto;
@@ -545,8 +551,8 @@ html[data-theme="light"] .node-group {
 }
 .node-group .group-port-slot-right {
   position: absolute;
-  top: 13px;
-  right: 10px;
+  top: 20px;
+  right: 12px;
   width: 20px;
   height: 20px;
   z-index: 4;

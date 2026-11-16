@@ -58,6 +58,7 @@ async function initApp() {
   library.init(libraryDrawerEl, btnLibraryEl);
 
   window.__store = store;
+  window.__canvas = canvas;
   window.__nodes = nodes;
   window.__wires = wires;
   window.__settings = settings;
@@ -1077,6 +1078,7 @@ async function initApp() {
       renderCanvasNavigation();
       return;
     } else if (event.type === 'CANVAS_SWITCHED') {
+      canvas.stopAnimations();
       nodes.clearSelection();
       nodes.hideAllMenus();
       canvas.applyTransform();
@@ -1099,6 +1101,7 @@ async function initApp() {
       wires.render();
       renderCanvasNavigation();
     } else if (event.type === 'STATE_RESET') {
+      canvas.stopAnimations();
       updateStatus('');
       nodes.filterSelectionAfterRestore();
       canvas.applyTransform();
@@ -1106,6 +1109,7 @@ async function initApp() {
       wires.render();
       renderCanvasNavigation();
     } else if (event.type === 'STATE_RESTORED') {
+      canvas.stopAnimations();
       nodes.filterSelectionAfterRestore();
       applyAppearanceSettings();
       syncShortcutTooltips();
@@ -1128,6 +1132,7 @@ async function initApp() {
       syncEdgeDrawerOffsets();
     } else if (event.type === 'REMOTE_SYNCED') {
       if (event.sourceEvent === 'VIEWPORT_CHANGED') {
+        canvas.stopAnimations();
         canvas.applyTransform();
       } else if (event.sourceEvent === 'SETTINGS_CHANGED') {
         applyAppearanceSettings();
