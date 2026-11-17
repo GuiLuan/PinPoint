@@ -712,7 +712,7 @@ class LibraryManager {
       const x = Number(c.x) || 0;
       const y = Number(c.y) || 0;
       const w = Number(c.width) || 310;
-      const h = EST_CARD_H;
+      const h = Number(c.height) || EST_CARD_H;
       cardRects.set(c.id, { x, y, w, h, color: c.headerColor || '#98989d' });
       if (x < minX) minX = x;
       if (y < minY) minY = y;
@@ -813,11 +813,29 @@ class LibraryManager {
         if (dx + 3 > x + w - 3) return '';
         return `<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="2" fill="${escapeHtml(cc)}" />`;
       }).join('');
+      let mediaGlyph = '';
+      if (c.kind === 'image') {
+        const gx = x + w * 0.28;
+        const gy = y + hdrH + (h - hdrH) * 0.72;
+        const gx2 = x + w * 0.5;
+        const gy2 = y + hdrH + (h - hdrH) * 0.28;
+        const gx3 = x + w * 0.72;
+        mediaGlyph = `<polygon points="${gx.toFixed(1)},${gy.toFixed(1)} ${gx2.toFixed(1)},${gy2.toFixed(1)} ${gx3.toFixed(1)},${gy.toFixed(1)}" fill="rgba(255,255,255,0.28)" />`;
+      } else if (c.kind === 'video') {
+        const cx = x + w * 0.5;
+        const cy = y + hdrH + (h - hdrH) * 0.5;
+        const r = Math.min(w, h - hdrH) * 0.22;
+        mediaGlyph = `<polygon points="${(cx - r * 0.5).toFixed(1)},${(cy - r * 0.7).toFixed(1)} ${(cx + r * 0.9).toFixed(1)},${cy.toFixed(1)} ${(cx - r * 0.5).toFixed(1)},${(cy + r * 0.7).toFixed(1)}" fill="rgba(255,255,255,0.32)" />`;
+      } else if (c.kind === 'webpage') {
+        mediaGlyph = `<line x1="${(x + 3.5).toFixed(1)}" y1="${(y + hdrH + 4).toFixed(1)}" x2="${Math.max(x + 6, x + w - 4).toFixed(1)}" y2="${(y + hdrH + 4).toFixed(1)}" stroke="rgba(76,141,255,0.55)" stroke-width="1.8" stroke-linecap="round" />`;
+      } else {
+        mediaGlyph = `<line x1="${(x + 3.5).toFixed(1)}" y1="${(y + hdrH + 4).toFixed(1)}" x2="${Math.max(x + 6, x + w - 4).toFixed(1)}" y2="${(y + hdrH + 4).toFixed(1)}" stroke="rgba(255,255,255,0.18)" stroke-width="1.2" stroke-linecap="round" />`;
+      }
       return `
         <g>
           <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="3.5" fill="rgba(34,34,38,0.95)" stroke="rgba(255,255,255,0.18)" stroke-width="0.9" />
           <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${hdrH.toFixed(1)}" rx="2.5" fill="${escapeHtml(col)}" fill-opacity="0.88" />
-          <line x1="${(x + 3.5).toFixed(1)}" y1="${(y + hdrH + 4).toFixed(1)}" x2="${Math.max(x + 6, x + w - 4).toFixed(1)}" y2="${(y + hdrH + 4).toFixed(1)}" stroke="rgba(255,255,255,0.18)" stroke-width="1.2" stroke-linecap="round" />
+          ${mediaGlyph}
           ${dots}
         </g>
       `;

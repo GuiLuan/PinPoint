@@ -1,6 +1,7 @@
 import { store, DEFAULT_PALETTE } from './state.js';
 import { hexToRgba } from './nodes.js';
 import { SHORTCUT_DEFINITIONS, formatShortcutDisplay, formatShortcutFromEvent } from './shortcuts.js';
+import { formatBytes } from './media.js';
 
 class SettingsManager {
   constructor() {
@@ -83,6 +84,24 @@ class SettingsManager {
       window.__wires?.render?.();
     });
 
+    const canvasTabPanel = this.overlayEl.querySelector('#tab-panel-canvas');
+    canvasTabPanel?.addEventListener('click', (e) => {
+      const loadCard = e.target.closest('.webpage-load-card');
+      if (loadCard) {
+        e.preventDefault();
+        const mode = loadCard.getAttribute('data-webpage-load');
+        if (mode) {
+          store.setMediaSettings({ webpageLoadMode: mode });
+          this.syncAssistanceToggles();
+        }
+      }
+    });
+
+    this.overlayEl.querySelector('#btn-sleep-all-webpages')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.__nodes?.sleepAllWebpages?.();
+    });
+
     // Appearance settings listeners
     this.bindAppearanceListeners();
 
@@ -139,6 +158,8 @@ class SettingsManager {
       this.syncAppearanceSettings();
     } else if (tabId === 'palette') {
       this.updatePreviewMockup();
+    } else if (tabId === 'canvas') {
+      this.syncAssistanceToggles();
     } else if (tabId === 'minimap') {
       this.syncMinimapSettings();
     } else if (tabId === 'library') {
@@ -366,7 +387,7 @@ class SettingsManager {
     if (pill) pill.classList.toggle('is-active', !!mm.enabled);
 
     // Position cards
-    this.overlayEl.querySelectorAll('.minimap-pos-card').forEach(card => {
+    this.overlayEl.querySelectorAll('.minimap-pos-card[data-pos]').forEach(card => {
       const pos = card.getAttribute('data-pos');
       card.classList.toggle('is-active', pos === mm.position);
     });
@@ -470,6 +491,72 @@ class SettingsManager {
       await window.__sync?.saveAllToBackend?.({ manual: true });
       this.syncSaveSettings();
     });
+
+    const btnGcAssets = panel.querySelector('#btn-gc-assets');
+    btnGcAssets?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (!window.__sync?.connected) {
+        store.emitToast('服务离线时无法清理本地资源', 'warning');
+        return;
+      }
+      btnGcAssets.disabled = true;
+      try {
+        const extraAssetIds = store.collectLocalReferencedAssetIds?.() || [];
+        const res = await fetch('/api/v1/assets/gc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ extraAssetIds })
+        });
+        const json = await res.json();
+        if (res.ok && json?.ok && json.data) {
+          const { deletedCount, freedBytes } = json.data;
+          if (deletedCount > 0) {
+            store.emitToast(`已清理 ${deletedCount} 个未引用资源，释放 ${formatBytes(freedBytes)}`, 'success');
+          } else {
+            store.emitToast('当前没有可清理的未引用资源', 'info');
+          }
+        }
+      } catch (err) {
+        store.emitToast('清理资源失败', 'warning');
+      } finally {
+        btnGcAssets.disabled = false;
+        this.refreshAssetStats();
+      }
+    });
+  }
+
+  async refreshAssetStats() {
+    if (!this.overlayEl) return;
+    const summaryEl = this.overlayEl.querySelector('#assets-stats-summary');
+    const detailEl = this.overlayEl.querySelector('#assets-stats-detail');
+    const btnGc = this.overlayEl.querySelector('#btn-gc-assets');
+    if (!summaryEl || !detailEl) return;
+
+    if (!window.__sync?.connected) {
+      summaryEl.textContent = '服务离线，无法读取本地资源统计';
+      detailEl.textContent = '请启动或连接本地服务';
+      if (btnGc) btnGc.disabled = true;
+      return;
+    }
+    try {
+      const extraAssetIds = store.collectLocalReferencedAssetIds?.() || [];
+      const res = await fetch('/api/v1/assets/stats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ extraAssetIds })
+      });
+      const json = await res.json();
+      if (res.ok && json?.ok && json.data) {
+        const s = json.data;
+        summaryEl.textContent = `共 ${s.totalCount} 个资源，占用 ${formatBytes(s.totalBytes)}`;
+        detailEl.textContent = s.unreferencedCount > 0
+          ? `其中 ${s.unreferencedCount} 个未引用资源可清理（${formatBytes(s.unreferencedBytes)}）`
+          : '所有本地资源均处于引用中';
+        if (btnGc) btnGc.disabled = s.unreferencedCount === 0;
+      }
+    } catch {
+      summaryEl.textContent = '读取资源统计失败';
+    }
   }
 
   syncSaveSettings() {
@@ -495,6 +582,8 @@ class SettingsManager {
     const valEl = this.overlayEl.querySelector('#save-interval-val');
     if (slider) slider.value = sv.intervalSec;
     if (valEl) valEl.textContent = `${sv.intervalSec} 秒`;
+
+    this.refreshAssetStats();
   }
 
   bindToastListeners() {
@@ -547,7 +636,7 @@ class SettingsManager {
     if (!this.overlayEl) return;
     const ts = store.getToastSettings();
 
-    this.overlayEl.querySelectorAll('.toast-pos-card').forEach(card => {
+    this.overlayEl.querySelectorAll('.toast-pos-card[data-toast-pos]').forEach(card => {
       card.classList.toggle('is-active', card.getAttribute('data-toast-pos') === ts.position);
     });
 
@@ -572,6 +661,11 @@ class SettingsManager {
 
     if (alignPill) alignPill.classList.toggle('is-active', alignActive);
     if (gridPill) gridPill.classList.toggle('is-active', gridActive);
+
+    const loadMode = store.getMediaSettings?.()?.webpageLoadMode || 'smart';
+    this.overlayEl.querySelectorAll('.webpage-load-card').forEach(btn => {
+      btn.classList.toggle('is-active', btn.getAttribute('data-webpage-load') === loadMode);
+    });
   }
 
   bindShortcutsListeners() {

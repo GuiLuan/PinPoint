@@ -11,6 +11,15 @@ DEFAULT_CARD_HEIGHT = 140
 DEFAULT_SUBCANVAS_WIDTH = 300
 DEFAULT_SUBCANVAS_HEIGHT = 180
 MIN_SUBCANVAS_HEIGHT = 120
+DEFAULT_IMAGE_WIDTH = 360
+DEFAULT_IMAGE_HEIGHT = 240
+DEFAULT_VIDEO_WIDTH = 400
+DEFAULT_VIDEO_HEIGHT = 260
+DEFAULT_WEBPAGE_WIDTH = 460
+DEFAULT_WEBPAGE_HEIGHT = 360
+MIN_MEDIA_HEIGHT = 140
+MEDIA_CARD_KINDS = {"image", "video", "webpage"}
+VALID_CARD_KINDS = {"card", "subcanvas", "image", "video", "webpage"}
 ROOT_CANVAS_ID = "root"
 ROOT_CANVAS_TITLE = "主画布"
 GRID_SIZE = 24
@@ -36,6 +45,8 @@ VALID_LIBRARY_POSITIONS = {"left", "right"}
 VALID_LIBRARY_LAYOUTS = {"grid", "list"}
 VALID_SAVE_MODES = {"auto", "manual"}
 DEFAULT_SAVE_SETTINGS = {"mode": "auto", "intervalSec": 1}
+VALID_WEBPAGE_LOAD_MODES = {"smart", "lazy", "eager"}
+DEFAULT_MEDIA_SETTINGS = {"webpageLoadMode": "smart"}
 VALID_TOAST_POSITIONS = {"top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"}
 DEFAULT_TOAST_SETTINGS = {"position": "bottom-left", "durationSec": 5}
 DEFAULT_SHORTCUTS = {
@@ -92,6 +103,7 @@ DEFAULT_STATE: dict[str, Any] = {
             "mode": "auto",
             "intervalSec": 1,
         },
+        "media": dict(DEFAULT_MEDIA_SETTINGS),
         "toast": dict(DEFAULT_TOAST_SETTINGS),
         "shortcuts": dict(DEFAULT_SHORTCUTS),
     },

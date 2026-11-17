@@ -354,6 +354,9 @@ class CanvasManager {
     });
 
     this.viewportEl.addEventListener('wheel', (e) => {
+      if (e.target?.closest?.('.note-card.is-webpage-interactive')) {
+        return;
+      }
       e.preventDefault();
       this.viewportTween = null;
 

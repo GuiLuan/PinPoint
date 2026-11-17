@@ -455,10 +455,43 @@ class MinimapManager {
         this.ctx.fill();
 
         // Card header bar
-        const headerH = Math.max(mh * 0.28, 2.5);
+        const headerH = Math.max(Math.min(mh * 0.25, 5), 2.5);
         this.ctx.fillStyle = card.headerColor || neutralHeaderColor;
         this.drawTopRoundedRect(this.ctx, cx, cy, mw, headerH, radius);
         this.ctx.fill();
+
+        // Media/Webpage visual markers on minimap
+        if (card.kind === 'image' || card.kind === 'video' || card.kind === 'webpage') {
+          const bodyY = cy + headerH;
+          const bodyH = Math.max(0, mh - headerH);
+          if (mw >= 10 && bodyH >= 8) {
+            this.ctx.fillStyle = isLight ? 'rgba(28, 25, 22, 0.34)' : 'rgba(255, 255, 255, 0.34)';
+            if (card.kind === 'video') {
+              const s = Math.min(mw, bodyH) * 0.24;
+              const mx = cx + mw / 2;
+              const my = bodyY + bodyH / 2;
+              this.ctx.beginPath();
+              this.ctx.moveTo(mx - s * 0.5, my - s * 0.7);
+              this.ctx.lineTo(mx + s * 0.85, my);
+              this.ctx.lineTo(mx - s * 0.5, my + s * 0.7);
+              this.ctx.closePath();
+              this.ctx.fill();
+            } else if (card.kind === 'image') {
+              const padX = mw * 0.22;
+              const padY = bodyH * 0.24;
+              this.ctx.beginPath();
+              this.ctx.moveTo(cx + padX, bodyY + bodyH - padY);
+              this.ctx.lineTo(cx + mw * 0.45, bodyY + padY * 1.4);
+              this.ctx.lineTo(cx + mw * 0.62, bodyY + bodyH - padY * 1.6);
+              this.ctx.lineTo(cx + mw * 0.75, bodyY + padY * 1.8);
+              this.ctx.lineTo(cx + mw - padX, bodyY + bodyH - padY);
+              this.ctx.closePath();
+              this.ctx.fill();
+            } else {
+              this.ctx.fillRect(cx + 2, bodyY + 2, Math.max(3, mw - 4), 1.6);
+            }
+          }
+        }
       }
 
       // Selection or normal border

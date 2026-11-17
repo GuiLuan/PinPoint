@@ -6,6 +6,7 @@ import { settings } from './settings.js';
 import { minimap } from './minimap.js';
 import { sync } from './sync.js';
 import { library } from './library.js';
+import { media } from './media.js';
 
 function escapeHtml(str) {
   return String(str || '')
@@ -65,6 +66,7 @@ async function initApp() {
   window.__minimap = minimap;
   window.__sync = sync;
   window.__library = library;
+  window.__media = media;
 
   canvas.onTransform = () => {
     nodes.updatePopoverPosition();
@@ -1081,6 +1083,7 @@ async function initApp() {
       canvas.stopAnimations();
       nodes.clearSelection();
       nodes.hideAllMenus();
+      nodes.resetRenderCacheForCanvasSwitch?.();
       canvas.applyTransform();
       nodes.render();
       wires.render();

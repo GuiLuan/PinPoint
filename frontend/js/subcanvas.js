@@ -65,11 +65,13 @@ export function computeLocalThumbnail(canvasData) {
   let subcanvasCount = 0;
 
   for (const c of rawCards) {
-    const kind = c.kind === 'subcanvas' ? 'subcanvas' : 'card';
+    const kind = c.kind || 'card';
     if (kind === 'subcanvas') subcanvasCount += 1;
     else cardCount += 1;
-    const w = Number(c.width) || DEFAULT_CARD_WIDTH;
-    const h = Number(c.height) || (kind === 'subcanvas' ? DEFAULT_SUBCANVAS_HEIGHT : DEFAULT_CARD_HEIGHT);
+    const defW = kind === 'webpage' ? 460 : (kind === 'video' ? 400 : (kind === 'image' ? 360 : DEFAULT_CARD_WIDTH));
+    const defH = kind === 'subcanvas' ? DEFAULT_SUBCANVAS_HEIGHT : (kind === 'webpage' ? 360 : (kind === 'video' ? 264 : (kind === 'image' ? 240 : DEFAULT_CARD_HEIGHT)));
+    const w = Number(c.width) || defW;
+    const h = Number(c.height) || defH;
     const entry = {
       id: c.id,
       kind,
@@ -283,10 +285,44 @@ export function renderThumbnailCanvas(canvasEl, thumbnail, palette = ['#5ca479']
       drawRoundRect(ctx, cx, cy, mw, mh, radius);
       ctx.fill();
 
-      const headerH = Math.max(mh * 0.28, 2.5);
+      const headerH = Math.max(Math.min(mh * 0.25, 6), 2.5);
       ctx.fillStyle = card.headerColor || neutralHeaderColor;
       drawTopRoundedRect(ctx, cx, cy, mw, headerH, radius);
       ctx.fill();
+
+      // Media / Webpage placeholder glyphs in subcanvas thumbnail
+      if (card.kind === 'image' || card.kind === 'video' || card.kind === 'webpage') {
+        const bodyY = cy + headerH;
+        const bodyH = Math.max(0, mh - headerH);
+        if (mw >= 14 && bodyH >= 10) {
+          ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.28)' : 'rgba(255, 255, 255, 0.26)';
+          if (card.kind === 'video') {
+            const tri = Math.min(mw, bodyH) * 0.24;
+            const mx = cx + mw / 2;
+            const my = bodyY + bodyH / 2;
+            ctx.beginPath();
+            ctx.moveTo(mx - tri * 0.5, my - tri * 0.7);
+            ctx.lineTo(mx + tri * 0.85, my);
+            ctx.lineTo(mx - tri * 0.5, my + tri * 0.7);
+            ctx.closePath();
+            ctx.fill();
+          } else if (card.kind === 'image') {
+            const padX = mw * 0.2;
+            const padY = bodyH * 0.22;
+            ctx.beginPath();
+            ctx.moveTo(cx + padX, bodyY + bodyH - padY);
+            ctx.lineTo(cx + mw * 0.44, bodyY + padY * 1.4);
+            ctx.lineTo(cx + mw * 0.6, bodyY + bodyH - padY * 1.6);
+            ctx.lineTo(cx + mw * 0.72, bodyY + padY * 1.8);
+            ctx.lineTo(cx + mw - padX, bodyY + bodyH - padY);
+            ctx.closePath();
+            ctx.fill();
+          } else {
+            // webpage: slim address bar line
+            ctx.fillRect(cx + 3, bodyY + 3, Math.max(4, mw - 6), 2);
+          }
+        }
+      }
 
       ctx.strokeStyle = isLight ? 'rgba(37, 34, 30, 0.18)' : 'rgba(255, 255, 255, 0.16)';
       ctx.lineWidth = 0.75;

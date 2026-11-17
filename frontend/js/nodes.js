@@ -4,6 +4,7 @@ import { wires } from './wires.js';
 import { computeRectsBoundingBox } from './focusLayout.js';
 import { renderThumbnailCanvas, computeLocalThumbnail } from './subcanvas.js';
 import { matchesShortcut } from './shortcuts.js';
+import { media, CARD_HEADER_HEIGHT, sanitizeIframeUrl, shouldWebpageStartDormant, isLikelyVideoSiteUrl } from './media.js';
 
 export function hexToRgba(hex, alpha = 1) {
   if (!hex) return `rgba(48, 209, 88, ${alpha})`;
@@ -54,6 +55,7 @@ class NodeManager {
     this.pasteCount = 0;
     this.mouseBoardPos = { x: 0, y: 0 };
     this.focusExitAnimId = null;
+    this.loadedWebpageIds = new Set();
   }
 
   init(containerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl) {
@@ -64,12 +66,18 @@ class NodeManager {
     this.canvasContextMenuEl = canvasContextMenuEl || document.getElementById('canvas-context-menu');
     this.groupContextMenuEl = document.getElementById('group-context-menu');
     this.subcanvasContextMenuEl = document.getElementById('subcanvas-context-menu');
+    this.mediaContextMenuEl = document.getElementById('media-context-menu');
     this.activeContextGroup = null;
     this.activeContextSubcanvas = null;
+    this.activeContextMedia = null;
+    this.interactiveWebpageCardId = null;
     this.contextMenuBoardPos = null;
     this.marqueeBoxEl = marqueeBoxEl;
     this.alignmentBarEl = alignmentBarEl;
     this.viewportEl = viewportEl;
+
+    media.init();
+    media.bindCanvasDropAndPaste(viewportEl);
 
     window.addEventListener('mousemove', (e) => {
       const { x, y, zoom } = store.state.viewport;
@@ -84,6 +92,7 @@ class NodeManager {
     this.bindCanvasContextMenuEvents();
     this.bindGroupContextMenuEvents();
     this.bindSubcanvasContextMenuEvents();
+    this.bindMediaContextMenuEvents();
     this.bindCanvasShortcuts();
     this.bindSelectionEvents();
     this.bindAlignmentEvents();
@@ -168,276 +177,354 @@ class NodeManager {
     }
   }
 
-  render() {
-    this.containerEl.innerHTML = '';
+  resetRenderCacheForCanvasSwitch() {
+    this.loadedWebpageIds.clear();
+    this.exitWebpageInteractive();
+  }
 
-    store.state.cards.forEach(card => {
-      const isSubcanvas = card.kind === 'subcanvas';
-      const cardEl = document.createElement('div');
-      cardEl.id = `card-dom-${card.id}`;
-      cardEl.style.left = `${card.x}px`;
-      cardEl.style.top = `${card.y}px`;
-      cardEl.style.width = `${card.width || (isSubcanvas ? 300 : 310)}px`;
+  loadWebpageCard(cardId) {
+    if (!cardId) return;
+    this.loadedWebpageIds.add(cardId);
+    this.render();
+    wires.render();
+  }
 
-      const leftPinId = `pin-head-left-${card.id}`;
-      const rightPinId = `pin-head-right-${card.id}`;
-      const legacyPinId = `pin-head-${card.id}`;
+  sleepWebpageCard(cardId) {
+    if (!cardId) return;
+    this.loadedWebpageIds.delete(cardId);
+    if (this.interactiveWebpageCardId === cardId) {
+      this.exitWebpageInteractive();
+    }
+    this.render();
+    wires.render();
+  }
 
-      const leftConn = store.state.connections.find(c => c.toPinId === leftPinId || c.fromPinId === leftPinId || c.toPinId === legacyPinId);
-      const rightConn = store.state.connections.find(c => c.toPinId === rightPinId || c.fromPinId === rightPinId);
+  sleepAllWebpages() {
+    this.loadedWebpageIds.clear();
+    this.exitWebpageInteractive();
+    this.render();
+    wires.render();
+  }
 
-      const leftConnected = !!leftConn;
-      const rightConnected = !!rightConn;
+  _getCardKindKey(card) {
+    if (card.kind === 'subcanvas') return 'subcanvas';
+    if (card.kind === 'image' || card.kind === 'video' || card.kind === 'webpage') return card.kind;
+    return 'card';
+  }
 
-      const leftColor = card.headerColor || leftConn?.color || '#98989d';
-      const rightColor = card.headerColor || rightConn?.color || '#98989d';
+  _applyCardThemeAndPins(card, cardEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor) {
+    const isLightTheme = document.documentElement.getAttribute('data-theme') === 'light';
+    if (card.headerColor) {
+      cardEl.style.setProperty('--card-theme-color', card.headerColor);
+      cardEl.style.setProperty('--card-theme-bg', hexToRgba(card.headerColor, isLightTheme ? 0.08 : 0.055));
+      cardEl.style.setProperty('--card-theme-header-bg', hexToRgba(card.headerColor, isLightTheme ? 0.18 : 0.11));
+      cardEl.style.setProperty('--card-theme-header-border', hexToRgba(card.headerColor, isLightTheme ? 0.28 : 0.18));
+      cardEl.style.setProperty('--card-theme-border', hexToRgba(card.headerColor, isLightTheme ? 0.48 : 0.36));
+      cardEl.style.setProperty('--card-theme-glow', hexToRgba(card.headerColor, isLightTheme ? 0.28 : 0.25));
+    } else {
+      cardEl.style.removeProperty('--card-theme-color');
+      cardEl.style.removeProperty('--card-theme-bg');
+      cardEl.style.removeProperty('--card-theme-header-bg');
+      cardEl.style.removeProperty('--card-theme-header-border');
+      cardEl.style.removeProperty('--card-theme-border');
+      cardEl.style.removeProperty('--card-theme-glow');
+    }
 
-      const isLightTheme = document.documentElement.getAttribute('data-theme') === 'light';
-      if (card.headerColor) {
-        cardEl.style.setProperty('--card-theme-color', card.headerColor);
-        cardEl.style.setProperty('--card-theme-bg', hexToRgba(card.headerColor, isLightTheme ? 0.08 : 0.055));
-        cardEl.style.setProperty('--card-theme-header-bg', hexToRgba(card.headerColor, isLightTheme ? 0.18 : 0.11));
-        cardEl.style.setProperty('--card-theme-header-border', hexToRgba(card.headerColor, isLightTheme ? 0.28 : 0.18));
-        cardEl.style.setProperty('--card-theme-border', hexToRgba(card.headerColor, isLightTheme ? 0.48 : 0.36));
-        cardEl.style.setProperty('--card-theme-glow', hexToRgba(card.headerColor, isLightTheme ? 0.28 : 0.25));
+    const leftPin = cardEl.querySelector('.header-pin-left');
+    if (leftPin) {
+      leftPin.setAttribute('data-header-pin-id', leftPinId);
+      leftPin.classList.toggle('pin-connected', leftConnected);
+      if (card.kind === 'subcanvas') {
+        leftPin.style.color = leftColor;
       } else {
-        cardEl.style.removeProperty('--card-theme-color');
-        cardEl.style.removeProperty('--card-theme-bg');
-        cardEl.style.removeProperty('--card-theme-header-bg');
-        cardEl.style.removeProperty('--card-theme-header-border');
-        cardEl.style.removeProperty('--card-theme-border');
-        cardEl.style.removeProperty('--card-theme-glow');
+        leftPin.style.backgroundColor = leftColor;
+        leftPin.style.color = leftColor;
       }
+    }
 
-      if (isSubcanvas) {
-        cardEl.className = 'note-card subcanvas-portal' + (this.selectedCardIds.has(card.id) ? ' selected' : '');
-        const portalH = Math.max(120, card.height || 180);
-        cardEl.style.height = `${portalH}px`;
-        if (card.headerColor) {
-          cardEl.style.setProperty('--portal-accent', card.headerColor);
-          cardEl.style.setProperty('--portal-border', hexToRgba(card.headerColor, 0.42));
-        }
+    const rightPin = cardEl.querySelector('.header-pin-right');
+    if (rightPin) {
+      rightPin.setAttribute('data-header-pin-id', rightPinId);
+      rightPin.classList.toggle('pin-connected', rightConnected);
+      rightPin.style.backgroundColor = rightColor;
+      rightPin.style.color = rightColor;
+    }
+  }
 
-        const thumb = store.getThumbnailForSubcanvas(card);
-        const totalItems = (thumb?.cardCount || 0) + (thumb?.subcanvasCount || 0);
-        const isEmpty = totalItems === 0;
-        const countBadgeHtml = totalItems > 0
-          ? `<span class="subcanvas-portal-count">${totalItems}</span>`
-          : '';
+  _syncSubcanvasCard(card, existingEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor) {
+    const isNew = !existingEl;
+    const cardEl = existingEl || document.createElement('div');
+    const cardId = card.id;
+    const getCard = () => store.state.cards.find(c => c.id === cardId) || cardEl.__cardData;
+    cardEl.__cardData = card;
 
-        cardEl.innerHTML = `
-          <div class="subcanvas-portal-stack" aria-hidden="true"></div>
-          <div class="subcanvas-portal-frame">
-            <div class="subcanvas-portal-stage">
-              <canvas class="subcanvas-thumbnail-canvas"></canvas>
-              ${isEmpty ? `<div class="subcanvas-portal-empty"><svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="1.6" fill="none"><rect x="4" y="4" width="16" height="16" rx="4"></rect><line x1="12" y1="9" x2="12" y2="15"></line><line x1="9" y1="12" x2="15" y2="12"></line></svg></div>` : ''}
+    if (isNew) {
+      cardEl.id = `card-dom-${cardId}`;
+      cardEl.dataset.cardKind = 'subcanvas';
+      cardEl.innerHTML = `
+        <div class="subcanvas-portal-stack" aria-hidden="true"></div>
+        <div class="subcanvas-portal-frame">
+          <div class="subcanvas-portal-stage">
+            <canvas class="subcanvas-thumbnail-canvas"></canvas>
+            <div class="subcanvas-portal-empty" style="display: none;"><svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="1.6" fill="none"><rect x="4" y="4" width="16" height="16" rx="4"></rect><line x1="12" y1="9" x2="12" y2="15"></line><line x1="9" y1="12" x2="15" y2="12"></line></svg></div>
+          </div>
+          <div class="subcanvas-portal-caption">
+            <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-left" title="子画布连接端口 (左)">
+              <span class="header-pin header-pin-left subcanvas-portal-pin" data-header-pin-id="${leftPinId}">
+                <svg class="subcanvas-portal-icon" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
+                  <rect x="3" y="3" width="18" height="18" rx="3"></rect>
+                  <path d="M9 12h6"></path>
+                </svg>
+              </span>
             </div>
-            <div class="subcanvas-portal-caption">
-              <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-left" title="子画布连接端口 (左)">
-                <span class="header-pin header-pin-left subcanvas-portal-pin ${leftConnected ? 'pin-connected' : ''}"
-                      data-header-pin-id="${leftPinId}"
-                      style="color: ${card.headerColor || leftConn?.color || 'var(--text-secondary)'};">
-                  <svg class="subcanvas-portal-icon" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
-                    <rect x="3" y="3" width="18" height="18" rx="3"></rect>
-                    <path d="M9 12h6"></path>
-                  </svg>
-                </span>
-              </div>
-              <span class="header-title subcanvas-portal-title" title="双击重命名"></span>
-              <input class="header-title-input subcanvas-portal-title-input" placeholder="未命名子画布" style="display: none;" />
-              <span class="subcanvas-portal-spacer" aria-hidden="true"></span>
-              ${countBadgeHtml}
-              <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-right" title="子画布连接端口 (右)">
-                <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}"
-                   data-header-pin-id="${rightPinId}"
-                   style="background-color: ${rightColor}; color: ${rightColor};"></i>
-              </div>
+            <span class="header-title subcanvas-portal-title" title="双击重命名"></span>
+            <input class="header-title-input subcanvas-portal-title-input" placeholder="未命名子画布" style="display: none;" />
+            <span class="subcanvas-portal-spacer" aria-hidden="true"></span>
+            <span class="subcanvas-portal-count" style="display: none;"></span>
+            <div class="header-port-slot subcanvas-port-slot subcanvas-port-slot-right" title="子画布连接端口 (右)">
+              <i class="header-pin header-pin-right" data-header-pin-id="${rightPinId}"></i>
             </div>
           </div>
-          <div class="card-resize-handle card-resize-handle-left" data-side="left"></div>
-          <div class="card-resize-handle card-resize-handle-right" data-side="right"></div>
-          <div class="subcanvas-resize-bottom"></div>
-        `;
+        </div>
+        <div class="card-resize-handle card-resize-handle-left" data-side="left"></div>
+        <div class="card-resize-handle card-resize-handle-right" data-side="right"></div>
+        <div class="subcanvas-resize-bottom"></div>
+      `;
 
-        const titleSpan = cardEl.querySelector('.header-title');
-        const titleInput = cardEl.querySelector('.header-title-input');
-        titleSpan.textContent = card.title || '未命名子画布';
-        titleInput.value = card.title || '';
+      const titleSpan = cardEl.querySelector('.header-title');
+      const titleInput = cardEl.querySelector('.header-title-input');
+      let prevTitle = card.title || '';
 
-        let prevTitle = card.title || '';
-        const syncInputWidth = () => {
-          const len = (titleInput.value || '').length;
-          const approx = Math.min(Math.max(len * 11 + 28, 96), 185);
-          titleInput.style.width = `${approx}px`;
-        };
-        const startTitleEdit = () => {
-          prevTitle = card.title || '';
-          const spanW = titleSpan.offsetWidth || 0;
-          titleSpan.style.display = 'none';
-          titleInput.style.display = 'inline-block';
-          titleInput.value = card.title || '';
-          titleInput.style.width = `${Math.min(Math.max(spanW + 24, 96), 185)}px`;
-          titleInput.focus();
-          titleInput.select();
-        };
-        cardEl._startTitleEdit = startTitleEdit;
-        titleInput.addEventListener('input', syncInputWidth);
+      const syncInputWidth = () => {
+        const len = (titleInput.value || '').length;
+        const approx = Math.min(Math.max(len * 11 + 28, 96), 185);
+        titleInput.style.width = `${approx}px`;
+      };
+      const startTitleEdit = () => {
+        const cur = getCard();
+        prevTitle = cur?.title || '';
+        const spanW = titleSpan.offsetWidth || 0;
+        titleSpan.style.display = 'none';
+        titleInput.style.display = 'inline-block';
+        titleInput.value = prevTitle;
+        titleInput.style.width = `${Math.min(Math.max(spanW + 24, 96), 185)}px`;
+        titleInput.focus();
+        titleInput.select();
+      };
+      cardEl._startTitleEdit = startTitleEdit;
+      titleInput.addEventListener('input', syncInputWidth);
 
-        const finishTitleEdit = () => {
-          if (titleInput.style.display === 'none') return;
-          const newTitle = titleInput.value.trim() || '未命名子画布';
-          const changed = newTitle !== prevTitle;
-          card.title = newTitle;
-          prevTitle = newTitle;
-          titleSpan.textContent = newTitle;
-          titleInput.style.display = 'none';
-          titleSpan.style.display = '';
-          if (changed) {
-            if (card.subcanvasId) {
-              store.updateCard(card.id, { title: newTitle });
-            }
-            store.commit();
+      const finishTitleEdit = () => {
+        if (titleInput.style.display === 'none') return;
+        const cur = getCard();
+        const newTitle = titleInput.value.trim() || '未命名子画布';
+        const changed = newTitle !== prevTitle;
+        if (cur) cur.title = newTitle;
+        prevTitle = newTitle;
+        titleSpan.textContent = newTitle;
+        titleInput.style.display = 'none';
+        titleSpan.style.display = '';
+        if (changed) {
+          if (cur?.subcanvasId) {
+            store.updateCard(cur.id, { title: newTitle });
           }
-          store.scheduleAutoSave();
-        };
+          store.commit();
+        }
+        store.scheduleAutoSave();
+      };
 
-        titleSpan.addEventListener('dblclick', (e) => {
-          e.stopPropagation();
-          startTitleEdit();
-        });
-        titleInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            finishTitleEdit();
-          } else if (e.key === 'Escape') {
-            e.preventDefault();
-            titleInput.value = card.title || '';
-            finishTitleEdit();
-          }
-        });
-        titleInput.addEventListener('blur', finishTitleEdit);
-        titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
-
-        // Drag portal anywhere on its surface
-        cardEl.addEventListener('mousedown', (e) => {
-          if (e.target.closest('.header-pin, .header-port-slot, .card-resize-handle, .subcanvas-resize-bottom') || e.target === titleInput) return;
-          if (e.button !== 0) return;
+      titleSpan.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startTitleEdit();
+      });
+      titleInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
           e.preventDefault();
-          e.stopPropagation();
-          this._blurActiveTextEditor();
-          wires.clearFocus();
-          wires.dismissDropMenu(true);
-          this.clearCapsuleSelection();
-          window.getSelection()?.removeAllRanges();
-          this.hideSelectionPopover();
-          this.hideCanvasContextMenu();
-          this.hideGroupContextMenu();
-          this.hideSubcanvasContextMenu();
-
-          const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
-          const wasSelected = this.selectedCardIds.has(card.id);
-          if (isMultiToggle) {
-            if (!wasSelected) {
-              this.selectedCardIds.add(card.id);
-              this.updateSelectionVisuals();
-              this.updateAlignmentBar();
-            }
-          } else if (!wasSelected) {
-            this.selectCard(card.id, false);
-          }
-
-          this.activeDrag = {
-            type: 'MOVE_CARDS',
-            leadCardId: card.id,
-            startX: e.clientX,
-            startY: e.clientY,
-            isAlt: e.altKey,
-            wasMultiToggle: isMultiToggle,
-            toggleOffOnClick: isMultiToggle && wasSelected,
-            cloned: false,
-            initialPositions: new Map(
-              [...this.selectedCardIds].map(id => {
-                const c = store.state.cards.find(x => x.id === id);
-                return [id, { x: c.x, y: c.y, width: c.width || 300 }];
-              })
-            )
-          };
-          this.selectedCardIds.forEach(id => {
-            document.getElementById(`card-dom-${id}`)?.classList.add('active');
-          });
-        });
-
-        // Double click portal stage to enter subcanvas
-        cardEl.addEventListener('dblclick', (e) => {
-          if (e.target.closest('.header-pin, .header-port-slot, .subcanvas-portal-title, .subcanvas-portal-title-input, .card-resize-handle, .subcanvas-resize-bottom')) return;
+          finishTitleEdit();
+        } else if (e.key === 'Escape') {
           e.preventDefault();
-          e.stopPropagation();
-          if (card.subcanvasId) {
-            store.navigateToCanvas(card.subcanvasId);
+          titleInput.value = getCard()?.title || '';
+          finishTitleEdit();
+        }
+      });
+      titleInput.addEventListener('blur', finishTitleEdit);
+      titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
+
+      cardEl.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot, .card-resize-handle, .subcanvas-resize-bottom') || e.target === titleInput) return;
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this._blurActiveTextEditor();
+        wires.clearFocus();
+        wires.dismissDropMenu(true);
+        this.clearCapsuleSelection();
+        window.getSelection()?.removeAllRanges();
+        this.hideSelectionPopover();
+        this.hideCanvasContextMenu();
+        this.hideGroupContextMenu();
+        this.hideSubcanvasContextMenu();
+
+        const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
+        const wasSelected = this.selectedCardIds.has(cardId);
+        if (isMultiToggle) {
+          if (!wasSelected) {
+            this.selectedCardIds.add(cardId);
+            this.updateSelectionVisuals();
+            this.updateAlignmentBar();
           }
-        });
+        } else if (!wasSelected) {
+          this.selectCard(cardId, false);
+        }
 
-        cardEl.addEventListener('contextmenu', (e) => {
-          if (e.target.closest('.header-pin, .header-port-slot')) return;
-          e.preventDefault();
-          e.stopPropagation();
-          this.showSubcanvasContextMenu(card, cardEl, startTitleEdit, e.clientX, e.clientY);
+        this.activeDrag = {
+          type: 'MOVE_CARDS',
+          leadCardId: cardId,
+          startX: e.clientX,
+          startY: e.clientY,
+          isAlt: e.altKey,
+          wasMultiToggle: isMultiToggle,
+          toggleOffOnClick: isMultiToggle && wasSelected,
+          cloned: false,
+          initialPositions: new Map(
+            [...this.selectedCardIds].map(id => {
+              const c = store.state.cards.find(x => x.id === id);
+              return [id, { x: c.x, y: c.y, width: c.width || 300 }];
+            })
+          )
+        };
+        this.selectedCardIds.forEach(id => {
+          document.getElementById(`card-dom-${id}`)?.classList.add('active');
         });
+      });
 
-        cardEl.querySelectorAll('.card-resize-handle').forEach(resizeHandle => {
-          resizeHandle.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
-            e.preventDefault();
-            e.stopPropagation();
-            this.hideAllMenus();
-            const side = resizeHandle.getAttribute('data-side') || 'right';
-            this.activeDrag = {
-              type: 'RESIZE_CARD',
-              side,
-              cardId: card.id,
-              startX: e.clientX,
-              initX: card.x,
-              initWidth: cardEl.offsetWidth
-            };
-            resizeHandle.classList.add('active');
-          });
-        });
+      cardEl.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot, .subcanvas-portal-title, .subcanvas-portal-title-input, .card-resize-handle, .subcanvas-resize-bottom')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cur = getCard();
+        if (cur?.subcanvasId) {
+          store.navigateToCanvas(cur.subcanvasId);
+        }
+      });
 
-        const bottomResizeEl = cardEl.querySelector('.subcanvas-resize-bottom');
-        bottomResizeEl?.addEventListener('mousedown', (e) => {
+      cardEl.addEventListener('contextmenu', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.showSubcanvasContextMenu(getCard(), cardEl, startTitleEdit, e.clientX, e.clientY);
+      });
+
+      cardEl.querySelectorAll('.card-resize-handle').forEach(resizeHandle => {
+        resizeHandle.addEventListener('mousedown', (e) => {
           if (e.button !== 0) return;
           e.preventDefault();
           e.stopPropagation();
           this.hideAllMenus();
+          const cur = getCard();
+          const side = resizeHandle.getAttribute('data-side') || 'right';
           this.activeDrag = {
-            type: 'RESIZE_SUBCANVAS_HEIGHT',
-            cardId: card.id,
-            startY: e.clientY,
-            initHeight: card.height || 180
+            type: 'RESIZE_CARD',
+            side,
+            cardId,
+            startX: e.clientX,
+            initX: cur.x,
+            initWidth: cardEl.offsetWidth
           };
-          bottomResizeEl.classList.add('active');
+          resizeHandle.classList.add('active');
         });
+      });
 
-        this.bindPinEvents(cardEl.querySelector('.header-pin-left'), leftPinId);
-        this.bindPinEvents(cardEl.querySelector('.header-pin-right'), rightPinId);
+      const bottomResizeEl = cardEl.querySelector('.subcanvas-resize-bottom');
+      bottomResizeEl?.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.hideAllMenus();
+        const cur = getCard();
+        this.activeDrag = {
+          type: 'RESIZE_SUBCANVAS_HEIGHT',
+          cardId,
+          startY: e.clientY,
+          initHeight: cur?.height || 180
+        };
+        bottomResizeEl.classList.add('active');
+      });
 
-        this.containerEl.appendChild(cardEl);
-        const thumbCanvas = cardEl.querySelector('.subcanvas-thumbnail-canvas');
-        if (thumbCanvas) {
-          renderThumbnailCanvas(thumbCanvas, thumb, store.getPalette());
-        }
-        return;
+      this.bindPinEvents(cardEl.querySelector('.header-pin-left'), leftPinId);
+      this.bindPinEvents(cardEl.querySelector('.header-pin-right'), rightPinId);
+    }
+
+    // Update live state in-place
+    cardEl.className = 'note-card subcanvas-portal' + (this.selectedCardIds.has(cardId) ? ' selected' : '');
+    cardEl.style.left = `${card.x}px`;
+    cardEl.style.top = `${card.y}px`;
+    cardEl.style.width = `${card.width || 300}px`;
+    const portalH = Math.max(120, card.height || 180);
+    cardEl.style.height = `${portalH}px`;
+
+    const subLeftColor = card.headerColor || (leftConnected ? leftColor : 'var(--text-secondary)');
+    this._applyCardThemeAndPins(card, cardEl, leftPinId, rightPinId, leftConnected, rightConnected, subLeftColor, rightColor);
+    if (card.headerColor) {
+      cardEl.style.setProperty('--portal-accent', card.headerColor);
+      cardEl.style.setProperty('--portal-border', hexToRgba(card.headerColor, 0.42));
+    } else {
+      cardEl.style.removeProperty('--portal-accent');
+      cardEl.style.removeProperty('--portal-border');
+    }
+
+    const titleSpan = cardEl.querySelector('.header-title');
+    const titleInput = cardEl.querySelector('.header-title-input');
+    if (titleInput && titleInput.style.display === 'none') {
+      if (titleSpan) titleSpan.textContent = card.title || '未命名子画布';
+      titleInput.value = card.title || '';
+    }
+
+    const thumb = store.getThumbnailForSubcanvas(card);
+    const totalItems = (thumb?.cardCount || 0) + (thumb?.subcanvasCount || 0);
+    const isEmpty = totalItems === 0;
+    const countEl = cardEl.querySelector('.subcanvas-portal-count');
+    if (countEl) {
+      if (totalItems > 0) {
+        countEl.textContent = String(totalItems);
+        countEl.style.display = '';
+      } else {
+        countEl.style.display = 'none';
       }
+    }
+    const emptyEl = cardEl.querySelector('.subcanvas-portal-empty');
+    if (emptyEl) {
+      emptyEl.style.display = isEmpty ? '' : 'none';
+    }
 
-      // Normal Card Node (7A subtle whole tint + preserved left/right header port slots)
-      cardEl.className = 'note-card' + (card.headerColor ? ' has-theme-color' : '') + (this.selectedCardIds.has(card.id) ? ' selected' : '');
+    const thumbCanvas = cardEl.querySelector('.subcanvas-thumbnail-canvas');
+    if (thumbCanvas) {
+      const palette = store.getPalette();
+      const themeAttr = document.documentElement.getAttribute('data-theme') || 'dark';
+      const thumbKey = JSON.stringify(thumb || null) + '|' + JSON.stringify(palette) + '|' + themeAttr + '|' + (card.width || 300) + 'x' + portalH;
+      if (cardEl.dataset.thumbKey !== thumbKey) {
+        cardEl.dataset.thumbKey = thumbKey;
+        renderThumbnailCanvas(thumbCanvas, thumb, palette);
+      }
+    }
 
+    return cardEl;
+  }
+
+  _syncTextCard(card, existingEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor) {
+    const isNew = !existingEl;
+    const cardEl = existingEl || document.createElement('div');
+    const cardId = card.id;
+    const getCard = () => store.state.cards.find(c => c.id === cardId) || cardEl.__cardData;
+    cardEl.__cardData = card;
+
+    if (isNew) {
+      cardEl.id = `card-dom-${cardId}`;
+      cardEl.dataset.cardKind = 'card';
       cardEl.innerHTML = `
         <div class="note-header">
           <div class="header-port-slot header-port-slot-left" title="连接端口 (左)">
-            <i class="header-pin header-pin-left ${leftConnected ? 'pin-connected' : ''}"
-               data-header-pin-id="${leftPinId}"
-               style="background-color: ${leftColor}; color: ${leftColor};"></i>
+            <i class="header-pin header-pin-left" data-header-pin-id="${leftPinId}"></i>
           </div>
 
           <div class="header-content">
@@ -446,28 +533,24 @@ class NodeManager {
           </div>
 
           <div class="header-port-slot header-port-slot-right" title="连接端口 (右)">
-            <i class="header-pin header-pin-right ${rightConnected ? 'pin-connected' : ''}"
-               data-header-pin-id="${rightPinId}"
-               style="background-color: ${rightColor}; color: ${rightColor};"></i>
+            <i class="header-pin header-pin-right" data-header-pin-id="${rightPinId}"></i>
           </div>
         </div>
-        <div class="note-body" contenteditable="true" spellcheck="false">${card.contentHtml || ''}</div>
+        <div class="note-body" contenteditable="true" spellcheck="false"></div>
         <div class="card-resize-handle card-resize-handle-left" data-side="left" title="按住左右拖拽调节宽度 (左侧)"></div>
         <div class="card-resize-handle card-resize-handle-right" data-side="right" title="按住左右拖拽调节宽度 (右侧)"></div>
       `;
 
-      // Title editing (double click to edit, enter/blur/escape to commit)
       const titleSpan = cardEl.querySelector('.header-title');
       const titleInput = cardEl.querySelector('.header-title-input');
-      titleSpan.textContent = card.title || '未命名节点';
-      titleInput.value = card.title || '';
-
       let prevTitle = card.title || '';
+
       const startTitleEdit = () => {
-        prevTitle = card.title || '';
+        const cur = getCard();
+        prevTitle = cur?.title || '';
         titleSpan.style.display = 'none';
         titleInput.style.display = 'block';
-        titleInput.value = card.title || '';
+        titleInput.value = prevTitle;
         titleInput.focus();
         titleInput.select();
       };
@@ -475,9 +558,10 @@ class NodeManager {
 
       const finishTitleEdit = () => {
         if (titleInput.style.display === 'none') return;
+        const cur = getCard();
         const newTitle = titleInput.value.trim() || '未命名节点';
         const changed = newTitle !== prevTitle;
-        card.title = newTitle;
+        if (cur) cur.title = newTitle;
         prevTitle = newTitle;
         titleSpan.textContent = newTitle;
         titleInput.style.display = 'none';
@@ -490,64 +574,55 @@ class NodeManager {
         e.stopPropagation();
         startTitleEdit();
       });
-
       titleInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
           finishTitleEdit();
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          titleInput.value = card.title || '';
+          titleInput.value = getCard()?.title || '';
           finishTitleEdit();
         }
       });
-
-      titleInput.addEventListener('blur', () => {
-        finishTitleEdit();
-      });
-
-      titleInput.addEventListener('mousedown', (e) => {
-        e.stopPropagation();
-      });
+      titleInput.addEventListener('blur', finishTitleEdit);
+      titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
 
       cardEl.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         if (e.target.closest('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .capsule-pin, .text-capsule, .header-title-input')) return;
         const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
         if (isMultiToggle) {
-          const wasSelected = this.selectedCardIds.has(card.id);
+          const wasSelected = this.selectedCardIds.has(cardId);
           this._blurActiveTextEditor();
           e.preventDefault();
           e.stopPropagation();
           window.getSelection()?.removeAllRanges();
-          this.selectCard(card.id, true);
+          this.selectCard(cardId, true);
 
           if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !canvas.isSpacePressed) {
             const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
-            const hitGroup = this.findGroupAtBoardPos(boardPos, card.id);
+            const hitGroup = this.findGroupAtBoardPos(boardPos, cardId);
             if (hitGroup) {
               this.pendingCtrlGroupDrag = {
                 group: hitGroup,
-                cardId: card.id,
+                cardId,
                 wasSelected,
                 startX: e.clientX,
                 startY: e.clientY
               };
             }
           }
-        } else if (!this.selectedCardIds.has(card.id) || this.selectedCardIds.size > 1) {
-          this.selectCard(card.id, false);
+        } else if (!this.selectedCardIds.has(cardId) || this.selectedCardIds.size > 1) {
+          this.selectCard(cardId, false);
         }
       });
 
-      // Drag node by header or open color popover via right click
       const headerEl = cardEl.querySelector('.note-header');
-
       headerEl.addEventListener('contextmenu', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot, .capsule-pin')) return;
         e.preventDefault();
         e.stopPropagation();
-        this.openPopoverForHeader(card, headerEl);
+        this.openPopoverForHeader(getCard(), headerEl);
       });
 
       headerEl.addEventListener('mousedown', (e) => {
@@ -566,20 +641,20 @@ class NodeManager {
         this.hideSubcanvasContextMenu();
 
         const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
-        const wasSelected = this.selectedCardIds.has(card.id);
+        const wasSelected = this.selectedCardIds.has(cardId);
         if (isMultiToggle) {
           if (!wasSelected) {
-            this.selectedCardIds.add(card.id);
+            this.selectedCardIds.add(cardId);
             this.updateSelectionVisuals();
             this.updateAlignmentBar();
           }
         } else if (!wasSelected) {
-          this.selectCard(card.id, false);
+          this.selectCard(cardId, false);
         }
 
         this.activeDrag = {
           type: 'MOVE_CARDS',
-          leadCardId: card.id,
+          leadCardId: cardId,
           startX: e.clientX,
           startY: e.clientY,
           isAlt: e.altKey,
@@ -603,7 +678,6 @@ class NodeManager {
         startTitleEdit();
       });
 
-      // Card resizing (both left and right handles)
       cardEl.querySelectorAll('.card-resize-handle').forEach(resizeHandle => {
         resizeHandle.addEventListener('mousedown', (e) => {
           if (e.button !== 0) return;
@@ -615,31 +689,81 @@ class NodeManager {
           window.getSelection()?.removeAllRanges();
           this.hideSelectionPopover();
 
+          const cur = getCard();
           const side = resizeHandle.getAttribute('data-side') || 'right';
           this.activeDrag = {
             type: 'RESIZE_CARD',
             side,
-            cardId: card.id,
+            cardId,
             startX: e.clientX,
-            initX: card.x,
+            initX: cur.x,
             initWidth: cardEl.offsetWidth
           };
           resizeHandle.classList.add('active');
         });
       });
 
-      // Header pins connection (left and right)
-      const headPinLeftEl = cardEl.querySelector('.header-pin-left');
-      const headPinRightEl = cardEl.querySelector('.header-pin-right');
-      this.bindPinEvents(headPinLeftEl, leftPinId);
-      this.bindPinEvents(headPinRightEl, rightPinId);
+      this.bindPinEvents(cardEl.querySelector('.header-pin-left'), leftPinId);
+      this.bindPinEvents(cardEl.querySelector('.header-pin-right'), rightPinId);
 
-      // Body input & keyboard events
       const bodyEl = cardEl.querySelector('.note-body');
       let bodyTypingTimeout = null;
 
+      const setBodyCaret = (node, offset = 0) => {
+        if (!bodyEl || !node) return;
+        const sel = window.getSelection();
+        if (!sel) return;
+        const range = document.createRange();
+        try {
+          range.setStart(node, offset);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch {}
+      };
+
+      const ensureTrailingEditableLine = () => {
+        if (!bodyEl) return null;
+        const blocks = bodyEl.querySelectorAll('.inline-media-block');
+        if (blocks.length === 0) return null;
+        const lastBlock = blocks[blocks.length - 1];
+        const topNode = lastBlock.parentElement === bodyEl
+          ? lastBlock
+          : (() => {
+              let cur = lastBlock;
+              while (cur && cur.parentElement && cur.parentElement !== bodyEl) cur = cur.parentElement;
+              return cur;
+            })();
+        if (!topNode || !topNode.parentElement) return null;
+
+        // Check if there is any editable content after lastBlock inside topNode (when wrapped) or after topNode in bodyEl
+        if (topNode !== lastBlock && media._hasEditableTargetAfter(lastBlock)) {
+          return null;
+        }
+        if (media._hasEditableTargetAfter(topNode)) {
+          return null;
+        }
+
+        if (
+          topNode.nextSibling &&
+          topNode.nextSibling.nodeType === 1 &&
+          topNode.nextSibling.tagName === 'BR'
+        ) {
+          topNode.nextSibling.remove();
+        }
+        const line = document.createElement('div');
+        line.appendChild(document.createElement('br'));
+        bodyEl.insertBefore(line, topNode.nextSibling);
+        return line;
+      };
+
+      bodyEl?.addEventListener('focus', () => {
+        ensureTrailingEditableLine();
+      });
+
       bodyEl?.addEventListener('input', () => {
-        card.contentHtml = bodyEl.innerHTML;
+        const cur = getCard();
+        if (cur) cur.contentHtml = bodyEl.innerHTML;
         wires.render();
         store.scheduleAutoSave();
 
@@ -658,19 +782,218 @@ class NodeManager {
         if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
           e.preventDefault();
           document.execCommand('redo');
-          card.contentHtml = bodyEl.innerHTML;
+          const cur = getCard();
+          if (cur) cur.contentHtml = bodyEl.innerHTML;
           wires.render();
           store.scheduleAutoSave();
-        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
           setTimeout(() => {
-            card.contentHtml = bodyEl.innerHTML;
+            const cur = getCard();
+            if (cur) cur.contentHtml = bodyEl.innerHTML;
             wires.render();
             store.scheduleAutoSave();
+          }, 0);
+          return;
+        }
+
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter') {
+          ensureTrailingEditableLine();
+        }
+
+        if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && bodyEl.querySelector('.inline-media-block')) {
+          const sel = window.getSelection();
+          if (!sel || sel.rangeCount === 0) return;
+          const prevRange = sel.getRangeAt(0).cloneRange();
+          const prevRect = prevRange.getBoundingClientRect();
+          const key = e.key;
+          setTimeout(() => {
+            if (document.activeElement !== bodyEl) return;
+            const curSel = window.getSelection();
+            if (!curSel || curSel.rangeCount === 0) return;
+            const curRange = curSel.getRangeAt(0);
+            const moved = curRange.startContainer !== prevRange.startContainer || curRange.startOffset !== prevRange.startOffset;
+            if (moved) return;
+
+            const mediaBlocks = [...bodyEl.querySelectorAll('.inline-media-block')];
+            if (key === 'ArrowDown') {
+              const nextBlock = mediaBlocks.find(b => b.getBoundingClientRect().top >= (prevRect.bottom || prevRect.top) - 6);
+              if (nextBlock) {
+                const topNode = nextBlock.parentElement === bodyEl ? nextBlock : nextBlock.closest('.note-body > *') || nextBlock;
+                const afterTarget = media._hasEditableTargetAfter(topNode) || media._hasEditableTargetAfter(nextBlock);
+                if (afterTarget) {
+                  setBodyCaret(afterTarget.node, afterTarget.offset);
+                } else {
+                  const line = ensureTrailingEditableLine();
+                  if (line) setBodyCaret(line, 0);
+                }
+              }
+            } else if (key === 'ArrowUp') {
+              const prevBlock = [...mediaBlocks].reverse().find(b => b.getBoundingClientRect().bottom <= (prevRect.top || prevRect.bottom) + 6);
+              if (prevBlock) {
+                const topNode = prevBlock.parentElement === bodyEl ? prevBlock : prevBlock.closest('.note-body > *') || prevBlock;
+                let sib = topNode.previousSibling;
+                while (sib && sib.nodeType === 3 && !sib.textContent) sib = sib.previousSibling;
+                if (sib) {
+                  if (sib.nodeType === 3) {
+                    setBodyCaret(sib, sib.textContent.length);
+                  } else if (sib.tagName === 'BR') {
+                    const beforeLine = document.createRange();
+                    beforeLine.setStartBefore(sib);
+                    beforeLine.collapse(true);
+                    curSel.removeAllRanges();
+                    curSel.addRange(beforeLine);
+                  } else {
+                    setBodyCaret(sib, sib.childNodes.length);
+                  }
+                }
+              }
+            }
           }, 0);
         }
       });
 
-      this.containerEl.appendChild(cardEl);
+      bodyEl?.addEventListener('click', (e) => {
+        const inlineBlock = e.target?.closest?.('.inline-media-block, .inline-link-chip');
+        if (inlineBlock) {
+          const popoutBtn = e.target.closest('.inline-media-action-popout');
+          if (popoutBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            media.popoutInlineMedia(getCard(), inlineBlock);
+            return;
+          }
+          const delBtn = e.target.closest('.inline-media-action-delete');
+          if (delBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            inlineBlock.remove();
+            const cur = getCard();
+            if (cur) cur.contentHtml = bodyEl.innerHTML;
+            store.commit();
+            wires.render();
+            store.scheduleAutoSave();
+            return;
+          }
+          const zoomBtn = e.target.closest('.inline-media-action-zoom');
+          if (zoomBtn || (inlineBlock.classList.contains('inline-media-image') && e.target.tagName === 'IMG')) {
+            e.preventDefault();
+            e.stopPropagation();
+            media.openLightbox({
+              kind: inlineBlock.getAttribute('data-media-kind') || 'image',
+              src: inlineBlock.getAttribute('data-src') || '',
+              title: inlineBlock.getAttribute('data-title') || ''
+            });
+            return;
+          }
+          if (inlineBlock.classList.contains('inline-media-block') && e.target.tagName !== 'VIDEO') {
+            const br = inlineBlock.getBoundingClientRect();
+            const topNode = inlineBlock.parentElement === bodyEl ? inlineBlock : inlineBlock.closest('.note-body > *') || inlineBlock;
+            if (e.clientY >= br.top + br.height / 2) {
+              const target = media._hasEditableTargetAfter(topNode) || media._hasEditableTargetAfter(inlineBlock);
+              if (target) setBodyCaret(target.node, target.offset);
+              else {
+                const line = ensureTrailingEditableLine();
+                if (line) setBodyCaret(line, 0);
+              }
+            }
+          }
+          return;
+        }
+
+        // Clicking empty bottom area below the last inline-media-block focuses the next line
+        const blocks = bodyEl.querySelectorAll('.inline-media-block');
+        if (blocks.length > 0) {
+          const lastBlock = blocks[blocks.length - 1];
+          if (e.clientY >= lastBlock.getBoundingClientRect().bottom - 2) {
+            const line = ensureTrailingEditableLine();
+            if (line) {
+              setBodyCaret(line, 0);
+            }
+          }
+        }
+      });
+    }
+
+    // Update live state in-place
+    cardEl.className = 'note-card' + (card.headerColor ? ' has-theme-color' : '') + (this.selectedCardIds.has(cardId) ? ' selected' : '');
+    cardEl.style.left = `${card.x}px`;
+    cardEl.style.top = `${card.y}px`;
+    cardEl.style.width = `${card.width || 310}px`;
+
+    this._applyCardThemeAndPins(card, cardEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor);
+
+    const titleSpan = cardEl.querySelector('.header-title');
+    const titleInput = cardEl.querySelector('.header-title-input');
+    if (titleInput && titleInput.style.display === 'none') {
+      if (titleSpan) titleSpan.textContent = card.title || '未命名节点';
+      titleInput.value = card.title || '';
+    }
+
+    const bodyEl = cardEl.querySelector('.note-body');
+    const nextHtml = card.contentHtml || '';
+    if (bodyEl && document.activeElement !== bodyEl && bodyEl.innerHTML !== nextHtml) {
+      bodyEl.innerHTML = nextHtml;
+    }
+
+    return cardEl;
+  }
+
+  render() {
+    if (!this.containerEl) return;
+    const cards = store.state.cards || [];
+    const desiredIds = new Set(cards.map(c => c.id));
+
+    if (this.interactiveWebpageCardId && !desiredIds.has(this.interactiveWebpageCardId)) {
+      this.interactiveWebpageCardId = null;
+    }
+
+    // 1. Index existing DOM nodes and remove deleted or kind-changed nodes
+    const existingById = new Map();
+    [...this.containerEl.children].forEach(el => {
+      if (!el.classList?.contains('note-card')) return;
+      const cid = el.id.replace('card-dom-', '');
+      const cardObj = desiredIds.has(cid) ? cards.find(c => c.id === cid) : null;
+      if (!cardObj || el.dataset.cardKind !== this._getCardKindKey(cardObj)) {
+        el.remove();
+      } else {
+        existingById.set(cid, el);
+      }
+    });
+
+    // 2. Reconcile each card in-place without detaching unchanged elements
+    let cursor = this.containerEl.firstElementChild;
+    cards.forEach(card => {
+      const leftPinId = `pin-head-left-${card.id}`;
+      const rightPinId = `pin-head-right-${card.id}`;
+      const legacyPinId = `pin-head-${card.id}`;
+
+      const leftConn = store.state.connections.find(c => c.toPinId === leftPinId || c.fromPinId === leftPinId || c.toPinId === legacyPinId);
+      const rightConn = store.state.connections.find(c => c.toPinId === rightPinId || c.fromPinId === rightPinId);
+
+      const leftConnected = !!leftConn;
+      const rightConnected = !!rightConn;
+
+      const leftColor = card.headerColor || leftConn?.color || '#98989d';
+      const rightColor = card.headerColor || rightConn?.color || '#98989d';
+
+      const existingEl = existingById.get(card.id) || null;
+      let cardEl;
+      if (card.kind === 'subcanvas') {
+        cardEl = this._syncSubcanvasCard(card, existingEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor);
+      } else if (card.kind === 'image' || card.kind === 'video' || card.kind === 'webpage') {
+        cardEl = this._syncMediaCard(card, existingEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor);
+      } else {
+        cardEl = this._syncTextCard(card, existingEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor);
+      }
+
+      // Only touch DOM parent order if cardEl is new or out of position
+      if (cardEl === cursor) {
+        cursor = cursor.nextElementSibling;
+      } else {
+        this.containerEl.insertBefore(cardEl, cursor || null);
+      }
     });
 
     this.bindCapsuleEvents();
@@ -731,6 +1054,8 @@ class NodeManager {
 
   bindCapsuleEvents() {
     document.querySelectorAll('.text-capsule').forEach(capsule => {
+      if (capsule.dataset.bound === '1') return;
+      capsule.dataset.bound = '1';
       const pinId = capsule.getAttribute('data-pin-id');
       const pinEl = capsule.querySelector('.capsule-pin');
 
@@ -999,6 +1324,789 @@ class NodeManager {
     this.activeContextSubcanvas = null;
   }
 
+  bindMediaContextMenuEvents() {
+    if (!this.mediaContextMenuEl) return;
+    this.mediaContextMenuEl.addEventListener('mousedown', (e) => e.stopPropagation());
+    this.mediaContextMenuEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    this.mediaContextMenuEl.querySelector('#media-menu-preview')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextMedia;
+      this.hideMediaContextMenu();
+      if (ctx?.card && (ctx.card.kind === 'image' || ctx.card.kind === 'video')) {
+        media.openLightbox({
+          kind: ctx.card.kind,
+          src: ctx.card.media?.src || '',
+          title: ctx.card.title || '',
+          naturalWidth: ctx.card.media?.naturalWidth,
+          naturalHeight: ctx.card.media?.naturalHeight
+        });
+      }
+    });
+
+    this.mediaContextMenuEl.querySelector('#media-menu-open-tab')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextMedia;
+      this.hideMediaContextMenu();
+      const url = ctx?.card?.media?.url || ctx?.card?.media?.src;
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+    });
+
+    this.mediaContextMenuEl.querySelector('#media-menu-toggle-view')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextMedia;
+      this.hideMediaContextMenu();
+      if (ctx?.card?.kind === 'webpage') {
+        const cur = ctx.card.media?.viewMode || 'iframe';
+        const nextMode = cur === 'iframe' ? 'bookmark' : 'iframe';
+        ctx.card.media = { ...ctx.card.media, viewMode: nextMode };
+        if (nextMode === 'iframe') {
+          this.loadedWebpageIds.add(ctx.card.id);
+        }
+        store.commit();
+        this.render();
+        wires.render();
+        store.scheduleAutoSave();
+      }
+    });
+
+    this.mediaContextMenuEl.querySelector('#media-menu-sleep')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextMedia;
+      this.hideMediaContextMenu();
+      if (ctx?.card?.kind === 'webpage') {
+        if (shouldWebpageStartDormant(ctx.card, this.loadedWebpageIds)) {
+          this.loadWebpageCard(ctx.card.id);
+        } else {
+          this.sleepWebpageCard(ctx.card.id);
+        }
+      }
+    });
+
+    this.mediaContextMenuEl.querySelector('#media-menu-localize')?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextMedia;
+      this.hideMediaContextMenu();
+      if (ctx?.card) {
+        await media.convertExternalCardToLocal(ctx.card);
+      }
+    });
+
+    this.mediaContextMenuEl.querySelector('#media-menu-rename')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextMedia;
+      this.hideMediaContextMenu();
+      if (typeof ctx?.startRename === 'function') {
+        ctx.startRename();
+      }
+    });
+
+    this.mediaContextMenuEl.querySelector('#media-menu-color')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextMedia;
+      this.hideMediaContextMenu();
+      if (ctx?.card && ctx?.cardEl) {
+        const headerEl = ctx.cardEl.querySelector('.note-header') || ctx.cardEl;
+        this.openPopoverForHeader(ctx.card, headerEl);
+      }
+    });
+
+    this.mediaContextMenuEl.querySelector('#media-menu-delete')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = this.activeContextMedia;
+      this.hideMediaContextMenu();
+      if (ctx?.card) {
+        this.selectedCardIds = new Set([ctx.card.id]);
+        this.deleteSelectedCards();
+      }
+    });
+  }
+
+  showMediaContextMenu(card, cardEl, startRename, screenX, screenY) {
+    if (!this.mediaContextMenuEl) return;
+    this.hideAllMenus();
+    this.activeContextMedia = { card, cardEl, startRename };
+    const menu = this.mediaContextMenuEl;
+
+    const labelEl = menu.querySelector('#media-menu-header-label');
+    if (labelEl) {
+      labelEl.textContent = card.kind === 'image' ? '图片节点' : (card.kind === 'video' ? '视频节点' : '网页节点');
+    }
+    const btnPreview = menu.querySelector('#media-menu-preview');
+    const btnOpenTab = menu.querySelector('#media-menu-open-tab');
+    const btnToggleView = menu.querySelector('#media-menu-toggle-view');
+    const toggleViewLabel = menu.querySelector('#media-menu-toggle-view-label');
+    const btnSleep = menu.querySelector('#media-menu-sleep');
+    const sleepLabel = menu.querySelector('#media-menu-sleep-label');
+    const btnLocalize = menu.querySelector('#media-menu-localize');
+
+    if (btnPreview) btnPreview.style.display = (card.kind === 'image' || card.kind === 'video') ? 'flex' : 'none';
+    if (btnOpenTab) btnOpenTab.style.display = card.kind === 'webpage' ? 'flex' : 'none';
+    if (btnToggleView) {
+      btnToggleView.style.display = card.kind === 'webpage' ? 'flex' : 'none';
+      if (toggleViewLabel) {
+        const cur = card.media?.viewMode || 'iframe';
+        toggleViewLabel.textContent = cur === 'iframe' ? '切换为书签卡片' : '强制尝试内嵌网页';
+      }
+    }
+    if (btnSleep) {
+      const canSleep = card.kind === 'webpage' && (card.media?.viewMode || 'iframe') !== 'bookmark';
+      btnSleep.style.display = canSleep ? 'flex' : 'none';
+      if (canSleep && sleepLabel) {
+        const dormant = shouldWebpageStartDormant(card, this.loadedWebpageIds);
+        sleepLabel.textContent = dormant ? '加载 / 唤醒网页' : '休眠网页（停止播放）';
+      }
+    }
+    if (btnLocalize) {
+      btnLocalize.style.display = ((card.kind === 'image' || card.kind === 'video') && card.media?.isExternal) ? 'flex' : 'none';
+    }
+
+    menu.style.display = 'flex';
+    const menuWidth = menu.offsetWidth || 195;
+    const menuHeight = menu.offsetHeight || 220;
+    let left = screenX + 2;
+    let top = screenY + 2;
+    if (left + menuWidth > window.innerWidth - 10) left = screenX - menuWidth - 2;
+    if (top + menuHeight > window.innerHeight - 10) top = screenY - menuHeight - 2;
+    if (left < 10) left = 10;
+    if (top < 10) top = 10;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  hideMediaContextMenu() {
+    if (this.mediaContextMenuEl) {
+      this.mediaContextMenuEl.style.display = 'none';
+    }
+    this.activeContextMedia = null;
+  }
+
+  exitWebpageInteractive() {
+    if (!this.interactiveWebpageCardId) return;
+    const prevEl = document.getElementById(`card-dom-${this.interactiveWebpageCardId}`);
+    prevEl?.classList.remove('is-webpage-interactive');
+    this.interactiveWebpageCardId = null;
+  }
+
+  _escapeAttr(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  _syncMediaCard(card, existingEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor) {
+    const isNew = !existingEl;
+    const cardEl = existingEl || document.createElement('div');
+    const cardId = card.id;
+    const kind = card.kind;
+    const m = card.media || {};
+    const getCard = () => store.state.cards.find(c => c.id === cardId) || cardEl.__cardData;
+    cardEl.__cardData = card;
+
+    const defW = kind === 'webpage' ? 460 : (kind === 'video' ? 400 : 360);
+    const defH = kind === 'webpage' ? 360 : (kind === 'video' ? 264 : 240);
+    const cardW = Math.max(250, card.width || defW);
+    const cardH = Math.max(140, card.height || defH);
+
+    const typeIconSvg = kind === 'image'
+      ? '<svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>'
+      : (kind === 'video'
+        ? '<svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2"></rect></svg>'
+        : '<svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>');
+
+    if (isNew) {
+      cardEl.id = `card-dom-${cardId}`;
+      cardEl.dataset.cardKind = kind;
+      const resizeHandlesHtml = kind === 'webpage'
+        ? `
+          <div class="card-resize-handle card-resize-handle-left" data-side="left"></div>
+          <div class="card-resize-handle card-resize-handle-right" data-side="right"></div>
+          <div class="card-resize-handle-bottom" data-side="bottom"></div>
+          <div class="card-resize-corner card-resize-corner-sw" data-corner="sw"></div>
+          <div class="card-resize-corner card-resize-corner-se" data-corner="se"></div>
+        `
+        : `
+          <div class="card-resize-handle card-resize-handle-left" data-side="left"></div>
+          <div class="card-resize-handle card-resize-handle-right" data-side="right"></div>
+          <div class="card-resize-corner card-resize-corner-nw" data-corner="nw"></div>
+          <div class="card-resize-corner card-resize-corner-ne" data-corner="ne"></div>
+          <div class="card-resize-corner card-resize-corner-sw" data-corner="sw"></div>
+          <div class="card-resize-corner card-resize-corner-se" data-corner="se"></div>
+        `;
+
+      cardEl.innerHTML = `
+        <div class="note-header">
+          <div class="header-port-slot header-port-slot-left" title="连接端口 (左)">
+            <i class="header-pin header-pin-left" data-header-pin-id="${leftPinId}"></i>
+          </div>
+          <div class="header-content">
+            <span class="media-header-type-icon" aria-hidden="true">${typeIconSvg}</span>
+            <span class="header-title" title="双击重命名"></span>
+            <input class="header-title-input" placeholder="未命名节点" style="display: none;" />
+            <div class="media-header-actions"></div>
+          </div>
+          <div class="header-port-slot header-port-slot-right" title="连接端口 (右)">
+            <i class="header-pin header-pin-right" data-header-pin-id="${rightPinId}"></i>
+          </div>
+        </div>
+        <div class="media-body-slot" style="flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;"></div>
+        ${resizeHandlesHtml}
+      `;
+
+      const titleSpan = cardEl.querySelector('.header-title');
+      const titleInput = cardEl.querySelector('.header-title-input');
+      let prevTitle = card.title || '';
+
+      const startTitleEdit = () => {
+        const cur = getCard();
+        prevTitle = cur?.title || '';
+        titleSpan.style.display = 'none';
+        titleInput.style.display = 'block';
+        titleInput.value = prevTitle;
+        titleInput.focus();
+        titleInput.select();
+      };
+      cardEl._startTitleEdit = startTitleEdit;
+
+      const finishTitleEdit = () => {
+        if (titleInput.style.display === 'none') return;
+        const cur = getCard();
+        const newTitle = titleInput.value.trim() || '未命名节点';
+        const changed = newTitle !== prevTitle;
+        if (cur) {
+          cur.title = newTitle;
+          if (changed) cur.customTitle = true;
+        }
+        prevTitle = newTitle;
+        titleSpan.textContent = newTitle;
+        titleInput.style.display = 'none';
+        titleSpan.style.display = 'block';
+        if (changed) store.commit();
+        store.scheduleAutoSave();
+      };
+
+      titleSpan.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startTitleEdit();
+      });
+      titleInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          finishTitleEdit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          titleInput.value = getCard()?.title || '';
+          finishTitleEdit();
+        }
+      });
+      titleInput.addEventListener('blur', finishTitleEdit);
+      titleInput.addEventListener('mousedown', (e) => e.stopPropagation());
+
+      // Delegated header actions
+      const actionsEl = cardEl.querySelector('.media-header-actions');
+      actionsEl?.addEventListener('click', (e) => {
+        const cur = getCard();
+        if (!cur) return;
+        const cm = cur.media || {};
+        if (e.target.closest('.btn-media-zoom')) {
+          e.stopPropagation();
+          const videoEl = cardEl.querySelector('video');
+          if (videoEl) videoEl.pause();
+          media.openLightbox({
+            kind: cur.kind,
+            src: cm.src || '',
+            title: cur.title || '',
+            naturalWidth: cm.naturalWidth,
+            naturalHeight: cm.naturalHeight
+          });
+          return;
+        }
+        if (e.target.closest('.btn-webpage-open')) {
+          e.stopPropagation();
+          const url = cm.url || cm.src;
+          if (url) window.open(url, '_blank', 'noopener,noreferrer');
+          return;
+        }
+        if (e.target.closest('.btn-webpage-sleep')) {
+          e.stopPropagation();
+          if (shouldWebpageStartDormant(cur, this.loadedWebpageIds)) {
+            this.loadWebpageCard(cur.id);
+          } else {
+            this.sleepWebpageCard(cur.id);
+          }
+          return;
+        }
+        if (e.target.closest('.btn-webpage-toggle-mode')) {
+          e.stopPropagation();
+          const curMode = cm.viewMode || 'iframe';
+          const nextMode = curMode === 'iframe' ? 'bookmark' : 'iframe';
+          cur.media = { ...cm, viewMode: nextMode };
+          if (nextMode === 'iframe') {
+            this.loadedWebpageIds.add(cur.id);
+          }
+          this.exitWebpageInteractive();
+          store.commit();
+          this.render();
+          wires.render();
+          store.scheduleAutoSave();
+        }
+      });
+
+      // Delegated body slot events
+      const bodySlot = cardEl.querySelector('.media-body-slot');
+      bodySlot?.addEventListener('click', (e) => {
+        const cur = getCard();
+        if (!cur) return;
+        const cm = cur.media || {};
+
+        if (e.target.closest('.btn-bookmark-try-iframe')) {
+          e.stopPropagation();
+          this.loadedWebpageIds.add(cur.id);
+          cur.media = { ...cm, viewMode: 'iframe' };
+          store.commit();
+          this.render();
+          wires.render();
+          store.scheduleAutoSave();
+          return;
+        }
+
+        if (e.target.closest('.btn-webpage-wake') || (e.target.closest('.webpage-dormant-card') && !e.target.closest('a.webpage-action-btn'))) {
+          e.stopPropagation();
+          this.loadWebpageCard(cur.id);
+        }
+      });
+
+      bodySlot?.addEventListener('change', (e) => {
+        const sel = e.target.closest('.webpage-entry-select');
+        if (!sel) return;
+        e.stopPropagation();
+        const cur = getCard();
+        const cm = cur?.media || {};
+        const nextEntry = sel.value;
+        if (cur && nextEntry && cm.assetId) {
+          const nextUrl = `/api/v1/assets/${cm.assetId}/${nextEntry}`;
+          cur.media = { ...cm, entryPath: nextEntry, src: nextUrl, url: nextUrl };
+          this.loadedWebpageIds.add(cur.id);
+          store.commit();
+          this.render();
+          store.scheduleAutoSave();
+        }
+      });
+
+      bodySlot?.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.webpage-entry-select')) {
+          e.stopPropagation();
+          return;
+        }
+        const shieldEl = e.target.closest('.webpage-interact-shield');
+        if (shieldEl) {
+          if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey) return;
+          e.stopPropagation();
+          this.exitWebpageInteractive();
+          this.selectCard(cardId, false);
+          this.interactiveWebpageCardId = cardId;
+          cardEl.classList.add('is-webpage-interactive');
+        }
+      });
+
+      bodySlot?.addEventListener('dblclick', (e) => {
+        const cur = getCard();
+        if (!cur || (cur.kind !== 'image' && cur.kind !== 'video')) return;
+        if (!e.target.closest('.media-card-body')) return;
+        e.stopPropagation();
+        const videoEl = cardEl.querySelector('video');
+        if (videoEl) videoEl.pause();
+        const cm = cur.media || {};
+        media.openLightbox({
+          kind: cur.kind,
+          src: cm.src || '',
+          title: cur.title || '',
+          naturalWidth: cm.naturalWidth,
+          naturalHeight: cm.naturalHeight
+        });
+      });
+
+      // Card context menu
+      cardEl.addEventListener('contextmenu', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.showMediaContextMenu(getCard(), cardEl, startTitleEdit, e.clientX, e.clientY);
+      });
+
+      // Card selection on body mousedown
+      cardEl.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .card-resize-handle-bottom, .card-resize-corner, .header-title-input, .media-header-btn, .webpage-entry-select, .webpage-action-btn')) return;
+        const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
+        if (isMultiToggle) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.selectCard(cardId, true);
+        } else if (!this.selectedCardIds.has(cardId) || this.selectedCardIds.size > 1) {
+          this.selectCard(cardId, false);
+        }
+      });
+
+      // Drag by header
+      const headerEl = cardEl.querySelector('.note-header');
+      headerEl.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot, .media-header-btn') || e.target === titleInput) return;
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this._blurActiveTextEditor();
+        this.hideAllMenus();
+
+        const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
+        const wasSelected = this.selectedCardIds.has(cardId);
+        if (isMultiToggle) {
+          if (!wasSelected) {
+            this.selectedCardIds.add(cardId);
+            this.updateSelectionVisuals();
+            this.updateAlignmentBar();
+          }
+        } else if (!wasSelected) {
+          this.selectCard(cardId, false);
+        }
+
+        document.body.classList.add('is-card-dragging');
+        this.activeDrag = {
+          type: 'MOVE_CARDS',
+          leadCardId: cardId,
+          startX: e.clientX,
+          startY: e.clientY,
+          isAlt: e.altKey,
+          wasMultiToggle: isMultiToggle,
+          toggleOffOnClick: isMultiToggle && wasSelected,
+          cloned: false,
+          initialPositions: new Map(
+            [...this.selectedCardIds].map(id => {
+              const c = store.state.cards.find(x => x.id === id);
+              return [id, { x: c.x, y: c.y, width: c.width || 310 }];
+            })
+          )
+        };
+        this.selectedCardIds.forEach(id => {
+          document.getElementById(`card-dom-${id}`)?.classList.add('active');
+        });
+      });
+
+      headerEl.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.header-pin, .header-port-slot, .media-header-btn') || e.target === titleInput) return;
+        startTitleEdit();
+      });
+
+      const getBodyRatio = () => {
+        const cur = getCard();
+        const cm = cur?.media || {};
+        const nw = cm.naturalWidth || 0;
+        const nh = cm.naturalHeight || 0;
+        if (nw > 0 && nh > 0) return nw / nh;
+        const w = cardEl.offsetWidth || cur?.width || defW;
+        const h = cardEl.offsetHeight || cur?.height || defH;
+        const curBodyH = Math.max(80, h - CARD_HEADER_HEIGHT);
+        return w / curBodyH;
+      };
+
+      cardEl.querySelectorAll('.card-resize-handle').forEach(resizeHandle => {
+        resizeHandle.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          this.hideAllMenus();
+          const cur = getCard();
+          const side = resizeHandle.getAttribute('data-side') || 'right';
+          document.body.classList.add('is-card-dragging');
+          this.activeDrag = {
+            type: 'RESIZE_CARD',
+            side,
+            cardId,
+            startX: e.clientX,
+            initX: cur.x,
+            initWidth: cardEl.offsetWidth,
+            lockRatio: (cur.kind === 'image' || cur.kind === 'video') ? getBodyRatio() : null
+          };
+          resizeHandle.classList.add('active');
+        });
+      });
+
+      const bottomResizeEl = cardEl.querySelector('.card-resize-handle-bottom');
+      bottomResizeEl?.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.hideAllMenus();
+        const cur = getCard();
+        document.body.classList.add('is-card-dragging');
+        this.activeDrag = {
+          type: 'RESIZE_WEBPAGE',
+          corner: 's',
+          cardId,
+          startX: e.clientX,
+          startY: e.clientY,
+          initX: cur.x,
+          initY: cur.y,
+          initWidth: cardEl.offsetWidth,
+          initHeight: cardEl.offsetHeight
+        };
+        bottomResizeEl.classList.add('active');
+      });
+
+      cardEl.querySelectorAll('.card-resize-corner').forEach(cornerEl => {
+        cornerEl.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          this.hideAllMenus();
+          const cur = getCard();
+          const corner = cornerEl.getAttribute('data-corner') || 'se';
+          document.body.classList.add('is-card-dragging');
+          if (cur.kind === 'webpage') {
+            this.activeDrag = {
+              type: 'RESIZE_WEBPAGE',
+              corner,
+              cardId,
+              startX: e.clientX,
+              startY: e.clientY,
+              initX: cur.x,
+              initY: cur.y,
+              initWidth: cardEl.offsetWidth,
+              initHeight: cardEl.offsetHeight
+            };
+          } else {
+            this.activeDrag = {
+              type: 'RESIZE_MEDIA_CORNER',
+              corner,
+              cardId,
+              startX: e.clientX,
+              startY: e.clientY,
+              initX: cur.x,
+              initY: cur.y,
+              initWidth: cardEl.offsetWidth,
+              initHeight: cardEl.offsetHeight,
+              lockRatio: getBodyRatio()
+            };
+          }
+          cornerEl.classList.add('active');
+        });
+      });
+
+      this.bindPinEvents(cardEl.querySelector('.header-pin-left'), leftPinId);
+      this.bindPinEvents(cardEl.querySelector('.header-pin-right'), rightPinId);
+    }
+
+    // In-place reconciliation of position, dimensions, classes, theme, pins, title
+    cardEl.className = 'note-card media-card'
+      + ` media-kind-${kind}`
+      + (card.headerColor ? ' has-theme-color' : '')
+      + (this.selectedCardIds.has(cardId) ? ' selected' : '')
+      + (this.interactiveWebpageCardId === cardId ? ' is-webpage-interactive' : '');
+    cardEl.style.left = `${card.x}px`;
+    cardEl.style.top = `${card.y}px`;
+    cardEl.style.width = `${cardW}px`;
+    cardEl.style.height = `${cardH}px`;
+
+    this._applyCardThemeAndPins(card, cardEl, leftPinId, rightPinId, leftConnected, rightConnected, leftColor, rightColor);
+
+    const titleSpan = cardEl.querySelector('.header-title');
+    const titleInput = cardEl.querySelector('.header-title-input');
+    if (titleInput && titleInput.style.display === 'none') {
+      if (titleSpan) titleSpan.textContent = card.title || '未命名节点';
+      titleInput.value = card.title || '';
+    }
+
+    // Reconcile header actions only when mode/dormancy changes (never touches body)
+    const viewMode = m.viewMode || 'iframe';
+    const isDormant = kind === 'webpage' && shouldWebpageStartDormant(card, this.loadedWebpageIds);
+    const headerActionsKey = kind === 'webpage'
+      ? `webpage|${viewMode}|${isDormant ? 'dormant' : 'active'}`
+      : 'media-zoom';
+
+    if (cardEl.dataset.headerActionsKey !== headerActionsKey) {
+      cardEl.dataset.headerActionsKey = headerActionsKey;
+      const actionsEl = cardEl.querySelector('.media-header-actions');
+      if (actionsEl) {
+        if (kind === 'image' || kind === 'video') {
+          actionsEl.innerHTML = `
+            <button type="button" class="media-header-btn btn-media-zoom" title="放大预览">
+              <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            </button>
+          `;
+        } else {
+          const sleepBtnHtml = viewMode !== 'bookmark'
+            ? `<button type="button" class="media-header-btn btn-webpage-sleep ${isDormant ? 'is-active' : ''}" title="${isDormant ? '加载网页' : '休眠网页（停止播放）'}">
+                ${isDormant
+                  ? '<svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>'
+                  : '<svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>'}
+               </button>`
+            : '';
+          actionsEl.innerHTML = `
+            ${sleepBtnHtml}
+            <button type="button" class="media-header-btn btn-webpage-toggle-mode ${viewMode === 'bookmark' ? 'is-active' : ''}" title="${viewMode === 'iframe' ? '切换为书签卡片' : '切换为内嵌网页'}">
+              <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+            </button>
+            <button type="button" class="media-header-btn btn-webpage-open" title="在新标签页打开 (Enter)">
+              <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+            </button>
+          `;
+        }
+      }
+    }
+
+    // Reconcile media body ONLY when its structural source/mode key changes
+    const url = m.url || m.src || '';
+    const src = m.src || m.url || '';
+    const isLocal = !!m.isLocal || m.sourceType === 'html-file' || m.sourceType === 'html-bundle';
+    const entriesKey = Array.isArray(m.htmlEntries) ? m.htmlEntries.join(',') : '';
+    let bodyKey = '';
+    if (kind === 'image') {
+      bodyKey = `image|${m.src || ''}`;
+    } else if (kind === 'video') {
+      bodyKey = `video|${m.src || ''}`;
+    } else if (viewMode === 'bookmark') {
+      bodyKey = `bookmark|${url}|${m.title || ''}|${m.favicon || ''}|${m.description || ''}|${m.blockReason || ''}|${m.entryPath || ''}|${entriesKey}`;
+    } else if (isDormant) {
+      bodyKey = `dormant|${url}|${m.title || ''}|${m.favicon || ''}|${m.entryPath || ''}|${entriesKey}|${isLikelyVideoSiteUrl(url) ? 'v' : 'w'}`;
+    } else {
+      bodyKey = `iframe|${sanitizeIframeUrl(src)}|${isLocal ? '1' : '0'}|${m.entryPath || ''}|${entriesKey}`;
+    }
+
+    if (cardEl.dataset.bodyKey !== bodyKey) {
+      cardEl.dataset.bodyKey = bodyKey;
+      const bodySlot = cardEl.querySelector('.media-body-slot');
+      if (bodySlot) {
+        let bodyHtml = '';
+        if (kind === 'image') {
+          const escSrc = this._escapeAttr(m.src || '');
+          bodyHtml = `<div class="media-card-body media-image-body">${escSrc
+            ? `<img class="media-image-el" src="${escSrc}" alt="${this._escapeAttr(card.title)}" loading="lazy" draggable="false" />`
+            : '<div class="media-fallback-state">无图片地址</div>'}</div>`;
+        } else if (kind === 'video') {
+          const escSrc = this._escapeAttr(m.src || '');
+          bodyHtml = `<div class="media-card-body media-video-body">${escSrc
+            ? `<video class="media-video-el" src="${escSrc}" controls preload="metadata" playsinline></video>`
+            : '<div class="media-fallback-state">无视频地址</div>'}</div>`;
+        } else {
+          const sandboxAttr = isLocal
+            ? 'allow-scripts allow-forms allow-popups'
+            : 'allow-scripts allow-same-origin allow-forms allow-popups allow-presentation';
+
+          let displayHost = url;
+          try {
+            displayHost = isLocal ? (m.entryPath || m.fileName || '本地网页') : new URL(url).hostname;
+          } catch {}
+
+          const entries = Array.isArray(m.htmlEntries) && m.htmlEntries.length > 1 ? m.htmlEntries : null;
+          const entrySelectHtml = entries
+            ? `<select class="webpage-entry-select" title="切换入口 HTML">${entries.map(ep => `<option value="${this._escapeAttr(ep)}" ${ep === m.entryPath ? 'selected' : ''}>${this._escapeAttr(ep)}</option>`).join('')}</select>`
+            : '';
+
+          const badgeText = viewMode === 'bookmark'
+            ? '书签'
+            : (isDormant ? '已休眠 · 待加载' : '点击交互 · Esc 退出');
+
+          const subbarHtml = `
+            <div class="webpage-subbar">
+              ${m.favicon && !isLocal ? `<img class="webpage-favicon" src="${this._escapeAttr(m.favicon)}" alt="" onerror="this.style.display='none'" />` : ''}
+              <span class="webpage-url-text" title="${this._escapeAttr(url)}">${this._escapeAttr(displayHost)}</span>
+              ${entrySelectHtml}
+              <span class="webpage-interact-badge">${badgeText}</span>
+            </div>
+          `;
+
+          if (viewMode === 'bookmark') {
+            const blockReasonText = m.blockReason ? `无法内嵌 (${this._escapeAttr(m.blockReason)})` : '书签预览模式';
+            bodyHtml = `
+              <div class="media-card-body media-webpage-body">
+                ${subbarHtml}
+                <div class="webpage-bookmark-card">
+                  <div class="webpage-bookmark-head">
+                    <div class="webpage-bookmark-icon">
+                      ${m.favicon && !isLocal
+                        ? `<img src="${this._escapeAttr(m.favicon)}" alt="" onerror="this.style.display='none'" />`
+                        : typeIconSvg}
+                    </div>
+                    <div style="min-width: 0; flex: 1;">
+                      <div class="webpage-bookmark-title">${this._escapeAttr(m.title || card.title || displayHost)}</div>
+                      <div class="webpage-bookmark-url">${this._escapeAttr(url)}</div>
+                    </div>
+                  </div>
+                  ${m.description ? `<div class="webpage-bookmark-desc">${this._escapeAttr(m.description)}</div>` : ''}
+                  <div class="webpage-bookmark-footer">
+                    <span class="webpage-block-badge">${blockReasonText}</span>
+                    <div class="webpage-bookmark-actions">
+                      <button type="button" class="webpage-action-btn btn-bookmark-try-iframe">尝试内嵌</button>
+                      <a class="webpage-action-btn is-primary" href="${this._escapeAttr(url)}" target="_blank" rel="noopener noreferrer">打开网页 ↗</a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `;
+          } else if (isDormant) {
+            const isVideoSite = isLikelyVideoSiteUrl(url);
+            const hintText = isVideoSite
+              ? '检测到视频网站 · 为防止自动播放已暂缓加载'
+              : '已按按需加载模式休眠 · 点击后加载网页';
+            bodyHtml = `
+              <div class="media-card-body media-webpage-body">
+                ${subbarHtml}
+                <div class="webpage-dormant-card" title="点击加载网页内容">
+                  <div class="webpage-dormant-icon">
+                    ${m.favicon && !isLocal
+                      ? `<img src="${this._escapeAttr(m.favicon)}" alt="" onerror="this.style.display='none'" />`
+                      : typeIconSvg}
+                  </div>
+                  <div class="webpage-dormant-title">${this._escapeAttr(m.title || card.title || displayHost)}</div>
+                  <div class="webpage-dormant-hint">${hintText}</div>
+                  <div class="webpage-dormant-actions">
+                    <button type="button" class="webpage-action-btn is-primary btn-webpage-wake">加载网页</button>
+                    <a class="webpage-action-btn" href="${this._escapeAttr(url)}" target="_blank" rel="noopener noreferrer">新标签页打开 ↗</a>
+                  </div>
+                </div>
+              </div>
+            `;
+          } else {
+            const iframeSrc = sanitizeIframeUrl(src);
+            bodyHtml = `
+              <div class="media-card-body media-webpage-body">
+                ${subbarHtml}
+                <div class="webpage-stage">
+                  <iframe class="webpage-iframe" src="${this._escapeAttr(iframeSrc)}" sandbox="${sandboxAttr}" allow="autoplay 'none'; fullscreen" referrerpolicy="no-referrer" loading="lazy"></iframe>
+                  <div class="webpage-interact-shield" title="点击直接操作网页，拖拽顶部标题栏移动卡片"></div>
+                </div>
+              </div>
+            `;
+          }
+        }
+        bodySlot.innerHTML = bodyHtml;
+
+        const imgEl = bodySlot.querySelector('.media-image-el');
+        imgEl?.addEventListener('error', () => {
+          const mediaBody = bodySlot.querySelector('.media-image-body');
+          if (mediaBody) {
+            mediaBody.innerHTML = `<div class="media-fallback-state"><span>图片加载失败</span></div>`;
+          }
+        });
+      }
+    }
+
+    return cardEl;
+  }
+
   bindGroupContextMenuEvents() {
     if (!this.groupContextMenuEl) return;
     this.groupContextMenuEl.addEventListener('mousedown', (e) => {
@@ -1195,6 +2303,7 @@ class NodeManager {
     this.hideCanvasContextMenu();
     this.hideGroupContextMenu();
     this.hideSubcanvasContextMenu();
+    this.hideMediaContextMenu();
     wires.dismissDropMenu(true);
   }
 
@@ -1496,13 +2605,23 @@ class NodeManager {
       if (this.subcanvasContextMenuEl && this.subcanvasContextMenuEl.contains(e.target)) return;
       this.hideSubcanvasContextMenu();
 
+      if (this.mediaContextMenuEl && this.mediaContextMenuEl.contains(e.target)) return;
+      this.hideMediaContextMenu();
+
+      if (this.interactiveWebpageCardId) {
+        const activeCardEl = document.getElementById(`card-dom-${this.interactiveWebpageCardId}`);
+        if (!activeCardEl || !activeCardEl.contains(e.target)) {
+          this.exitWebpageInteractive();
+        }
+      }
+
       if (this.capsuleActionBarEl && this.capsuleActionBarEl.contains(e.target)) return;
       if (!e.target.closest('.text-capsule')) {
         this.clearCapsuleSelection();
       }
 
       if (this.selectionPopoverEl && this.selectionPopoverEl.contains(e.target)) return;
-      if (e.target.closest('.text-capsule, .note-header, .group-label, #group-menu-color, #subcanvas-menu-color')) return;
+      if (e.target.closest('.text-capsule, .note-header, .group-label, #group-menu-color, #subcanvas-menu-color, #media-menu-color')) return;
       this.hideSelectionPopover();
     });
 
@@ -1511,6 +2630,8 @@ class NodeManager {
         this.hideGroupContextMenu();
         this.hideCanvasContextMenu();
         this.hideSubcanvasContextMenu();
+        this.hideMediaContextMenu();
+        this.exitWebpageInteractive();
       }
       if (this.selectionPopoverEl && this.selectionPopoverEl.style.display === 'flex') {
         if (e.key === 'Escape') {
@@ -1942,14 +3063,25 @@ class NodeManager {
     const syncSubtrees = subIds.length > 0 ? store.collectCachedSubcanvasSubtreeSync(subIds) : {};
     this._clipboardSeq = (this._clipboardSeq || 0) + 1;
     const seq = this._clipboardSeq;
+    const marker = `pinpoint-clip:${seq}:${Date.now()}`;
 
     this.clipboard = {
       cards: JSON.parse(JSON.stringify(cardsToCopy)),
       groups: JSON.parse(JSON.stringify(groupsToCopy)),
       internalConnections,
-      subcanvases: syncSubtrees
+      subcanvases: syncSubtrees,
+      marker,
+      markerWritten: false
     };
     this.pasteCount = 0;
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(marker).then(() => {
+        if (this.clipboard && this.clipboard.marker === marker) {
+          this.clipboard.markerWritten = true;
+        }
+      }).catch(() => {});
+    }
 
     if (subIds.length > 0) {
       this._clipboardHydratePromise = store.collectSubcanvasSubtree(subIds).then((fullSubtrees) => {
@@ -3435,6 +4567,11 @@ class NodeManager {
 
               card.x = newX;
               card.width = newWidth;
+              if (this.activeDrag.lockRatio) {
+                const newH = Math.max(140, Math.round(CARD_HEADER_HEIGHT + newWidth / this.activeDrag.lockRatio));
+                card.height = newH;
+                if (cardEl) cardEl.style.height = `${newH}px`;
+              }
               if (cardEl) {
                 cardEl.style.left = `${newX}px`;
                 cardEl.style.width = `${newWidth}px`;
@@ -3453,6 +4590,11 @@ class NodeManager {
               }
 
               card.width = newWidth;
+              if (this.activeDrag.lockRatio) {
+                const newH = Math.max(140, Math.round(CARD_HEADER_HEIGHT + newWidth / this.activeDrag.lockRatio));
+                card.height = newH;
+                if (cardEl) cardEl.style.height = `${newH}px`;
+              }
               if (cardEl) {
                 cardEl.style.width = `${newWidth}px`;
               }
@@ -3460,6 +4602,80 @@ class NodeManager {
             if (card.kind === 'subcanvas') {
               const thumbCanvas = cardEl?.querySelector('.subcanvas-thumbnail-canvas');
               if (thumbCanvas) renderThumbnailCanvas(thumbCanvas, store.getThumbnailForSubcanvas(card), store.getPalette());
+            }
+            wires.render();
+          }
+        } else if (this.activeDrag.type === 'RESIZE_MEDIA_CORNER') {
+          const dx = (e.clientX - this.activeDrag.startX) / zoom;
+          const dy = (e.clientY - this.activeDrag.startY) / zoom;
+          const card = store.state.cards.find(c => c.id === this.activeDrag.cardId);
+          if (card) {
+            const cardEl = document.getElementById(`card-dom-${card.id}`);
+            const MIN_WIDTH = 250;
+            const corner = this.activeDrag.corner || 'se';
+            const ratio = this.activeDrag.lockRatio || 1.5;
+            const isLeft = corner.includes('w');
+            const isTop = corner.includes('n');
+            const candWFromX = isLeft ? (this.activeDrag.initWidth - dx) : (this.activeDrag.initWidth + dx);
+            const initBodyH = Math.max(80, this.activeDrag.initHeight - CARD_HEADER_HEIGHT);
+            const candBodyHFromY = isTop ? (initBodyH - dy) : (initBodyH + dy);
+            const candWFromY = candBodyHFromY * ratio;
+            const useY = Math.abs(dy) > Math.abs(dx);
+            let newWidth = Math.max(MIN_WIDTH, Math.round(useY ? candWFromY : candWFromX));
+            let newHeight = Math.max(140, Math.round(CARD_HEADER_HEIGHT + newWidth / ratio));
+
+            if (isLeft) {
+              const rightEdge = this.activeDrag.initX + this.activeDrag.initWidth;
+              card.x = rightEdge - newWidth;
+            }
+            if (isTop) {
+              const bottomEdge = this.activeDrag.initY + this.activeDrag.initHeight;
+              card.y = bottomEdge - newHeight;
+            }
+            card.width = newWidth;
+            card.height = newHeight;
+            if (cardEl) {
+              cardEl.style.left = `${card.x}px`;
+              cardEl.style.top = `${card.y}px`;
+              cardEl.style.width = `${newWidth}px`;
+              cardEl.style.height = `${newHeight}px`;
+            }
+            wires.render();
+          }
+        } else if (this.activeDrag.type === 'RESIZE_WEBPAGE') {
+          const dx = (e.clientX - this.activeDrag.startX) / zoom;
+          const dy = (e.clientY - this.activeDrag.startY) / zoom;
+          const card = store.state.cards.find(c => c.id === this.activeDrag.cardId);
+          if (card) {
+            const cardEl = document.getElementById(`card-dom-${card.id}`);
+            const MIN_W = 250;
+            const MIN_H = 160;
+            const corner = this.activeDrag.corner || 'se';
+            let newX = this.activeDrag.initX;
+            let newW = this.activeDrag.initWidth;
+            let newH = this.activeDrag.initHeight;
+
+            if (corner.includes('w')) {
+              const rightEdge = this.activeDrag.initX + this.activeDrag.initWidth;
+              newW = Math.max(MIN_W, Math.round(this.activeDrag.initWidth - dx));
+              newX = rightEdge - newW;
+            } else if (corner.includes('e')) {
+              newW = Math.max(MIN_W, Math.round(this.activeDrag.initWidth + dx));
+            }
+            if (corner.includes('s')) {
+              newH = Math.max(MIN_H, Math.round(this.activeDrag.initHeight + dy));
+            }
+            if (store.state.settings?.gridSnapMode) {
+              newW = Math.max(MIN_W, Math.round(newW / 24) * 24);
+              newH = Math.max(MIN_H, Math.round(newH / 24) * 24);
+            }
+            card.x = newX;
+            card.width = newW;
+            card.height = newH;
+            if (cardEl) {
+              cardEl.style.left = `${newX}px`;
+              cardEl.style.width = `${newW}px`;
+              cardEl.style.height = `${newH}px`;
             }
             wires.render();
           }
@@ -3637,11 +4853,12 @@ class NodeManager {
             this.syncGroupMembershipByBounds(group);
           }
           this.updateGroupDOMBounds(this.activeDrag.groupId);
-        } else if (this.activeDrag.type === 'RESIZE_CARD') {
-          document.querySelectorAll('.card-resize-handle.active').forEach(h => h.classList.remove('active'));
+        } else if (this.activeDrag.type === 'RESIZE_CARD' || this.activeDrag.type === 'RESIZE_MEDIA_CORNER' || this.activeDrag.type === 'RESIZE_WEBPAGE') {
+          document.querySelectorAll('.card-resize-handle.active, .card-resize-handle-bottom.active, .card-resize-corner.active').forEach(h => h.classList.remove('active'));
         } else if (this.activeDrag.type === 'RESIZE_SUBCANVAS_HEIGHT') {
           document.querySelectorAll('.subcanvas-resize-bottom.active').forEach(h => h.classList.remove('active'));
         }
+        document.body.classList.remove('is-card-dragging');
         this.activeDrag = null;
         store.commit();
         wires.render();
@@ -3736,12 +4953,28 @@ class NodeManager {
         }
       }
 
-      // Paste
-      if (!isEditingText && matchesShortcut(e, store.getShortcut('paste'))) {
+      // Paste: native 'paste' event handles Ctrl+V / Cmd+V (external media/URL + internal cards);
+      // only intercept here if user rebound paste to a non-Ctrl+V shortcut.
+      const pasteSc = store.getShortcut('paste');
+      if (!isEditingText && pasteSc && pasteSc.toUpperCase() !== 'CTRL+V' && matchesShortcut(e, pasteSc)) {
         if (this.clipboard && this.clipboard.cards?.length > 0) {
           e.preventDefault();
           this.pasteCards();
           return;
+        }
+      }
+
+      // Open selected webpage card in new tab (Enter or Ctrl+Enter)
+      if (!isEditingText && (e.key === 'Enter') && this.selectedCardIds.size === 1) {
+        const selId = [...this.selectedCardIds][0];
+        const selCard = store.state.cards.find(c => c.id === selId);
+        if (selCard?.kind === 'webpage') {
+          const url = selCard.media?.url || selCard.media?.src;
+          if (url) {
+            e.preventDefault();
+            window.open(url, '_blank', 'noopener,noreferrer');
+            return;
+          }
         }
       }
 

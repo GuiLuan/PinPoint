@@ -22,6 +22,10 @@ export const DEFAULT_SAVE_SETTINGS = {
   intervalSec: 1
 };
 
+export const DEFAULT_MEDIA_SETTINGS = {
+  webpageLoadMode: 'smart'
+};
+
 export const VALID_TOAST_POSITIONS = ['top-left', 'top-center', 'top-right', 'bottom-left', 'bottom-center', 'bottom-right'];
 
 export const DEFAULT_TOAST_SETTINGS = {
@@ -45,6 +49,7 @@ export const DEFAULT_SETTINGS = {
     width: 348
   },
   save: { ...DEFAULT_SAVE_SETTINGS },
+  media: { ...DEFAULT_MEDIA_SETTINGS },
   toast: { ...DEFAULT_TOAST_SETTINGS },
   shortcuts: { ...DEFAULT_SHORTCUTS }
 };
@@ -143,6 +148,10 @@ class StateManager {
     const intervalSec = typeof sv.intervalSec === 'number' && !Number.isNaN(sv.intervalSec)
       ? Math.max(1, Math.min(300, Math.round(sv.intervalSec)))
       : 1;
+    const md = s.media || {};
+    const webpageLoadMode = ['smart', 'lazy', 'eager'].includes(md.webpageLoadMode)
+      ? md.webpageLoadMode
+      : 'smart';
     const ts = s.toast || {};
     const toastPos = VALID_TOAST_POSITIONS.includes(ts.position) ? ts.position : 'bottom-left';
     const toastDur = typeof ts.durationSec === 'number' && !Number.isNaN(ts.durationSec)
@@ -185,6 +194,9 @@ class StateManager {
       save: {
         mode: saveMode,
         intervalSec
+      },
+      media: {
+        webpageLoadMode
       },
       toast: {
         position: toastPos,
@@ -489,6 +501,7 @@ class StateManager {
     const groups = clone(canvasPayload.groups || []);
     const connections = clone(canvasPayload.connections).filter(c => this.validateConnection(c, cards, groups));
 
+    const prevVpJson = JSON.stringify(this.state.viewport);
     if (canvasPayload.viewport) {
       this.state.viewport = {
         x: Number(canvasPayload.viewport.x ?? this.state.viewport.x ?? 0),
@@ -507,6 +520,7 @@ class StateManager {
     this.state.groups = groups;
     this._refreshSubcanvasThumbnailsOnActive();
     const nextSnap = this.snapshot();
+    const nextVpJson = JSON.stringify(this.state.viewport);
 
     if (sourceEvent === 'GRAPH_REPLACED' || sourceEvent === 'STATE_RESET' || sourceEvent === 'CONNECTED' || sourceEvent === 'CANVAS_LOADED') {
       this.undoStack = [nextSnap];
@@ -519,6 +533,9 @@ class StateManager {
 
     const entry = this._saveActiveToCacheMap(false);
     idbCache.putCanvas(entry);
+    if ((sourceEvent === 'CONNECTED' || sourceEvent === 'GRAPH_SYNCED') && nextSnap === prevSnap && prevVpJson === nextVpJson) {
+      return true;
+    }
     this.listeners.forEach(fn => fn({ type: 'REMOTE_SYNCED', sourceEvent }, this.state));
     return true;
   }
@@ -1349,6 +1366,21 @@ class StateManager {
     this.listeners.forEach(fn => fn({ type: 'TOAST', message, variant }, this.state));
   }
 
+  getMediaSettings() {
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
+    if (!this.state.settings.media) this.state.settings.media = { ...DEFAULT_MEDIA_SETTINGS };
+    return this.state.settings.media;
+  }
+
+  setMediaSettings(patch) {
+    const md = this.getMediaSettings();
+    if (['smart', 'lazy', 'eager'].includes(patch.webpageLoadMode)) {
+      md.webpageLoadMode = patch.webpageLoadMode;
+    }
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+  }
+
   getSaveSettings() {
     if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
     if (!this.state.settings.save) this.state.settings.save = { ...DEFAULT_SAVE_SETTINGS };
@@ -2154,10 +2186,45 @@ class StateManager {
     return exportData;
   }
 
+  collectLocalReferencedAssetIds() {
+    const found = new Set();
+    const re = /\/api\/v1\/assets\/(asset-[a-zA-Z0-9_-]+)/g;
+    const scanText = (str) => {
+      if (typeof str !== 'string' || !str.includes('asset-')) return;
+      let m;
+      re.lastIndex = 0;
+      while ((m = re.exec(str)) !== null) found.add(m[1]);
+    };
+    const scanCards = (cards) => {
+      for (const c of cards || []) {
+        if (c?.media?.assetId) found.add(c.media.assetId);
+        if (c?.media?.src) scanText(c.media.src);
+        if (c?.contentHtml) scanText(c.contentHtml);
+      }
+    };
+    scanCards(this.state.cards);
+    for (const entry of this.canvasesCache.values()) {
+      scanCards(entry?.cards);
+      for (const snap of [...(entry?.undoStack || []), ...(entry?.redoStack || [])]) {
+        scanText(snap);
+      }
+    }
+    for (const snap of [...this.undoStack, ...this.redoStack]) {
+      scanText(snap);
+    }
+    return [...found];
+  }
+
   async exportCanvasToFile(canvasId = this.activeCanvasId) {
     if (this.isFocusMode) {
       this.emitToast('当前处于专注模式，请先确认并退出专注模式后再导出', 'warning');
       return { blocked: true, reason: 'focus-mode' };
+    }
+
+    if (window.__sync?.connected && this.hasUnsavedChanges()) {
+      try {
+        await window.__sync.saveAllToBackend?.({ manual: false });
+      } catch (e) {}
     }
 
     const exportData = await this._buildExportData(canvasId);
@@ -2167,6 +2234,41 @@ class StateManager {
     }
 
     const safeBaseName = (exportData.title || 'graph').replace(/[\\/:*?"<>|]/g, '_');
+
+    // Check if canvas references local backend assets
+    const hasLocalAssets = JSON.stringify(exportData).includes('/api/v1/assets/') || JSON.stringify(exportData).includes('"assetId"');
+    if (hasLocalAssets && window.__sync?.connected) {
+      try {
+        const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(canvasId)}/export?includeSubcanvases=true&includeAssets=true`);
+        if (res.ok) {
+          const json = await res.json();
+          const bData = json?.ok && json.data ? json.data : null;
+          if (bData?.assetsOmitted) {
+            const sizeMb = ((bData.assetsSizeBytes || 0) / (1024 * 1024)).toFixed(1);
+            const useZip = confirm(`当前画布包含约 ${sizeMb} MB 本地媒体资源（超过 50MB 单文件内嵌上限）。\n\n点击「确定」导出包含完整资源的 .pinpoint.zip 包；\n点击「取消」仅导出纯结构 .pinpoint 文件。`);
+            if (useZip) {
+              const zipUrl = `${API_BASE}/canvases/${encodeURIComponent(canvasId)}/export-bundle?format=zip&includeSubcanvases=true`;
+              const zipRes = await fetch(zipUrl);
+              if (zipRes.ok) {
+                const zipBlob = await zipRes.blob();
+                const zipName = `${safeBaseName}.pinpoint.zip`;
+                const dlUrl = URL.createObjectURL(zipBlob);
+                const a = document.createElement('a');
+                a.href = dlUrl;
+                a.download = zipName;
+                a.click();
+                URL.revokeObjectURL(dlUrl);
+                this.emitToast(`已导出资源包「${zipName}」`, 'success');
+                return { success: true, fileName: zipName };
+              }
+            }
+          } else if (bData?.assets) {
+            exportData.assets = bData.assets;
+          }
+        }
+      } catch (e) {}
+    }
+
     const suggestedName = `${safeBaseName}.pinpoint`;
     const jsonStr = JSON.stringify(exportData, null, 2);
 
@@ -2208,6 +2310,16 @@ class StateManager {
     if (!data || !Array.isArray(data.cards) || !Array.isArray(data.connections)) {
       this.emitToast('无效的 .pinpoint 文件格式', 'warning');
       return { error: new Error('Invalid format') };
+    }
+
+    if (data.assets && typeof data.assets === 'object' && window.__sync?.connected) {
+      try {
+        await fetch(`${API_BASE}/assets/import-inline`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assets: data.assets })
+        });
+      } catch (e) {}
     }
 
     const newSubcanvasId = this._nextId('canvas');
@@ -2389,9 +2501,16 @@ class StateManager {
       return { blocked: true, reason: 'focus-mode' };
     }
 
-    const parseAndImport = async (content, fileName) => {
+    const parseAndImport = async (file) => {
+      if (!file) return { aborted: true };
+      if (file.name.toLowerCase().endsWith('.zip')) {
+        if (window.__media?.importZipAsSubcanvas) {
+          return await window.__media.importZipAsSubcanvas(file, { x, y });
+        }
+      }
       try {
-        return await this.importAsSubcanvas(JSON.parse(content), fileName, { x, y });
+        const content = await file.text();
+        return await this.importAsSubcanvas(JSON.parse(content), file.name, { x, y });
       } catch (e) {
         this.emitToast('无效的 .pinpoint 文件格式', 'warning');
         return { error: e };
@@ -2402,14 +2521,16 @@ class StateManager {
       try {
         const [handle] = await window.showOpenFilePicker({
           types: [{
-            description: 'PinPoint Graph',
-            accept: { 'application/json': ['.pinpoint', '.json'] }
+            description: 'PinPoint Graph / Bundle',
+            accept: {
+              'application/json': ['.pinpoint', '.json'],
+              'application/zip': ['.zip']
+            }
           }],
           multiple: false
         });
         const file = await handle.getFile();
-        const content = await file.text();
-        return await parseAndImport(content, handle.name);
+        return await parseAndImport(file);
       } catch (err) {
         if (err.name === 'AbortError') return { aborted: true };
       }
@@ -2418,12 +2539,11 @@ class StateManager {
     return new Promise(resolve => {
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = '.pinpoint,.json';
+      input.accept = '.pinpoint,.pinpoint.zip,.zip,.json';
       input.onchange = async () => {
         const file = input.files?.[0];
         if (!file) return resolve({ aborted: true });
-        const content = await file.text();
-        resolve(await parseAndImport(content, file.name));
+        resolve(await parseAndImport(file));
       };
       input.click();
     });

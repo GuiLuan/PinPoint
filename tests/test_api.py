@@ -613,6 +613,204 @@ class PinPointApiTestCase(unittest.TestCase):
         self.assertEqual(bad_width_status, 400)
         self.assertEqual(bad_width["error"]["code"], "INVALID_LIBRARY_WIDTH")
 
+    def test_asset_upload_range_and_bundle_serving(self) -> None:
+        # 1. Single binary upload + Range 206 streaming
+        payload_bytes = b"0123456789ABCDEF"
+        req = urllib.request.Request(
+            f"{self.base_url}/assets?filename=clip.mp4&kind=video",
+            data=payload_bytes,
+            headers={"Content-Type": "video/mp4"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertEqual(resp.status, 201)
+            up = json.loads(resp.read().decode("utf-8"))["data"]
+        asset_id = up["id"]
+        self.assertEqual(up["kind"], "video")
+        self.assertEqual(up["sizeBytes"], len(payload_bytes))
+
+        # Full GET
+        with urllib.request.urlopen(f"{self.base_url}/assets/{asset_id}", timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get("Accept-Ranges"), "bytes")
+            self.assertEqual(resp.read(), payload_bytes)
+
+        # Range GET
+        range_req = urllib.request.Request(
+            f"{self.base_url}/assets/{asset_id}",
+            headers={"Range": "bytes=4-9"},
+            method="GET",
+        )
+        with urllib.request.urlopen(range_req, timeout=5) as resp:
+            self.assertEqual(resp.status, 206)
+            self.assertEqual(resp.headers.get("Content-Range"), "bytes 4-9/16")
+            self.assertEqual(resp.read(), b"456789")
+
+        # 2. Multipart HTML folder bundle upload
+        boundary = "----PinPointTestBoundary123"
+        parts = [
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"rootName\"\r\n\r\nmy-site\r\n".encode("utf-8"),
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"index.html\"\r\n"
+                f"Content-Type: text/html\r\n\r\n<html><script src=\"js/app.js\"></script></html>\r\n"
+            ).encode("utf-8"),
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"js/app.js\"\r\n"
+                f"Content-Type: application/javascript\r\n\r\nconsole.log('ok');\r\n"
+            ).encode("utf-8"),
+            f"--{boundary}--\r\n".encode("utf-8"),
+        ]
+        mp_body = b"".join(parts)
+        breq = urllib.request.Request(
+            f"{self.base_url}/assets/bundle",
+            data=mp_body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(breq, timeout=5) as resp:
+            self.assertEqual(resp.status, 201)
+            bmeta = json.loads(resp.read().decode("utf-8"))["data"]
+        bid = bmeta["id"]
+        self.assertEqual(bmeta["kind"], "html-bundle")
+        self.assertEqual(bmeta["entryPath"], "index.html")
+
+        with urllib.request.urlopen(f"{self.base_url}/assets/{bid}/index.html", timeout=5) as resp:
+            self.assertIn("js/app.js", resp.read().decode("utf-8"))
+        with urllib.request.urlopen(f"{self.base_url}/assets/{bid}/js/app.js", timeout=5) as resp:
+            self.assertIn("console.log('ok')", resp.read().decode("utf-8"))
+
+    def test_media_webpage_card_crud_library_and_persistence(self) -> None:
+        from backend import GraphStore
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
+            db_path = Path(tmpdir) / "media.db"
+            s1 = GraphStore(db_path=db_path, base_dir=Path.cwd())
+            asset = s1.assets.save_single_bytes(b"\x89PNG\r\n\x1a\nfake", "pic.png", "image/png", "image")
+            img_card = s1.create_card({
+                "kind": "image",
+                "title": "设计稿",
+                "x": 120,
+                "y": 140,
+                "width": 400,
+                "height": 300,
+                "media": {"assetId": asset["id"], "src": asset["url"], "naturalWidth": 800, "naturalHeight": 600},
+            })
+            web_card = s1.create_card({
+                "kind": "webpage",
+                "title": "示例网站",
+                "x": 580,
+                "y": 140,
+                "width": 460,
+                "height": 360,
+                "media": {"sourceType": "url", "url": "https://example.com", "src": "https://example.com", "viewMode": "iframe"},
+            })
+            lib_item = s1.create_library_item({"name": "媒体模板", "cardIds": [img_card["id"], web_card["id"]]})
+            self.assertEqual(lib_item["cards"][0]["kind"], "image")
+            self.assertEqual(lib_item["cards"][1]["kind"], "webpage")
+            s1.close()
+
+            s2 = GraphStore(db_path=db_path, base_dir=Path.cwd())
+            cards = {c["id"]: c for c in s2.list_cards()}
+            self.assertEqual(cards[img_card["id"]]["kind"], "image")
+            self.assertEqual(cards[img_card["id"]]["height"], 300)
+            self.assertEqual(cards[img_card["id"]]["media"]["assetId"], asset["id"])
+            self.assertEqual(cards[web_card["id"]]["kind"], "webpage")
+            inst = s2.instantiate_library_item(lib_item["id"], {"x": 200, "y": 400})
+            self.assertEqual(len(inst["cards"]), 2)
+            self.assertEqual(inst["cards"][0]["kind"], "image")
+            s2.close()
+
+    def test_url_probe_remote_fetch_bundle_export_and_gc(self) -> None:
+        import http.server
+        import socketserver
+
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+
+        class _StubHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/blocked":
+                    body = b"<html><head><title>Blocked Page</title></head><body>Hi</body></html>"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("X-Frame-Options", "DENY")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path == "/pic.png":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(png_bytes)))
+                    self.end_headers()
+                    self.wfile.write(png_bytes)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+        stub_srv = socketserver.TCPServer(("127.0.0.1", 0), _StubHandler)
+        stub_port = stub_srv.server_address[1]
+        t = threading.Thread(target=stub_srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            st, probe_res = self._request("POST", "/url/probe", {"url": f"http://127.0.0.1:{stub_port}/blocked"})
+            self.assertEqual(st, 200)
+            self.assertFalse(probe_res["data"]["embeddable"])
+            self.assertEqual(probe_res["data"]["title"], "Blocked Page")
+
+            st, fetch_res = self._request("POST", "/assets/fetch", {"url": f"http://127.0.0.1:{stub_port}/pic.png"})
+            self.assertEqual(st, 200)
+            self.assertFalse(fetch_res["data"]["fallbackExternal"])
+            aid = fetch_res["data"]["asset"]["id"]
+
+            st, card_res = self._request("POST", "/cards", {
+                "kind": "image",
+                "title": "Fetched",
+                "width": 320,
+                "height": 220,
+                "media": {"assetId": aid, "src": f"/api/v1/assets/{aid}"},
+            })
+            self.assertEqual(st, 201)
+
+            # Export inline JSON + ZIP bundle
+            st, exp = self._request("GET", "/canvases/root/export?includeAssets=true")
+            self.assertEqual(st, 200)
+            self.assertIn(aid, exp["data"]["assets"])
+
+            with urllib.request.urlopen(f"{self.base_url}/canvases/root/export-bundle?format=zip", timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                zip_bytes = resp.read()
+                self.assertTrue(zip_bytes.startswith(b"PK"))
+
+            # Reset + clear undo + GC removes unreferenced asset
+            self.store.reset()
+            self.store.undo_stacks["root"] = [self.store._snapshot("root")]
+            self.store.redo_stacks["root"] = []
+            refs = self.store.collect_referenced_asset_ids()
+            self.assertNotIn(aid, refs)
+            gc_out = self.store.assets.gc_unreferenced(refs, grace_ms=0)
+            self.assertIn(aid, gc_out["deletedIds"])
+        finally:
+            stub_srv.shutdown()
+            stub_srv.server_close()
+
+    def test_media_settings_validation_and_revision_envelope(self) -> None:
+        _, initial = self._request("GET", "/settings")
+        self.assertEqual(initial["data"]["media"], {"webpageLoadMode": "smart"})
+        self.assertIn("revision", initial)
+        self.assertIsInstance(initial["revision"], int)
+
+        for mode in ("lazy", "eager", "smart"):
+            st, updated = self._request("PATCH", "/settings", {"media": {"webpageLoadMode": mode}})
+            self.assertEqual(st, 200)
+            self.assertEqual(updated["data"]["media"], {"webpageLoadMode": mode})
+            self.assertIsInstance(updated["revision"], int)
+
+        bad_status, bad_res = self._request("PATCH", "/settings", {"media": {"webpageLoadMode": "always-play"}})
+        self.assertEqual(bad_status, 400)
+        self.assertEqual(bad_res["error"]["code"], "INVALID_WEBPAGE_LOAD_MODE")
+
     def test_save_settings_validation_and_update(self) -> None:
         _, initial = self._request("GET", "/settings")
         self.assertEqual(initial["data"]["save"], {"mode": "auto", "intervalSec": 1})

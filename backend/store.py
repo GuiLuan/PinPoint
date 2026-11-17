@@ -8,17 +8,26 @@ import math
 import queue
 import random
 import re
+import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator
 
+from .assets import (
+    ASSET_URL_RE,
+    INLINE_EXPORT_LIMIT_BYTES,
+    AssetManager,
+)
 from .db import SQLiteDatabase
 from .models import (
     DEFAULT_APPEARANCE_SETTINGS,
     DEFAULT_CARD_HEIGHT,
     DEFAULT_CARD_WIDTH,
     DEFAULT_COLOR_NEUTRAL,
+    DEFAULT_IMAGE_HEIGHT,
+    DEFAULT_IMAGE_WIDTH,
+    DEFAULT_MEDIA_SETTINGS,
     DEFAULT_PALETTE,
     DEFAULT_SAVE_SETTINGS,
     DEFAULT_SHORTCUTS,
@@ -26,22 +35,30 @@ from .models import (
     DEFAULT_SUBCANVAS_HEIGHT,
     DEFAULT_SUBCANVAS_WIDTH,
     DEFAULT_TOAST_SETTINGS,
+    DEFAULT_VIDEO_HEIGHT,
+    DEFAULT_VIDEO_WIDTH,
+    DEFAULT_WEBPAGE_HEIGHT,
+    DEFAULT_WEBPAGE_WIDTH,
     GRID_SIZE,
     MAX_HISTORY_STACK,
     MAX_ZOOM,
+    MEDIA_CARD_KINDS,
     MIN_CARD_WIDTH,
+    MIN_MEDIA_HEIGHT,
     MIN_SUBCANVAS_HEIGHT,
     MIN_ZOOM,
     ROOT_CANVAS_ID,
     ROOT_CANVAS_TITLE,
     VALID_ALIGN_TYPES,
     VALID_CANVAS_TEXTURES,
+    VALID_CARD_KINDS,
     VALID_LIBRARY_LAYOUTS,
     VALID_LIBRARY_POSITIONS,
     VALID_MINIMAP_POSITIONS,
     VALID_SAVE_MODES,
     VALID_THEMES,
     VALID_TOAST_POSITIONS,
+    VALID_WEBPAGE_LOAD_MODES,
     ApiError,
     build_capsule_html,
     parse_content,
@@ -63,6 +80,7 @@ class GraphStore:
         base_dir: str | Path | None = None,
         library_file: str | Path | None = None,
         db_path: str | Path | None = None,
+        assets_dir: str | Path | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._local = threading.local()
@@ -80,6 +98,17 @@ class GraphStore:
         if resolved_db is None and self.workspace_file is not None:
             resolved_db = self.workspace_file.with_suffix(".db")
         self.db = SQLiteDatabase(resolved_db)
+
+        self._temp_assets_dir: tempfile.TemporaryDirectory[str] | None = None
+        if assets_dir is not None:
+            resolved_assets_dir = Path(assets_dir).resolve()
+        elif resolved_db is not None and str(resolved_db) != ":memory:":
+            resolved_assets_dir = Path(resolved_db).resolve().parent / "assets"
+        else:
+            self._temp_assets_dir = tempfile.TemporaryDirectory(prefix="pinpoint-assets-")
+            resolved_assets_dir = Path(self._temp_assets_dir.name)
+        self.assets = AssetManager(resolved_assets_dir, self.db)
+
         self.has_workspace_file: bool = bool(
             (resolved_db is not None and str(resolved_db) != ":memory:")
             or (self.workspace_file and self.workspace_file.exists())
@@ -150,6 +179,12 @@ class GraphStore:
     def close(self) -> None:
         with self._lock:
             self.db.close()
+            if self._temp_assets_dir is not None:
+                try:
+                    self._temp_assets_dir.cleanup()
+                except Exception:
+                    pass
+                self._temp_assets_dir = None
 
     @contextmanager
     def client_context(self, client_id: str | None) -> Iterator[None]:
@@ -327,6 +362,11 @@ class GraphStore:
             if k in sc_raw and isinstance(sc_raw[k], str):
                 shortcuts[k] = sc_raw[k].strip()[:40]
 
+        media_raw = s.get("media") if isinstance(s.get("media"), dict) else {}
+        webpage_load_mode = media_raw.get("webpageLoadMode", DEFAULT_MEDIA_SETTINGS["webpageLoadMode"])
+        if webpage_load_mode not in VALID_WEBPAGE_LOAD_MODES:
+            webpage_load_mode = DEFAULT_MEDIA_SETTINGS["webpageLoadMode"]
+
         return {
             "alignMode": bool(s.get("alignMode", False)),
             "gridSnapMode": bool(s.get("gridSnapMode", False)),
@@ -350,6 +390,9 @@ class GraphStore:
                 "mode": save_mode,
                 "intervalSec": interval_sec,
             },
+            "media": {
+                "webpageLoadMode": webpage_load_mode,
+            },
             "toast": {
                 "position": toast_pos,
                 "durationSec": toast_dur,
@@ -365,9 +408,50 @@ class GraphStore:
         zoom = max(MIN_ZOOM, min(MAX_ZOOM, zoom))
         return {"x": x, "y": y, "zoom": zoom}
 
+    @staticmethod
+    def _default_size_for_kind(kind: str) -> tuple[int, int]:
+        if kind == "subcanvas":
+            return DEFAULT_SUBCANVAS_WIDTH, DEFAULT_SUBCANVAS_HEIGHT
+        if kind == "image":
+            return DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT
+        if kind == "video":
+            return DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT
+        if kind == "webpage":
+            return DEFAULT_WEBPAGE_WIDTH, DEFAULT_WEBPAGE_HEIGHT
+        return DEFAULT_CARD_WIDTH, DEFAULT_CARD_HEIGHT
+
+    @staticmethod
+    def _default_title_for_kind(kind: str) -> str:
+        if kind == "subcanvas":
+            return "未命名子画布"
+        if kind == "image":
+            return "未命名图片"
+        if kind == "video":
+            return "未命名视频"
+        if kind == "webpage":
+            return "未命名网页"
+        return "未命名节点"
+
+    def _card_height_value(self, card: dict[str, Any]) -> int:
+        kind = card.get("kind") or "card"
+        _, default_h = self._default_size_for_kind(kind)
+        h = card.get("height")
+        if isinstance(h, (int, float)) and not isinstance(h, bool) and h > 0:
+            return int(round(h))
+        return default_h
+
+    def _normalize_media_dict(self, kind: str, raw_media: Any) -> dict[str, Any]:
+        media = copy.deepcopy(raw_media) if isinstance(raw_media, dict) else {}
+        if kind == "webpage":
+            if "viewMode" not in media:
+                media["viewMode"] = "bookmark" if media.get("embeddable") is False else "iframe"
+        return media
+
     def _normalize_card_dict(self, raw: dict[str, Any]) -> dict[str, Any]:
         card = copy.deepcopy(raw)
         kind = card.get("kind") or "card"
+        if kind not in VALID_CARD_KINDS:
+            kind = "card"
         if kind == "subcanvas":
             card["kind"] = "subcanvas"
             card["title"] = (str(card.get("title") or "").strip()) or "子画布"
@@ -379,10 +463,29 @@ class GraphStore:
             if not card.get("subcanvasId"):
                 card["subcanvasId"] = self._next_id("canvas")
             card.pop("thumbnail", None)
+            card.pop("media", None)
+        elif kind in MEDIA_CARD_KINDS:
+            card["kind"] = kind
+            def_w, def_h = self._default_size_for_kind(kind)
+            card["title"] = (str(card.get("title") or "").strip()) or self._default_title_for_kind(kind)
+            w = card.get("width", def_w)
+            h = card.get("height", def_h)
+            card["width"] = int(max(MIN_CARD_WIDTH, round(float(w))))
+            card["height"] = int(max(MIN_MEDIA_HEIGHT, round(float(h))))
+            card["contentHtml"] = ""
+            card["media"] = self._normalize_media_dict(kind, card.get("media"))
+            if card.get("customTitle"):
+                card["customTitle"] = True
+            else:
+                card.pop("customTitle", None)
+            card.pop("subcanvasId", None)
+            card.pop("thumbnail", None)
         else:
             card.pop("kind", None)
             card.pop("subcanvasId", None)
             card.pop("thumbnail", None)
+            card.pop("media", None)
+            card.pop("customTitle", None)
             card["title"] = (str(card.get("title") or "").strip()) or "未命名节点"
             w = card.get("width", DEFAULT_CARD_WIDTH)
             card["width"] = int(max(MIN_CARD_WIDTH, round(float(w))))
@@ -586,7 +689,7 @@ class GraphStore:
         min_x = min(c["x"] for c in members)
         max_x = max(c["x"] + (c.get("width") or DEFAULT_CARD_WIDTH) for c in members)
         min_y = min(c["y"] for c in members)
-        max_y = max(c["y"] + DEFAULT_CARD_HEIGHT for c in members)
+        max_y = max(c["y"] + self._card_height_value(c) for c in members)
         if self.settings.get("gridSnapMode"):
             x = math.floor((min_x - pad_x) / GRID_SIZE) * GRID_SIZE
             y = math.floor((min_y - pad_top) / GRID_SIZE) * GRID_SIZE
@@ -812,7 +915,13 @@ class GraphStore:
 
             return {"deletedCanvasIds": deleted_ids}
 
-    def export_canvas(self, canvas_id: str = ROOT_CANVAS_ID, include_subcanvases: bool = True) -> dict[str, Any]:
+    def export_canvas(
+        self,
+        canvas_id: str = ROOT_CANVAS_ID,
+        include_subcanvases: bool = True,
+        include_assets: bool = False,
+        force_inline_assets: bool = False,
+    ) -> dict[str, Any]:
         with self._lock, self._use_canvas(canvas_id) as cid:
             meta = self.db.get_canvas_row(cid)
             if meta is None:
@@ -854,7 +963,32 @@ class GraphStore:
                         }
                     if sub_map:
                         export_data["subcanvases"] = sub_map
+
+            if include_assets:
+                asset_ids = self.collect_asset_ids_in_export(export_data)
+                if asset_ids:
+                    assets_map, total_bytes = self.assets.export_assets_inline(asset_ids)
+                    if assets_map:
+                        if force_inline_assets or total_bytes <= INLINE_EXPORT_LIMIT_BYTES:
+                            export_data["assets"] = assets_map
+                        else:
+                            export_data["assetsOmitted"] = True
+                            export_data["assetsSizeBytes"] = total_bytes
+                            export_data["inlineLimitBytes"] = INLINE_EXPORT_LIMIT_BYTES
             return export_data
+
+    def export_canvas_zip(self, canvas_id: str = ROOT_CANVAS_ID, include_subcanvases: bool = True) -> tuple[bytes, str]:
+        with self._lock, self._use_canvas(canvas_id) as cid:
+            export_data = self.export_canvas(canvas_id=cid, include_subcanvases=include_subcanvases, include_assets=False)
+            asset_ids = self.collect_asset_ids_in_export(export_data)
+            zip_bytes = self.assets.write_zip_bundle(export_data, asset_ids)
+            title = export_data.get("title") or "graph"
+            return zip_bytes, title
+
+    def import_zip_bundle(self, canvas_id: str, zip_bytes: bytes) -> dict[str, Any]:
+        with self._lock:
+            graph_data = self.assets.import_zip_bundle(zip_bytes)
+            return self.replace_graph(graph_data, canvas_id=canvas_id)
 
     def _import_subcanvases_dict(self, root_parent_id: str, subcanvases: Any) -> None:
         if not isinstance(subcanvases, dict):
@@ -954,6 +1088,9 @@ class GraphStore:
         if not isinstance(data, dict) or not isinstance(data.get("cards"), list) or not isinstance(data.get("connections"), list):
             raise ApiError(400, "INVALID_GRAPH_PAYLOAD", "Graph payload must include 'cards' and 'connections' arrays.")
         with self._lock, self._use_canvas(canvas_id) as cid:
+            if isinstance(data.get("assets"), dict):
+                self.assets.import_assets_inline(data["assets"])
+
             for old_desc in self.db.get_descendant_canvas_ids(cid):
                 self.db.delete_canvas_subtree(old_desc)
                 self._canvases.pop(old_desc, None)
@@ -1116,7 +1253,8 @@ class GraphStore:
             for card in cards:
                 view = self._card_to_view(card)
                 if needle:
-                    haystack = f"{view.get('title', '')}\n{view.get('contentText', '')}".lower()
+                    media = view.get("media") or {}
+                    haystack = f"{view.get('title', '')}\n{view.get('contentText', '')}\n{media.get('url', '')}\n{media.get('fileName', '')}".lower()
                     if needle not in haystack:
                         continue
                 result.append(view)
@@ -1149,8 +1287,11 @@ class GraphStore:
             raise ApiError(409, "DUPLICATE_CARD_ID", f"Card ID '{card_id}' already exists.")
 
         kind = payload.get("kind") or "card"
-        title = (payload.get("title") or "").strip() or ("未命名子画布" if kind == "subcanvas" else "未命名节点")
-        width = payload.get("width", DEFAULT_SUBCANVAS_WIDTH if kind == "subcanvas" else DEFAULT_CARD_WIDTH)
+        if kind not in VALID_CARD_KINDS:
+            raise ApiError(400, "INVALID_CARD_KIND", f"Unsupported card kind '{kind}'.")
+        def_w, def_h = self._default_size_for_kind(kind)
+        title = (payload.get("title") or "").strip() or self._default_title_for_kind(kind)
+        width = payload.get("width", def_w)
         if not isinstance(width, (int, float)) or isinstance(width, bool) or width < MIN_CARD_WIDTH:
             raise ApiError(400, "INVALID_CARD_WIDTH", f"Card width must be >= {MIN_CARD_WIDTH}.")
 
@@ -1179,6 +1320,28 @@ class GraphStore:
                 "height": int(round(height)),
                 "contentHtml": "",
             }
+            if payload.get("headerColor"):
+                card["headerColor"] = payload["headerColor"]
+            return card
+
+        if kind in MEDIA_CARD_KINDS:
+            height = payload.get("height", def_h)
+            if not isinstance(height, (int, float)) or isinstance(height, bool) or height < MIN_MEDIA_HEIGHT:
+                raise ApiError(400, "INVALID_CARD_HEIGHT", f"Media/webpage card height must be >= {MIN_MEDIA_HEIGHT}.")
+            media_obj = self._normalize_media_dict(kind, payload.get("media"))
+            card = {
+                "id": card_id,
+                "kind": kind,
+                "title": title,
+                "x": x,
+                "y": y,
+                "width": int(round(width)),
+                "height": int(round(height)),
+                "contentHtml": "",
+                "media": media_obj,
+            }
+            if payload.get("customTitle"):
+                card["customTitle"] = True
             if payload.get("headerColor"):
                 card["headerColor"] = payload["headerColor"]
             return card
@@ -1216,11 +1379,30 @@ class GraphStore:
             return self._card_to_view(card)
 
     def _apply_card_patch(self, card: dict[str, Any], patch: dict[str, Any]) -> None:
+        if "kind" in patch and patch["kind"] in VALID_CARD_KINDS:
+            next_kind = patch["kind"]
+            if next_kind == "card":
+                card.pop("kind", None)
+                card.pop("media", None)
+                card.pop("customTitle", None)
+            elif next_kind in MEDIA_CARD_KINDS:
+                card["kind"] = next_kind
+                card["contentHtml"] = ""
+                if "media" not in card:
+                    card["media"] = self._normalize_media_dict(next_kind, {})
+        kind = card.get("kind") or "card"
         if "title" in patch:
-            default_t = "子画布" if card.get("kind") == "subcanvas" else "未命名节点"
+            default_t = self._default_title_for_kind(kind)
             card["title"] = (str(patch["title"] or "").strip()) or default_t
-            if card.get("kind") == "subcanvas" and card.get("subcanvasId"):
+            if kind == "subcanvas" and card.get("subcanvasId"):
                 self.db.update_canvas_meta(card["subcanvasId"], title=card["title"])
+            elif kind in MEDIA_CARD_KINDS and "customTitle" not in patch:
+                card["customTitle"] = True
+        if "customTitle" in patch:
+            if patch["customTitle"]:
+                card["customTitle"] = True
+            else:
+                card.pop("customTitle", None)
         if "x" in patch:
             card["x"] = int(round(float(patch["x"])))
         if "y" in patch:
@@ -1230,12 +1412,21 @@ class GraphStore:
             if not isinstance(w, (int, float)) or isinstance(w, bool) or w < MIN_CARD_WIDTH:
                 raise ApiError(400, "INVALID_CARD_WIDTH", f"Card width must be >= {MIN_CARD_WIDTH}.")
             card["width"] = int(round(w))
-        if "height" in patch and card.get("kind") == "subcanvas":
+        if "height" in patch and kind == "subcanvas":
             h = patch["height"]
             if not isinstance(h, (int, float)) or isinstance(h, bool) or h < MIN_SUBCANVAS_HEIGHT:
                 raise ApiError(400, "INVALID_SUBCANVAS_HEIGHT", f"Subcanvas height must be >= {MIN_SUBCANVAS_HEIGHT}.")
             card["height"] = int(round(h))
-        if card.get("kind") != "subcanvas":
+        elif "height" in patch and kind in MEDIA_CARD_KINDS:
+            h = patch["height"]
+            if not isinstance(h, (int, float)) or isinstance(h, bool) or h < MIN_MEDIA_HEIGHT:
+                raise ApiError(400, "INVALID_CARD_HEIGHT", f"Media/webpage card height must be >= {MIN_MEDIA_HEIGHT}.")
+            card["height"] = int(round(h))
+        if "media" in patch and kind in MEDIA_CARD_KINDS and isinstance(patch["media"], dict):
+            existing_media = card.get("media") if isinstance(card.get("media"), dict) else {}
+            merged = {**existing_media, **copy.deepcopy(patch["media"])}
+            card["media"] = self._normalize_media_dict(kind, merged)
+        if kind not in ("subcanvas",) and kind not in MEDIA_CARD_KINDS:
             if "contentHtml" in patch and patch["contentHtml"] is not None:
                 _, old_capsules, _ = parse_content(card.get("contentHtml", ""))
                 card["contentHtml"] = str(patch["contentHtml"])
@@ -1901,8 +2092,8 @@ class GraphStore:
             def w(c: dict[str, Any]) -> int:
                 return int(c.get("width") or DEFAULT_CARD_WIDTH)
 
-            def h(_c: dict[str, Any]) -> int:
-                return DEFAULT_CARD_HEIGHT
+            def h(c: dict[str, Any]) -> int:
+                return self._card_height_value(c)
 
             min_x = min(c["x"] for c in cards)
             max_x = max(c["x"] + w(c) for c in cards)
@@ -2135,7 +2326,7 @@ class GraphStore:
             min_x = min(c["x"] for c in targets)
             min_y = min(c["y"] for c in targets)
             max_x = max(c["x"] + (c.get("width") or DEFAULT_CARD_WIDTH) for c in targets)
-            max_y = max(c["y"] + DEFAULT_CARD_HEIGHT for c in targets)
+            max_y = max(c["y"] + self._card_height_value(c) for c in targets)
             mid_x = (min_x + max_x) / 2
             mid_y = (min_y + max_y) / 2
             zoom = self.state["viewport"].get("zoom", 1.0)
@@ -2263,6 +2454,16 @@ class GraphStore:
                         if not isinstance(v, str):
                             raise ApiError(400, "INVALID_SHORTCUT_VALUE", f"Shortcut '{k}' must be a string.")
                         sc[k] = v.strip()[:40]
+            if "media" in patch:
+                m_patch = patch["media"]
+                if not isinstance(m_patch, dict):
+                    raise ApiError(400, "INVALID_MEDIA_SETTINGS", "'media' must be an object.")
+                md = settings.setdefault("media", dict(DEFAULT_MEDIA_SETTINGS))
+                if "webpageLoadMode" in m_patch:
+                    wlm = m_patch["webpageLoadMode"]
+                    if wlm not in VALID_WEBPAGE_LOAD_MODES:
+                        raise ApiError(400, "INVALID_WEBPAGE_LOAD_MODE", f"webpageLoadMode must be one of {sorted(VALID_WEBPAGE_LOAD_MODES)}.")
+                    md["webpageLoadMode"] = wlm
 
             for st in self._canvases.values():
                 st["settings"] = self.settings
@@ -2442,18 +2643,35 @@ class GraphStore:
                 cid = self._next_id("card")
             seen_card_ids.add(cid)
 
-            width = rc.get("width", DEFAULT_CARD_WIDTH)
+            card_kind = rc.get("kind") or "card"
+            if card_kind not in VALID_CARD_KINDS:
+                card_kind = "card"
+            def_w, def_h = self._default_size_for_kind(card_kind)
+            width = rc.get("width", def_w)
             if not isinstance(width, (int, float)) or isinstance(width, bool) or width < MIN_CARD_WIDTH:
-                width = DEFAULT_CARD_WIDTH
+                width = def_w
 
             card_obj: dict[str, Any] = {
                 "id": cid,
-                "title": str(rc.get("title") or "").strip() or "未命名节点",
+                "title": str(rc.get("title") or "").strip() or self._default_title_for_kind(card_kind),
                 "x": float(rc.get("x", 0)),
                 "y": float(rc.get("y", 0)),
                 "width": int(round(width)),
                 "contentHtml": str(rc.get("contentHtml") or ""),
             }
+            if card_kind != "card":
+                card_obj["kind"] = card_kind
+            if card_kind == "subcanvas" and rc.get("subcanvasId"):
+                card_obj["subcanvasId"] = str(rc["subcanvasId"])
+            if card_kind in MEDIA_CARD_KINDS or card_kind == "subcanvas":
+                h_val = rc.get("height", def_h)
+                if isinstance(h_val, (int, float)) and not isinstance(h_val, bool) and h_val > 0:
+                    card_obj["height"] = int(round(h_val))
+            if card_kind in MEDIA_CARD_KINDS and isinstance(rc.get("media"), dict):
+                card_obj["media"] = self._normalize_media_dict(card_kind, rc["media"])
+                card_obj["contentHtml"] = ""
+            if rc.get("customTitle"):
+                card_obj["customTitle"] = True
             if "headerColor" in rc and rc["headerColor"] is not None:
                 card_obj["headerColor"] = str(rc["headerColor"])
             cards.append(card_obj)
@@ -2754,4 +2972,80 @@ class GraphStore:
                 "groups": copy.deepcopy(new_groups),
                 "connections": copy.deepcopy(new_connections),
             }
+
+    # ------------------------------------------------------------------
+    # Assets & Media Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_asset_ids_from_cards(cards: list[dict[str, Any]]) -> set[str]:
+        found: set[str] = set()
+        for c in cards:
+            if not isinstance(c, dict):
+                continue
+            media = c.get("media")
+            if isinstance(media, dict):
+                aid = media.get("assetId")
+                if isinstance(aid, str) and aid.startswith("asset-"):
+                    found.add(aid)
+                src = media.get("src") or ""
+                if isinstance(src, str):
+                    found.update(ASSET_URL_RE.findall(src))
+            html_str = c.get("contentHtml") or ""
+            if isinstance(html_str, str) and "/api/v1/assets/" in html_str:
+                found.update(ASSET_URL_RE.findall(html_str))
+        return found
+
+    def collect_asset_ids_in_export(self, export_data: dict[str, Any]) -> set[str]:
+        ids = self._extract_asset_ids_from_cards(export_data.get("cards") or [])
+        subs = export_data.get("subcanvases") or {}
+        if isinstance(subs, dict):
+            for sub in subs.values():
+                if isinstance(sub, dict):
+                    ids.update(self._extract_asset_ids_from_cards(sub.get("cards") or []))
+        return ids
+
+    def collect_referenced_asset_ids(self, extra_ids: list[str] | None = None) -> set[str]:
+        with self._lock:
+            refs: set[str] = set()
+            for aid in extra_ids or []:
+                if isinstance(aid, str) and aid.startswith("asset-"):
+                    refs.add(aid)
+            for content_html, meta_json in self.db.collect_all_persisted_card_texts():
+                if content_html:
+                    refs.update(ASSET_URL_RE.findall(content_html))
+                if meta_json:
+                    refs.update(ASSET_URL_RE.findall(meta_json))
+                    try:
+                        m = json.loads(meta_json)
+                        if isinstance(m, dict):
+                            aid = (m.get("media") or {}).get("assetId")
+                            if isinstance(aid, str) and aid.startswith("asset-"):
+                                refs.add(aid)
+                    except Exception:
+                        pass
+            for st in self._canvases.values():
+                refs.update(self._extract_asset_ids_from_cards(st.get("cards") or []))
+            for stack in (*self.undo_stacks.values(), *self.redo_stacks.values()):
+                for snap in stack:
+                    if "/api/v1/assets/" in snap or '"assetId"' in snap:
+                        refs.update(ASSET_URL_RE.findall(snap))
+                        try:
+                            parsed = json.loads(snap)
+                            refs.update(self._extract_asset_ids_from_cards(parsed.get("cards") or []))
+                        except Exception:
+                            pass
+            for item in self.library:
+                refs.update(self._extract_asset_ids_from_cards(item.get("cards") or []))
+            return refs
+
+    def get_asset_stats(self, extra_ids: list[str] | None = None) -> dict[str, Any]:
+        with self._lock:
+            refs = self.collect_referenced_asset_ids(extra_ids=extra_ids)
+            return self.assets.get_stats(refs)
+
+    def gc_assets(self, extra_ids: list[str] | None = None) -> dict[str, Any]:
+        with self._lock:
+            refs = self.collect_referenced_asset_ids(extra_ids=extra_ids)
+            return self.assets.gc_unreferenced(refs)
 

@@ -11,7 +11,10 @@ from .models import (
     DEFAULT_CARD_HEIGHT,
     DEFAULT_CARD_WIDTH,
     DEFAULT_COLOR_NEUTRAL,
+    DEFAULT_IMAGE_HEIGHT,
     DEFAULT_SUBCANVAS_HEIGHT,
+    DEFAULT_VIDEO_HEIGHT,
+    DEFAULT_WEBPAGE_HEIGHT,
     GRID_SIZE,
     ROOT_CANVAS_ID,
     ROOT_CANVAS_TITLE,
@@ -74,8 +77,23 @@ class SQLiteDatabase:
                     height INTEGER NULL,
                     header_color TEXT NULL,
                     content_html TEXT NOT NULL DEFAULT '',
+                    meta_json TEXT NOT NULL DEFAULT '{}',
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (canvas_id, id)
+                );
+
+                CREATE TABLE IF NOT EXISTS assets (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    storage_type TEXT NOT NULL DEFAULT 'file',
+                    rel_path TEXT NOT NULL,
+                    entry_path TEXT NULL,
+                    html_entries_json TEXT NULL,
+                    file_name TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    origin_url TEXT NULL,
+                    created_at INTEGER NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS groups (
@@ -130,6 +148,12 @@ class SQLiteDatabase:
             for col_name in ("x", "y", "width", "height"):
                 if col_name not in cols:
                     self.conn.execute(f"ALTER TABLE groups ADD COLUMN {col_name} INTEGER NULL")
+            card_cols = {
+                row["name"]
+                for row in self.conn.execute("PRAGMA table_info(cards)").fetchall()
+            }
+            if "meta_json" not in card_cols:
+                self.conn.execute("ALTER TABLE cards ADD COLUMN meta_json TEXT NOT NULL DEFAULT '{}'")
 
     def close(self) -> None:
         try:
@@ -355,7 +379,7 @@ class SQLiteDatabase:
             return None
 
         card_rows = self.conn.execute(
-            "SELECT id, kind, subcanvas_id, title, x, y, width, height, header_color, content_html "
+            "SELECT id, kind, subcanvas_id, title, x, y, width, height, header_color, content_html, meta_json "
             "FROM cards WHERE canvas_id = ? ORDER BY sort_order ASC",
             (canvas_id,),
         ).fetchall()
@@ -378,6 +402,15 @@ class SQLiteDatabase:
                 c["height"] = int(r["height"])
             if r["header_color"]:
                 c["headerColor"] = r["header_color"]
+            try:
+                meta_obj = json.loads(r["meta_json"] or "{}")
+                if isinstance(meta_obj, dict):
+                    if isinstance(meta_obj.get("media"), dict):
+                        c["media"] = meta_obj["media"]
+                    if meta_obj.get("customTitle"):
+                        c["customTitle"] = True
+            except Exception:
+                pass
             cards.append(c)
 
         group_rows = self.conn.execute(
@@ -482,9 +515,14 @@ class SQLiteDatabase:
                 kind = c.get("kind") or "card"
                 sub_id = c.get("subcanvasId") if kind == "subcanvas" else None
                 height = c.get("height")
+                meta_obj: dict[str, Any] = {}
+                if isinstance(c.get("media"), dict):
+                    meta_obj["media"] = c["media"]
+                if c.get("customTitle"):
+                    meta_obj["customTitle"] = True
                 self.conn.execute(
-                    "INSERT INTO cards (id, canvas_id, kind, subcanvas_id, title, x, y, width, height, header_color, content_html, sort_order) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO cards (id, canvas_id, kind, subcanvas_id, title, x, y, width, height, header_color, content_html, meta_json, sort_order) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(c["id"]),
                         canvas_id,
@@ -497,6 +535,7 @@ class SQLiteDatabase:
                         int(round(float(height))) if height is not None else None,
                         c.get("headerColor"),
                         str(c.get("contentHtml") or ""),
+                        json.dumps(meta_obj, ensure_ascii=False) if meta_obj else "{}",
                         idx,
                     ),
                 )
@@ -592,7 +631,14 @@ class SQLiteDatabase:
                 default_h = DEFAULT_SUBCANVAS_HEIGHT
             else:
                 normal_card_count += 1
-                default_h = DEFAULT_CARD_HEIGHT
+                if kind == "image":
+                    default_h = DEFAULT_IMAGE_HEIGHT
+                elif kind == "video":
+                    default_h = DEFAULT_VIDEO_HEIGHT
+                elif kind == "webpage":
+                    default_h = DEFAULT_WEBPAGE_HEIGHT
+                else:
+                    default_h = DEFAULT_CARD_HEIGHT
             w = int(r["width"] or DEFAULT_CARD_WIDTH)
             h = int(r["height"] or default_h)
             entry = {
@@ -753,3 +799,73 @@ class SQLiteDatabase:
                         idx,
                     ),
                 )
+
+    # ------------------------------------------------------------------
+    # Assets
+    # ------------------------------------------------------------------
+
+    def insert_asset(self, meta: dict[str, Any]) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO assets (id, kind, storage_type, rel_path, entry_path, html_entries_json, file_name, mime_type, size_bytes, origin_url, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(meta["id"]),
+                    str(meta["kind"]),
+                    str(meta.get("storageType") or "file"),
+                    str(meta["relPath"]),
+                    meta.get("entryPath"),
+                    json.dumps(meta["htmlEntries"], ensure_ascii=False) if meta.get("htmlEntries") is not None else None,
+                    str(meta.get("fileName") or "file"),
+                    str(meta.get("mimeType") or "application/octet-stream"),
+                    int(meta.get("sizeBytes") or 0),
+                    meta.get("originUrl"),
+                    int(meta.get("createdAt") or int(time.time() * 1000)),
+                ),
+            )
+
+    def _row_to_asset(self, r: sqlite3.Row) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "id": r["id"],
+            "kind": r["kind"],
+            "storageType": r["storage_type"],
+            "relPath": r["rel_path"],
+            "entryPath": r["entry_path"],
+            "fileName": r["file_name"],
+            "mimeType": r["mime_type"],
+            "sizeBytes": int(r["size_bytes"] or 0),
+            "originUrl": r["origin_url"],
+            "createdAt": int(r["created_at"] or 0),
+            "url": (
+                f"/api/v1/assets/{r['id']}/{r['entry_path']}"
+                if r["storage_type"] == "dir" and r["entry_path"]
+                else f"/api/v1/assets/{r['id']}"
+            ),
+        }
+        if r["html_entries_json"]:
+            try:
+                out["htmlEntries"] = json.loads(r["html_entries_json"])
+            except Exception:
+                pass
+        return out
+
+    def get_asset(self, asset_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        return self._row_to_asset(row) if row is not None else None
+
+    def list_assets(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM assets ORDER BY created_at DESC").fetchall()
+        return [self._row_to_asset(r) for r in rows]
+
+    def delete_asset(self, asset_id: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+
+    def collect_all_persisted_card_texts(self) -> list[tuple[str, str]]:
+        """Return list of (content_html, meta_json) across all canvases and library items."""
+        results: list[tuple[str, str]] = []
+        for r in self.conn.execute("SELECT content_html, meta_json FROM cards").fetchall():
+            results.append((r["content_html"] or "", r["meta_json"] or "{}"))
+        for r in self.conn.execute("SELECT payload_json FROM library_items").fetchall():
+            results.append((r["payload_json"] or "", ""))
+        return results

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .assets import probe_url
 from .models import ROOT_CANVAS_ID, ApiError
 from .store import GraphStore
 
@@ -88,7 +89,14 @@ class ApiRouter:
         @self._route("GET", "/canvases/{canvasId}/export")
         def export_canvas(query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
             inc_sub = query.get("includeSubcanvases", ["true"])[0].lower() != "false"
-            return 200, self.store.export_canvas(canvas_id=canvasId, include_subcanvases=inc_sub)
+            inc_assets = query.get("includeAssets", ["false"])[0].lower() == "true"
+            force_inline = query.get("forceInline", ["false"])[0].lower() == "true"
+            return 200, self.store.export_canvas(
+                canvas_id=canvasId,
+                include_subcanvases=inc_sub,
+                include_assets=inc_assets,
+                force_inline_assets=force_inline,
+            )
 
         @self._route("POST", "/canvases/{canvasId}/import")
         def import_canvas(_query: dict[str, list[str]], body: Any, canvasId: str) -> tuple[int, Any]:
@@ -346,6 +354,49 @@ class ApiRouter:
         def instantiate_library_item(query: dict[str, list[str]], body: Any, itemId: str) -> tuple[int, Any]:
             return 201, self.store.instantiate_library_item(itemId, body, canvas_id=self._cid(query))
 
+        # Media, Webpage Probe & Assets Management
+        @self._route("POST", "/url/probe")
+        def probe_webpage_url(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            if not isinstance(body, dict) or not body.get("url"):
+                raise ApiError(400, "MISSING_URL", "'url' is required.")
+            try:
+                return 200, probe_url(str(body["url"]))
+            except ValueError as exc:
+                raise ApiError(400, "INVALID_URL", str(exc)) from exc
+
+        @self._route("POST", "/assets/fetch")
+        def fetch_remote_asset(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            if not isinstance(body, dict) or not body.get("url"):
+                raise ApiError(400, "MISSING_URL", "'url' is required.")
+            try:
+                return 200, self.store.assets.fetch_remote_media(
+                    str(body["url"]),
+                    expected_kind=body.get("expectedKind"),
+                )
+            except ValueError as exc:
+                raise ApiError(400, "INVALID_URL", str(exc)) from exc
+
+        @self._route("POST", "/assets/import-inline")
+        def import_inline_assets(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            if not isinstance(body, dict) or not isinstance(body.get("assets"), dict):
+                raise ApiError(400, "INVALID_PAYLOAD", "'assets' object is required.")
+            id_map = self.store.assets.import_assets_inline(body["assets"])
+            return 200, {"idMap": id_map, "importedCount": len(id_map)}
+
+        @self._route("GET", "/assets/stats")
+        def get_assets_stats(_query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:
+            return 200, self.store.get_asset_stats()
+
+        @self._route("POST", "/assets/stats")
+        def post_assets_stats(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            extra = body.get("extraAssetIds") if isinstance(body, dict) else None
+            return 200, self.store.get_asset_stats(extra_ids=extra if isinstance(extra, list) else None)
+
+        @self._route("POST", "/assets/gc")
+        def gc_assets(_query: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+            extra = body.get("extraAssetIds") if isinstance(body, dict) else None
+            return 200, self.store.gc_assets(extra_ids=extra if isinstance(extra, list) else None)
+
     def is_api_path(self, raw_path: str) -> bool:
         path = urlparse(raw_path).path
         return path == API_PREFIX or path.startswith(API_PREFIX + "/")
@@ -390,7 +441,7 @@ class ApiRouter:
             try:
                 with self.store.client_context(effective_client_id):
                     status, data = handler(query, body, **kwargs)
-                return status, {"ok": True, "data": data}, "application/json"
+                return status, {"ok": True, "revision": self.store.revision, "data": data}, "application/json"
             except ApiError as err:
                 error_obj: dict[str, Any] = {"code": err.code, "message": err.message}
                 if err.details is not None:
