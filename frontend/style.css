@@ -94,6 +94,7 @@ html, body {
   height: 100%;
   overflow: hidden;
   overflow: clip;
+  overscroll-behavior: none;
   background-color: var(--bg-color);
   font-family: var(--font-stack);
   color: var(--text-primary);
@@ -110,6 +111,8 @@ html, body {
   inset: 0;
   overflow: hidden;
   overflow: clip;
+  overscroll-behavior: none;
+  touch-action: none;
   cursor: default;
   background-color: var(--bg-color);
 }
@@ -2502,6 +2505,7 @@ body.is-wire-dragging .webpage-iframe {
 
 .note-card.is-webpage-interactive {
   box-shadow: 0 0 0 2px var(--accent), var(--elev-card) !important;
+  touch-action: auto;
 }
 
 .webpage-bookmark-card {

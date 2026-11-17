@@ -28,6 +28,7 @@ from .models import (
     DEFAULT_IMAGE_HEIGHT,
     DEFAULT_IMAGE_WIDTH,
     DEFAULT_MEDIA_SETTINGS,
+    DEFAULT_NAVIGATION_SETTINGS,
     DEFAULT_PALETTE,
     DEFAULT_SAVE_SETTINGS,
     DEFAULT_SHORTCUTS,
@@ -59,6 +60,7 @@ from .models import (
     VALID_THEMES,
     VALID_TOAST_POSITIONS,
     VALID_WEBPAGE_LOAD_MODES,
+    VALID_WHEEL_MODES,
     ApiError,
     build_capsule_html,
     parse_content,
@@ -367,6 +369,11 @@ class GraphStore:
         if webpage_load_mode not in VALID_WEBPAGE_LOAD_MODES:
             webpage_load_mode = DEFAULT_MEDIA_SETTINGS["webpageLoadMode"]
 
+        nav_raw = s.get("navigation") if isinstance(s.get("navigation"), dict) else {}
+        wheel_mode = nav_raw.get("wheelMode", DEFAULT_NAVIGATION_SETTINGS["wheelMode"])
+        if wheel_mode not in VALID_WHEEL_MODES:
+            wheel_mode = DEFAULT_NAVIGATION_SETTINGS["wheelMode"]
+
         return {
             "alignMode": bool(s.get("alignMode", False)),
             "gridSnapMode": bool(s.get("gridSnapMode", False)),
@@ -392,6 +399,9 @@ class GraphStore:
             },
             "media": {
                 "webpageLoadMode": webpage_load_mode,
+            },
+            "navigation": {
+                "wheelMode": wheel_mode,
             },
             "toast": {
                 "position": toast_pos,
@@ -2464,6 +2474,16 @@ class GraphStore:
                     if wlm not in VALID_WEBPAGE_LOAD_MODES:
                         raise ApiError(400, "INVALID_WEBPAGE_LOAD_MODE", f"webpageLoadMode must be one of {sorted(VALID_WEBPAGE_LOAD_MODES)}.")
                     md["webpageLoadMode"] = wlm
+            if "navigation" in patch:
+                n_patch = patch["navigation"]
+                if not isinstance(n_patch, dict):
+                    raise ApiError(400, "INVALID_NAVIGATION_SETTINGS", "'navigation' must be an object.")
+                nv = settings.setdefault("navigation", dict(DEFAULT_NAVIGATION_SETTINGS))
+                if "wheelMode" in n_patch:
+                    wm = n_patch["wheelMode"]
+                    if wm not in VALID_WHEEL_MODES:
+                        raise ApiError(400, "INVALID_WHEEL_MODE", f"wheelMode must be one of {sorted(VALID_WHEEL_MODES)}.")
+                    nv["wheelMode"] = wm
 
             for st in self._canvases.values():
                 st["settings"] = self.settings

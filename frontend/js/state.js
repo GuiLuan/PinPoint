@@ -26,6 +26,10 @@ export const DEFAULT_MEDIA_SETTINGS = {
   webpageLoadMode: 'smart'
 };
 
+export const DEFAULT_NAVIGATION_SETTINGS = {
+  wheelMode: 'auto'
+};
+
 export const VALID_TOAST_POSITIONS = ['top-left', 'top-center', 'top-right', 'bottom-left', 'bottom-center', 'bottom-right'];
 
 export const DEFAULT_TOAST_SETTINGS = {
@@ -50,6 +54,7 @@ export const DEFAULT_SETTINGS = {
   },
   save: { ...DEFAULT_SAVE_SETTINGS },
   media: { ...DEFAULT_MEDIA_SETTINGS },
+  navigation: { ...DEFAULT_NAVIGATION_SETTINGS },
   toast: { ...DEFAULT_TOAST_SETTINGS },
   shortcuts: { ...DEFAULT_SHORTCUTS }
 };
@@ -152,6 +157,10 @@ class StateManager {
     const webpageLoadMode = ['smart', 'lazy', 'eager'].includes(md.webpageLoadMode)
       ? md.webpageLoadMode
       : 'smart';
+    const nv = s.navigation || {};
+    const wheelMode = ['auto', 'trackpad', 'mouse'].includes(nv.wheelMode)
+      ? nv.wheelMode
+      : 'auto';
     const ts = s.toast || {};
     const toastPos = VALID_TOAST_POSITIONS.includes(ts.position) ? ts.position : 'bottom-left';
     const toastDur = typeof ts.durationSec === 'number' && !Number.isNaN(ts.durationSec)
@@ -197,6 +206,9 @@ class StateManager {
       },
       media: {
         webpageLoadMode
+      },
+      navigation: {
+        wheelMode
       },
       toast: {
         position: toastPos,
@@ -1376,6 +1388,21 @@ class StateManager {
     const md = this.getMediaSettings();
     if (['smart', 'lazy', 'eager'].includes(patch.webpageLoadMode)) {
       md.webpageLoadMode = patch.webpageLoadMode;
+    }
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+  }
+
+  getNavigationSettings() {
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
+    if (!this.state.settings.navigation) this.state.settings.navigation = { ...DEFAULT_NAVIGATION_SETTINGS };
+    return this.state.settings.navigation;
+  }
+
+  setNavigationSettings(patch) {
+    const nv = this.getNavigationSettings();
+    if (['auto', 'trackpad', 'mouse'].includes(patch.wheelMode)) {
+      nv.wheelMode = patch.wheelMode;
     }
     this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });

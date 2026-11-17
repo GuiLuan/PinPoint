@@ -13,7 +13,11 @@ const PAN_MAX_SPEED = 4500;      // px/s cap to prevent driver spikes
 
 const ZOOM_SMOOTH_SPEED = 16;    // Exponential lerp rate (1/s) -> ~220ms silky ease
 const ZOOM_WHEEL_SENSITIVITY = 0.00125;
-const ZOOM_PINCH_SENSITIVITY = 0.0045;
+const ZOOM_PINCH_SENSITIVITY = 0.005;
+
+const WHEEL_STREAM_TIMEOUT_MS = 260;
+const WHEEL_PAN_IDLE_SAVE_MS = 180;
+const WHEEL_PAN_MAX_DELTA = 420;
 
 const VIEWPORT_TWEEN_SPEED = 13; // Exponential lerp rate for fit-to-content / focus glide
 
@@ -46,6 +50,13 @@ class CanvasManager {
 
     this.animRafId = null;
     this.lastAnimTime = 0;
+
+    // Trackpad / wheel / touch gesture state
+    this._wheelStreamMode = null;
+    this._lastWheelTime = 0;
+    this._wheelPanIdleTimer = null;
+    this._safariGesture = null;
+    this._touchGesture = null;
   }
 
   init(viewportEl, boardEl) {
@@ -80,6 +91,10 @@ class CanvasManager {
     if (this.animRafId) {
       cancelAnimationFrame(this.animRafId);
       this.animRafId = null;
+    }
+    if (this._wheelPanIdleTimer) {
+      clearTimeout(this._wheelPanIdleTimer);
+      this._wheelPanIdleTimer = null;
     }
     this.panVelocity.x = 0;
     this.panVelocity.y = 0;
@@ -256,6 +271,108 @@ class CanvasManager {
     return { x: vx, y: vy };
   }
 
+  _normalizeWheelDeltas(e) {
+    let dx = e.deltaX || 0;
+    let dy = e.deltaY || 0;
+    if (e.deltaMode === 1) {
+      dx *= 32;
+      dy *= 32;
+    } else if (e.deltaMode === 2) {
+      dx *= 400;
+      dy *= 400;
+    }
+    // Shift + vertical wheel maps to horizontal pan on systems that don't remap it natively
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey && dx === 0 && dy !== 0) {
+      dx = dy;
+      dy = 0;
+    }
+    return { dx, dy };
+  }
+
+  _isDiscreteMouseWheel(e) {
+    if (e.deltaMode !== 0) return true;
+    if (e.deltaX !== 0) return false;
+    if (!Number.isInteger(e.deltaY)) return false;
+    const absY = Math.abs(e.deltaY);
+    if (absY < 48) return false;
+    if (typeof e.wheelDeltaY === 'number' && e.wheelDeltaY !== 0) {
+      return Math.abs(e.wheelDeltaY) % 120 === 0;
+    }
+    return absY % 100 === 0 || absY % 120 === 0;
+  }
+
+  _classifyWheelIntent(e) {
+    if (e.ctrlKey || e.metaKey) return 'zoom';
+
+    const wheelMode = store.getNavigationSettings?.().wheelMode || 'auto';
+    if (wheelMode === 'trackpad') return 'pan';
+    if (wheelMode === 'mouse') {
+      if (e.shiftKey) return 'pan';
+      if (e.deltaX !== 0 && Math.abs(e.deltaX) > Math.abs(e.deltaY)) return 'pan';
+      return 'zoom';
+    }
+
+    // 'auto' mode: distinguish trackpad two-finger swipe from notched mouse wheel
+    const now = performance.now();
+    const withinStream = Boolean(this._wheelStreamMode) && (now - this._lastWheelTime) < WHEEL_STREAM_TIMEOUT_MS;
+    this._lastWheelTime = now;
+
+    if (e.shiftKey) {
+      this._wheelStreamMode = 'pan';
+      return 'pan';
+    }
+    if (e.deltaMode !== 0) {
+      this._wheelStreamMode = 'zoom';
+      return 'zoom';
+    }
+    if (!this._isDiscreteMouseWheel(e)) {
+      this._wheelStreamMode = 'pan';
+      return 'pan';
+    }
+    if (withinStream && this._wheelStreamMode === 'pan') {
+      return 'pan';
+    }
+    this._wheelStreamMode = 'zoom';
+    return 'zoom';
+  }
+
+  _canScrollElement(target, dx, dy) {
+    let el = target;
+    while (el && el !== this.viewportEl && el !== document.body) {
+      if (el instanceof Element) {
+        const style = getComputedStyle(el);
+        const overflowY = style.overflowY;
+        const overflowX = style.overflowX;
+        if ((overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
+          if ((dy > 0 && el.scrollTop + el.clientHeight < el.scrollHeight - 1) ||
+              (dy < 0 && el.scrollTop > 1)) {
+            return true;
+          }
+        }
+        if ((overflowX === 'auto' || overflowX === 'scroll') && el.scrollWidth > el.clientWidth + 1) {
+          if ((dx > 0 && el.scrollLeft + el.clientWidth < el.scrollWidth - 1) ||
+              (dx < 0 && el.scrollLeft > 1)) {
+            return true;
+          }
+        }
+      }
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  _scheduleWheelPanIdle() {
+    if (this._wheelPanIdleTimer) clearTimeout(this._wheelPanIdleTimer);
+    this._wheelPanIdleTimer = setTimeout(() => {
+      this._wheelPanIdleTimer = null;
+      if (!this.dragAction && !this.zoomAnim.active && !this.viewportTween &&
+          Math.hypot(this.panVelocity.x, this.panVelocity.y) < PAN_STOP_SPEED) {
+        this._setAnimatingClass(false);
+        store.scheduleAutoSave();
+      }
+    }, WHEEL_PAN_IDLE_SAVE_MS);
+  }
+
   applyTransform() {
     const { x, y, zoom } = store.state.viewport;
     this.boardEl.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
@@ -294,6 +411,7 @@ class CanvasManager {
 
   bindEvents() {
     this.viewportEl.addEventListener('mousedown', () => {
+      this._wheelStreamMode = null;
       // Any mouse interaction inside the viewport stops leftover pan glide or fit tween immediately
       if (this.panVelocity.x !== 0 || this.panVelocity.y !== 0 || this.viewportTween) {
         this.panVelocity.x = 0;
@@ -357,17 +475,49 @@ class CanvasManager {
       if (e.target?.closest?.('.note-card.is-webpage-interactive')) {
         return;
       }
+
+      const { dx, dy } = this._normalizeWheelDeltas(e);
+
+      // Allow inner scrollable containers (when not zooming) to scroll normally
+      if (!e.ctrlKey && !e.metaKey && this._canScrollElement(e.target, dx, dy)) {
+        return;
+      }
+
       e.preventDefault();
+
+      // Avoid double-zooming on Safari when gesture* events handle the pinch
+      if ((e.ctrlKey || e.metaKey) && this._safariGesture?.active) {
+        return;
+      }
+
+      const intent = this._classifyWheelIntent(e);
+
+      if (intent === 'pan') {
+        if (dx === 0 && dy === 0) return;
+        const clampedDx = clamp(dx, -WHEEL_PAN_MAX_DELTA, WHEEL_PAN_MAX_DELTA);
+        const clampedDy = clamp(dy, -WHEEL_PAN_MAX_DELTA, WHEEL_PAN_MAX_DELTA);
+        this.viewportTween = null;
+        this.panVelocity.x = 0;
+        this.panVelocity.y = 0;
+        store.state.viewport.x -= clampedDx;
+        store.state.viewport.y -= clampedDy;
+        if (this.dragAction?.type === 'PAN') {
+          this.dragAction.initViewX -= clampedDx;
+          this.dragAction.initViewY -= clampedDy;
+        }
+        this._setAnimatingClass(true);
+        this.applyTransform();
+        this._scheduleWheelPanIdle();
+        return;
+      }
+
       this.viewportTween = null;
-
-      let dy = e.deltaY;
-      if (e.deltaMode === 1) dy *= 32;
-      else if (e.deltaMode === 2) dy *= 400;
       if (dy === 0) return;
-      dy = clamp(dy, -240, 240);
+      const clampedZoomDy = clamp(dy, -240, 240);
 
-      const sensitivity = e.ctrlKey ? ZOOM_PINCH_SENSITIVITY : ZOOM_WHEEL_SENSITIVITY;
-      const zoomFactor = Math.exp(-dy * sensitivity);
+      const isTrackpadPinch = e.ctrlKey && !e.metaKey && !this._isDiscreteMouseWheel(e);
+      const sensitivity = isTrackpadPinch ? ZOOM_PINCH_SENSITIVITY : ZOOM_WHEEL_SENSITIVITY;
+      const zoomFactor = Math.exp(-clampedZoomDy * sensitivity);
 
       const baseTarget = this.zoomAnim.active
         ? this.zoomAnim.targetZoom
@@ -380,6 +530,99 @@ class CanvasManager {
 
       this._ensureAnimLoop();
     }, { passive: false });
+
+    // Safari macOS trackpad pinch gestures
+    this.viewportEl.addEventListener('gesturestart', (e) => {
+      if (e.target?.closest?.('.note-card.is-webpage-interactive')) return;
+      e.preventDefault();
+      this.viewportTween = null;
+      this._safariGesture = {
+        active: true,
+        lastScale: e.scale || 1
+      };
+      this._setAnimatingClass(true);
+    }, { passive: false });
+
+    this.viewportEl.addEventListener('gesturechange', (e) => {
+      if (!this._safariGesture?.active) return;
+      e.preventDefault();
+      const scale = e.scale || 1;
+      const ratio = scale / (this._safariGesture.lastScale || 1);
+      this._safariGesture.lastScale = scale;
+      if (!Number.isFinite(ratio) || ratio <= 0) return;
+
+      const baseTarget = this.zoomAnim.active
+        ? this.zoomAnim.targetZoom
+        : (store.state.viewport.zoom || 1.0);
+
+      this.zoomAnim.targetZoom = clamp(baseTarget * ratio, MIN_ZOOM, MAX_ZOOM);
+      this.zoomAnim.anchorX = e.clientX ?? (window.innerWidth / 2);
+      this.zoomAnim.anchorY = e.clientY ?? (window.innerHeight / 2);
+      this.zoomAnim.active = true;
+      this._ensureAnimLoop();
+    }, { passive: false });
+
+    const endSafariGesture = (e) => {
+      if (!this._safariGesture?.active) return;
+      e.preventDefault();
+      this._safariGesture = null;
+    };
+    this.viewportEl.addEventListener('gestureend', endSafariGesture, { passive: false });
+
+    // Touchscreen two-finger pan & pinch-to-zoom
+    const getTouchPairMetrics = (t0, t1) => ({
+      midX: (t0.clientX + t1.clientX) / 2,
+      midY: (t0.clientY + t1.clientY) / 2,
+      dist: Math.max(1, Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY))
+    });
+
+    this.viewportEl.addEventListener('touchstart', (e) => {
+      if (e.target?.closest?.('.note-card.is-webpage-interactive')) return;
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        this.viewportTween = null;
+        this.panVelocity.x = 0;
+        this.panVelocity.y = 0;
+        this.zoomAnim.active = false;
+        this._touchGesture = getTouchPairMetrics(e.touches[0], e.touches[1]);
+        this._setAnimatingClass(true);
+      } else {
+        this._touchGesture = null;
+      }
+    }, { passive: false });
+
+    this.viewportEl.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 2 || !this._touchGesture) return;
+      e.preventDefault();
+      const next = getTouchPairMetrics(e.touches[0], e.touches[1]);
+      const prev = this._touchGesture;
+
+      const vp = store.state.viewport;
+      const currZoom = Math.max(vp.zoom || 1.0, MIN_ZOOM);
+      const scaleRatio = next.dist / prev.dist;
+      const nextZoom = clamp(currZoom * scaleRatio, MIN_ZOOM, MAX_ZOOM);
+      const appliedRatio = nextZoom / currZoom;
+
+      vp.x = next.midX - (prev.midX - vp.x) * appliedRatio;
+      vp.y = next.midY - (prev.midY - vp.y) * appliedRatio;
+      vp.zoom = nextZoom;
+      this.zoomAnim.targetZoom = nextZoom;
+
+      this._touchGesture = next;
+      this.applyTransform();
+    }, { passive: false });
+
+    const endTouchGesture = (e) => {
+      if (this._touchGesture && e.touches.length < 2) {
+        this._touchGesture = null;
+        if (!this.dragAction && !this.zoomAnim.active && !this.viewportTween) {
+          this._setAnimatingClass(false);
+        }
+        store.scheduleAutoSave();
+      }
+    };
+    this.viewportEl.addEventListener('touchend', endTouchGesture, { passive: true });
+    this.viewportEl.addEventListener('touchcancel', endTouchGesture, { passive: true });
 
     window.addEventListener('keydown', (e) => {
       if (window.__settings?.isRecordingShortcut?.()) return;

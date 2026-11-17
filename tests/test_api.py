@@ -811,6 +811,19 @@ class PinPointApiTestCase(unittest.TestCase):
         self.assertEqual(bad_status, 400)
         self.assertEqual(bad_res["error"]["code"], "INVALID_WEBPAGE_LOAD_MODE")
 
+    def test_navigation_settings_validation_and_update(self) -> None:
+        _, initial = self._request("GET", "/settings")
+        self.assertEqual(initial["data"]["navigation"], {"wheelMode": "auto"})
+
+        for mode in ("trackpad", "mouse", "auto"):
+            st, updated = self._request("PATCH", "/settings", {"navigation": {"wheelMode": mode}})
+            self.assertEqual(st, 200)
+            self.assertEqual(updated["data"]["navigation"], {"wheelMode": mode})
+
+        bad_status, bad_res = self._request("PATCH", "/settings", {"navigation": {"wheelMode": "joystick"}})
+        self.assertEqual(bad_status, 400)
+        self.assertEqual(bad_res["error"]["code"], "INVALID_WHEEL_MODE")
+
     def test_save_settings_validation_and_update(self) -> None:
         _, initial = self._request("GET", "/settings")
         self.assertEqual(initial["data"]["save"], {"mode": "auto", "intervalSec": 1})

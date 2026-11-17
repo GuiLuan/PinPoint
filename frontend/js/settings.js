@@ -86,6 +86,17 @@ class SettingsManager {
 
     const canvasTabPanel = this.overlayEl.querySelector('#tab-panel-canvas');
     canvasTabPanel?.addEventListener('click', (e) => {
+      const wheelCard = e.target.closest('.nav-wheel-mode-card');
+      if (wheelCard) {
+        e.preventDefault();
+        const wheelMode = wheelCard.getAttribute('data-wheel-mode');
+        if (wheelMode) {
+          store.setNavigationSettings({ wheelMode });
+          this.syncAssistanceToggles();
+        }
+        return;
+      }
+
       const loadCard = e.target.closest('.webpage-load-card');
       if (loadCard) {
         e.preventDefault();
@@ -661,6 +672,11 @@ class SettingsManager {
 
     if (alignPill) alignPill.classList.toggle('is-active', alignActive);
     if (gridPill) gridPill.classList.toggle('is-active', gridActive);
+
+    const wheelMode = store.getNavigationSettings?.()?.wheelMode || 'auto';
+    this.overlayEl.querySelectorAll('.nav-wheel-mode-card').forEach(btn => {
+      btn.classList.toggle('is-active', btn.getAttribute('data-wheel-mode') === wheelMode);
+    });
 
     const loadMode = store.getMediaSettings?.()?.webpageLoadMode || 'smart';
     this.overlayEl.querySelectorAll('.webpage-load-card').forEach(btn => {

@@ -47,6 +47,8 @@ VALID_SAVE_MODES = {"auto", "manual"}
 DEFAULT_SAVE_SETTINGS = {"mode": "auto", "intervalSec": 1}
 VALID_WEBPAGE_LOAD_MODES = {"smart", "lazy", "eager"}
 DEFAULT_MEDIA_SETTINGS = {"webpageLoadMode": "smart"}
+VALID_WHEEL_MODES = {"auto", "trackpad", "mouse"}
+DEFAULT_NAVIGATION_SETTINGS = {"wheelMode": "auto"}
 VALID_TOAST_POSITIONS = {"top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"}
 DEFAULT_TOAST_SETTINGS = {"position": "bottom-left", "durationSec": 5}
 DEFAULT_SHORTCUTS = {
@@ -104,6 +106,7 @@ DEFAULT_STATE: dict[str, Any] = {
             "intervalSec": 1,
         },
         "media": dict(DEFAULT_MEDIA_SETTINGS),
+        "navigation": dict(DEFAULT_NAVIGATION_SETTINGS),
         "toast": dict(DEFAULT_TOAST_SETTINGS),
         "shortcuts": dict(DEFAULT_SHORTCUTS),
     },
