@@ -60,6 +60,7 @@ class SQLiteDatabase:
                     id TEXT PRIMARY KEY,
                     parent_canvas_id TEXT NULL REFERENCES canvases(id) ON DELETE CASCADE,
                     title TEXT NOT NULL,
+                    icon TEXT NOT NULL DEFAULT '',
                     viewport_json TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
@@ -154,6 +155,12 @@ class SQLiteDatabase:
             }
             if "meta_json" not in card_cols:
                 self.conn.execute("ALTER TABLE cards ADD COLUMN meta_json TEXT NOT NULL DEFAULT '{}'")
+            canvas_cols = {
+                row["name"]
+                for row in self.conn.execute("PRAGMA table_info(canvases)").fetchall()
+            }
+            if "icon" not in canvas_cols:
+                self.conn.execute("ALTER TABLE canvases ADD COLUMN icon TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         try:
@@ -215,7 +222,7 @@ class SQLiteDatabase:
 
     def get_canvas_row(self, canvas_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT id, parent_canvas_id, title, viewport_json, created_at, updated_at "
+            "SELECT id, parent_canvas_id, title, icon, viewport_json, created_at, updated_at "
             "FROM canvases WHERE id = ?",
             (canvas_id,),
         ).fetchone()
@@ -225,6 +232,7 @@ class SQLiteDatabase:
             "id": row["id"],
             "parentCanvasId": row["parent_canvas_id"],
             "title": row["title"],
+            "icon": row["icon"] or None,
             "viewport": json.loads(row["viewport_json"]),
             "createdAt": int(row["created_at"]),
             "updatedAt": int(row["updated_at"]),
@@ -237,8 +245,17 @@ class SQLiteDatabase:
                 c.id,
                 c.parent_canvas_id,
                 c.title,
+                c.icon,
                 c.created_at,
                 c.updated_at,
+                (
+                    SELECT portal.header_color
+                    FROM cards portal
+                    WHERE portal.canvas_id = c.parent_canvas_id
+                        AND portal.kind = 'subcanvas' AND portal.subcanvas_id = c.id
+                    ORDER BY portal.sort_order
+                    LIMIT 1
+                ) AS header_color,
                 COALESCE(SUM(CASE WHEN cd.kind = 'subcanvas' THEN 0 WHEN cd.id IS NOT NULL THEN 1 ELSE 0 END), 0) AS card_count,
                 COALESCE(SUM(CASE WHEN cd.kind = 'subcanvas' THEN 1 ELSE 0 END), 0) AS subcanvas_count
             FROM canvases c
@@ -252,6 +269,8 @@ class SQLiteDatabase:
                 "id": r["id"],
                 "parentCanvasId": r["parent_canvas_id"],
                 "title": r["title"],
+                "icon": r["icon"] or None,
+                "headerColor": r["header_color"],
                 "createdAt": int(r["created_at"]),
                 "updatedAt": int(r["updated_at"]),
                 "cardCount": int(r["card_count"]),
@@ -338,8 +357,8 @@ class SQLiteDatabase:
         eff_vp = viewport or {"x": 0.0, "y": 0.0, "zoom": 1.0}
         with self.conn:
             self.conn.execute(
-                "INSERT INTO canvases (id, parent_canvas_id, title, viewport_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO canvases (id, parent_canvas_id, title, icon, viewport_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, '', ?, ?, ?)",
                 (canvas_id, parent_canvas_id, eff_title, json.dumps(eff_vp), now_ms, now_ms),
             )
         return self.get_canvas_row(canvas_id)  # type: ignore[return-value]
@@ -349,24 +368,23 @@ class SQLiteDatabase:
         canvas_id: str,
         title: str | None = None,
         viewport: dict[str, Any] | None = None,
+        icon: str | None = None,
     ) -> None:
-        now_ms = int(time.time() * 1000)
+        # None leaves the icon unchanged; an empty string restores the default.
+        fields = {
+            "title": title,
+            "viewport_json": json.dumps(viewport) if viewport is not None else None,
+            "icon": icon,
+        }
+        updates = {key: value for key, value in fields.items() if value is not None}
+        if not updates:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in updates)
         with self.conn:
-            if title is not None and viewport is not None:
-                self.conn.execute(
-                    "UPDATE canvases SET title = ?, viewport_json = ?, updated_at = ? WHERE id = ?",
-                    (title, json.dumps(viewport), now_ms, canvas_id),
-                )
-            elif title is not None:
-                self.conn.execute(
-                    "UPDATE canvases SET title = ?, updated_at = ? WHERE id = ?",
-                    (title, now_ms, canvas_id),
-                )
-            elif viewport is not None:
-                self.conn.execute(
-                    "UPDATE canvases SET viewport_json = ?, updated_at = ? WHERE id = ?",
-                    (json.dumps(viewport), now_ms, canvas_id),
-                )
+            self.conn.execute(
+                f"UPDATE canvases SET {assignments}, updated_at = ? WHERE id = ?",
+                (*updates.values(), int(time.time() * 1000), canvas_id),
+            )
             if title is not None:
                 self.conn.execute(
                     "UPDATE cards SET title = ? WHERE subcanvas_id = ? AND kind = 'subcanvas'",
@@ -452,6 +470,7 @@ class SQLiteDatabase:
             "id": meta["id"],
             "parentCanvasId": meta["parentCanvasId"],
             "title": meta["title"],
+            "icon": meta["icon"],
             "viewport": meta["viewport"],
             "cards": cards,
             "connections": connections,
@@ -477,16 +496,17 @@ class SQLiteDatabase:
         )
         created_at = existing["createdAt"] if existing else now_ms
         viewport = data.get("viewport") or (existing["viewport"] if existing else {"x": 0.0, "y": 0.0, "zoom": 1.0})
+        icon = (data.get("icon") or "") if "icon" in data else ((existing["icon"] or "") if existing else "")
         cards = data.get("cards") or []
         groups = data.get("groups") or []
         connections = data.get("connections") or []
 
         with self.conn:
             self.conn.execute(
-                "INSERT INTO canvases (id, parent_canvas_id, title, viewport_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET title = excluded.title, viewport_json = excluded.viewport_json, updated_at = excluded.updated_at",
-                (canvas_id, eff_parent, eff_title, json.dumps(viewport), created_at, now_ms),
+                "INSERT INTO canvases (id, parent_canvas_id, title, icon, viewport_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET title = excluded.title, icon = excluded.icon, viewport_json = excluded.viewport_json, updated_at = excluded.updated_at",
+                (canvas_id, eff_parent, eff_title, icon, json.dumps(viewport), created_at, now_ms),
             )
 
             # Ensure child subcanvases referenced by subcanvas cards exist before inserting FK references
@@ -497,8 +517,8 @@ class SQLiteDatabase:
                     sub_exists = self.conn.execute("SELECT id FROM canvases WHERE id = ?", (sub_id,)).fetchone()
                     if sub_exists is None:
                         self.conn.execute(
-                            "INSERT INTO canvases (id, parent_canvas_id, title, viewport_json, created_at, updated_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO canvases (id, parent_canvas_id, title, icon, viewport_json, created_at, updated_at) "
+                            "VALUES (?, ?, ?, '', ?, ?, ?)",
                             (sub_id, canvas_id, sub_title, json.dumps({"x": 0.0, "y": 0.0, "zoom": 1.0}), now_ms, now_ms),
                         )
                     else:

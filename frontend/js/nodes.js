@@ -2966,6 +2966,7 @@ class NodeManager {
           id: newSubId,
           parentCanvasId,
           title: childTitle,
+          icon: sourceSub ? (sourceSub.icon ?? null) : store.getCanvasIcon(oldSubId),
           breadcrumbs: childBreadcrumbs,
           viewport: sourceSub?.viewport ? JSON.parse(JSON.stringify(sourceSub.viewport)) : { x: 0, y: 0, zoom: 1.0 },
           cards: innerCards,

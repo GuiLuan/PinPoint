@@ -953,6 +953,33 @@ class PinPointApiTestCase(unittest.TestCase):
         _, tree_after = self._request("GET", "/canvases")
         self.assertEqual([c["id"] for c in tree_after["data"]], ["root"])
 
+    def test_canvas_tree_uses_parent_card_header_color(self) -> None:
+        status, parent = self._request("POST", "/canvases/root/subcanvases", {
+            "title": "Parent", "headerColor": "#0a84ff",
+        })
+        self.assertEqual(status, 201)
+        parent_id = parent["data"]["canvas"]["id"]
+        status, child = self._request("POST", f"/canvases/{parent_id}/subcanvases", {
+            "title": "Child", "headerColor": "#bf5af2",
+        })
+        self.assertEqual(status, 201)
+        child_id = child["data"]["canvas"]["id"]
+        card_id = child["data"]["card"]["id"]
+
+        def tree_colors() -> dict:
+            status, tree = self._request("GET", "/canvases")
+            self.assertEqual(status, 200)
+            return {row["id"]: row["headerColor"] for row in tree["data"]}
+
+        self.assertEqual(tree_colors(), {"root": None, parent_id: "#0a84ff", child_id: "#bf5af2"})
+        card_path = f"/cards/{card_id}?canvasId={parent_id}"
+        status, _ = self._request("PATCH", card_path, {"headerColor": "#30d158"})
+        self.assertEqual(status, 200)
+        self.assertEqual(tree_colors()[child_id], "#30d158")
+        status, _ = self._request("PATCH", card_path, {"headerColor": None})
+        self.assertEqual(status, 200)
+        self.assertEqual(tree_colors(), {"root": None, parent_id: "#0a84ff", child_id: None})
+
     def test_pack_cards_into_subcanvas_and_import_pinpoint(self) -> None:
         status, sub_res = self._request("POST", "/canvases/root/subcanvases", {
             "title": "Packed Canvas",
@@ -976,6 +1003,57 @@ class PinPointApiTestCase(unittest.TestCase):
         _, target_loaded = self._request("GET", f"/canvases/{target_id}")
         self.assertEqual(len(target_loaded["data"]["cards"]), 2)
         self.assertEqual(len(target_loaded["data"]["connections"]), 1)
+
+    def test_canvas_icons_survive_nested_import_and_clone(self) -> None:
+        def create_canvas(parent_id, title):
+            status, response = self._request("POST", f"/canvases/{parent_id}/subcanvases", {"title": title})
+            self.assertEqual(status, 201)
+            return response["data"]["canvas"]["id"]
+
+        source_id = create_canvas("root", "Source")
+        child_id = create_canvas(source_id, "Child")
+        leaf_id = create_canvas(child_id, "Leaf")
+        for canvas_id, icon in [(source_id, "book-open"), (child_id, "compass"), (leaf_id, "star")]:
+            status, response = self._request("PATCH", f"/canvases/{canvas_id}", {"icon": icon})
+            self.assertEqual(status, 200)
+            self.assertEqual(response["data"]["icon"], icon)
+
+        _, response = self._request("GET", f"/canvases/{source_id}/export")
+        exported = response["data"]
+        target_id = create_canvas("root", "Import Target")
+        status, _ = self._request("POST", f"/canvases/{target_id}/import", exported)
+        self.assertEqual(status, 200)
+
+        _, response = self._request("GET", "/canvases/root")
+        source_card = next(c for c in response["data"]["cards"] if c.get("subcanvasId") == source_id)
+        status, response = self._request("POST", f"/cards/{source_card['id']}/clone", {})
+        self.assertEqual(status, 201)
+        clone_id = response["data"]["subcanvasId"]
+
+        _, response = self._request("GET", "/canvases")
+        rows = response["data"]
+        seen = set()
+        for tree_id in (source_id, target_id, clone_id):
+            row = next(r for r in rows if r["id"] == tree_id)
+            for icon in ("book-open", "compass", "star"):
+                self.assertEqual(row["icon"], icon)
+                self.assertNotIn(row["id"], seen)
+                seen.add(row["id"])
+                children = [r for r in rows if r["parentCanvasId"] == row["id"]]
+                self.assertEqual(len(children), 0 if icon == "star" else 1)
+                if children:
+                    row = children[0]
+        self.assertIn(child_id, seen)
+        self.assertIn(leaf_id, seen)
+
+    def test_canvas_icon_reset_and_graph_sync(self) -> None:
+        status, response = self._request("PATCH", "/canvases/root", {"icon": "star"})
+        self.assertEqual(status, 200)
+        graph = {key: response["data"][key] for key in ("cards", "connections", "groups")}
+        for icon_fields, expected in [({}, "star"), ({"icon": "folder"}, "folder"), ({"icon": None}, None)]:
+            status, response = self._request("PUT", "/canvases/root?mode=sync", {**graph, **icon_fields})
+            self.assertEqual(status, 200)
+            self.assertEqual(response["data"]["icon"], expected)
 
 
 if __name__ == "__main__":

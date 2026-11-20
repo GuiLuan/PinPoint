@@ -11,6 +11,7 @@ class SyncManager {
     this.eventSource = null;
     this.connected = false;
     this.isSaving = false;
+    this.settingsSavePromise = null;
     this.lastRevision = -1;
     this.isApplyingRemote = false;
     this.pendingEvent = null;
@@ -288,7 +289,12 @@ class SyncManager {
           return;
         }
 
-        if (evt.type === 'CANVAS_CREATED' || evt.type === 'CANVAS_DELETED' || evt.type === 'CANVAS_UPDATED') {
+        const mayHaveChangedPortalColor = (
+          evt.type === 'CARD_UPDATED' || evt.type === 'CARDS_BATCH_MUTATED' || evt.type === 'STATE_RESTORED'
+        ) && evt.state?.cards?.some(card =>
+          card.kind === 'subcanvas' && (evt.type !== 'CARD_UPDATED' || card.id === evt.payload?.cardId)
+        );
+        if (evt.type === 'CANVAS_CREATED' || evt.type === 'CANVAS_DELETED' || evt.type === 'CANVAS_UPDATED' || evt.type === 'GRAPH_SYNCED' || evt.type === 'GRAPH_REPLACED' || mayHaveChangedPortalColor) {
           store.refreshCanvasTree();
         }
 
@@ -398,23 +404,35 @@ class SyncManager {
   }
 
   async pushSettingsNow() {
+    if (this.settingsSavePromise) return this.settingsSavePromise;
     if (!this.connected || store.isFocusMode) return false;
-    try {
-      const res = await fetch(`${API_BASE}/settings`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-PinPoint-Client': this.clientId
-        },
-        body: JSON.stringify(store.state.settings)
-      });
-      if (res.ok) {
-        store.settingsDirty = false;
-        this.updateStatusDot();
+    if (!store.settingsDirty) return true;
+
+    // Settings can change while a PATCH is in flight. Send the latest version next.
+    this.settingsSavePromise = Promise.resolve().then(async () => {
+      try {
+        while (store.settingsDirty) {
+          if (!this.connected || store.isFocusMode) return false;
+          const version = store.settingsEditVersion;
+          const res = await fetch(`${API_BASE}/settings`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-PinPoint-Client': this.clientId
+            },
+            body: JSON.stringify(store.state.settings)
+          });
+          if (!res.ok) return false;
+          store.clearSettingsDirty(version);
+        }
         return true;
+      } catch (e) {
+        return false;
+      } finally {
+        this.settingsSavePromise = null;
       }
-    } catch (e) {}
-    return false;
+    });
+    return this.settingsSavePromise;
   }
 
   _sortCanvasIdsTopDown(ids) {
@@ -456,20 +474,18 @@ class SyncManager {
       const serverCanvasIds = new Set((store.canvasTree || []).map(r => r.id));
       const deletedIds = [...store.pendingDeletedCanvasIds];
       for (const delId of deletedIds) {
-        if (!serverCanvasIds.has(delId)) {
-          store.pendingDeletedCanvasIds.delete(delId);
-          continue;
-        }
-        try {
+        if (!store.pendingDeletedCanvasIds.has(delId)) continue;
+        if (serverCanvasIds.has(delId)) {
           const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(delId)}`, {
             method: 'DELETE',
             headers: { 'X-PinPoint-Client': this.clientId }
           });
-          if (res.ok || res.status === 404) {
-            store.pendingDeletedCanvasIds.delete(delId);
+          if (!res.ok && res.status !== 404) {
+            throw new Error(`Delete canvas ${delId} failed with HTTP ${res.status}`);
           }
-        } catch (e) {
-          throw e;
+        }
+        if (store.pendingDeletedCanvasIds.delete(delId)) {
+          store.pendingCanvasIcons.delete(delId);
         }
       }
 
@@ -477,19 +493,22 @@ class SyncManager {
       const reachableIds = new Set(store.getCanvasHierarchy().map(r => r.id));
       reachableIds.add('root');
       const dirtyIds = this._sortCanvasIdsTopDown(store.dirtyCanvasIds);
-      const savedIds = [];
+      const savedVersions = new Map();
+      const savedCanvasIds = new Set();
 
       for (const cid of dirtyIds) {
+        const editVersion = store.canvasEditVersions.get(cid) || 0;
         if (!reachableIds.has(cid)) {
+          savedVersions.set(cid, editVersion);
           store.canvasesCache.delete(cid);
-          savedIds.push(cid);
+          store.pendingCanvasIcons.delete(cid);
           continue;
         }
         const entry = cid === store.activeCanvasId
           ? store._saveActiveToCacheMap(true)
           : store.canvasesCache.get(cid);
         if (!entry) {
-          savedIds.push(cid);
+          savedVersions.set(cid, editVersion);
           continue;
         }
 
@@ -506,7 +525,6 @@ class SyncManager {
           parentCanvasId: entry.parentCanvasId ?? null,
           title: entry.title || (cid === 'root' ? '主画布' : '子画布'),
           viewport: entry.viewport || { x: 0, y: 0, zoom: 1.0 },
-          settings: store.state.settings,
           cards: cleanCards,
           connections: entry.connections || [],
           groups: entry.groups || []
@@ -528,24 +546,31 @@ class SyncManager {
         if (typeof json?.revision === 'number') {
           this.lastRevision = Math.max(this.lastRevision, json.revision);
         }
-        savedIds.push(cid);
+        if (json?.data?.skippedOrphan) continue;
+        savedVersions.set(cid, editVersion);
+        savedCanvasIds.add(cid);
       }
 
-      // 3. Sync settings if dirty (and no canvases pushed it already)
-      let clearedSettings = false;
-      if (store.settingsDirty) {
-        const okSettings = await this.pushSettingsNow();
-        clearedSettings = okSettings;
+      if (!await store.flushPendingCanvasIcons(savedCanvasIds)) {
+        throw new Error('Save canvas icons failed');
       }
 
-      store.clearDirtyFor(savedIds, clearedSettings || savedIds.length > 0);
+      if (store.settingsDirty && !await this.pushSettingsNow()) {
+        throw new Error('Save settings failed');
+      }
+
+      // Keep local portal colors visible until the tree has fetched the saved colors.
       await store.refreshCanvasTree();
+      const unchangedIds = [...savedVersions.keys()].filter(cid =>
+        (store.canvasEditVersions.get(cid) || 0) === savedVersions.get(cid)
+      );
+      store.clearDirtyFor(unchangedIds);
 
       if (manual) {
         store.emitToast('已保存', 'success');
       }
       this.updateStatusDot();
-      return { ok: true, savedCount: savedIds.length };
+      return { ok: true, savedCount: savedCanvasIds.size };
     } catch (e) {
       console.warn('[PinPoint Sync] Save failed:', e);
       // Re-verify health in case server went down

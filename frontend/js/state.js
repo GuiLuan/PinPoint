@@ -98,6 +98,12 @@ class StateManager {
   constructor() {
     this.activeCanvasId = 'root';
     this.activeCanvasTitle = '主画布';
+    this.activeCanvasIcon = null;
+    this.pendingCanvasIcons = new Map();
+    this._canvasIconSavePromise = null;
+    this._canvasIconWriteVersion = 0;
+    this._canvasTreeRequestId = 0;
+    this._appliedCanvasTreeRequestId = 0;
     this.parentCanvasId = null;
     this.breadcrumbs = [{ id: 'root', title: '主画布' }];
 
@@ -111,13 +117,16 @@ class StateManager {
 
     this.canvasesCache = new Map();
     this.dirtyCanvasIds = new Set();
+    this.canvasEditVersions = new Map();
     this.pendingDeletedCanvasIds = new Set();
     this.deletedSubcanvasTrash = new Map();
     this.settingsDirty = false;
+    this.settingsEditVersion = 0;
     this.canvasTree = [{
       id: 'root',
       parentCanvasId: null,
       title: '主画布',
+      icon: null,
       depth: 0,
       breadcrumbs: [{ id: 'root', title: '主画布' }],
       cardCount: 2,
@@ -234,17 +243,22 @@ class StateManager {
 
   hasUnsavedChanges() {
     if (this.isFocusMode) return true;
-    return this.dirtyCanvasIds.size > 0 || this.pendingDeletedCanvasIds.size > 0 || this.settingsDirty;
+    return this.dirtyCanvasIds.size > 0 || this.pendingDeletedCanvasIds.size > 0 || this.pendingCanvasIcons.size > 0 || this.settingsDirty;
   }
 
   isCanvasDirty(canvasId) {
     return this.dirtyCanvasIds.has(canvasId);
   }
 
+  _markCanvasDirty(canvasId) {
+    this.dirtyCanvasIds.add(canvasId);
+    this.canvasEditVersions.set(canvasId, (this.canvasEditVersions.get(canvasId) || 0) + 1);
+  }
+
   markDirty(canvasId = this.activeCanvasId) {
     if (this.isFocusMode) return;
     if (canvasId) {
-      this.dirtyCanvasIds.add(canvasId);
+      this._markCanvasDirty(canvasId);
     }
     this.scheduleCacheWrite();
     this.listeners.forEach(fn => fn({ type: 'DIRTY_CHANGED', canvasId }, this.state));
@@ -253,11 +267,19 @@ class StateManager {
   markSettingsDirty() {
     if (this.isFocusMode) return;
     this.settingsDirty = true;
+    this.settingsEditVersion += 1;
     this.scheduleCacheWrite();
     this.listeners.forEach(fn => fn({ type: 'DIRTY_CHANGED', settingsDirty: true }, this.state));
   }
 
-  clearDirtyFor(canvasIds = [], clearedSettings = false) {
+  clearSettingsDirty(version) {
+    if (this.settingsEditVersion !== version) return;
+    this.settingsDirty = false;
+    idbCache.setMeta('settingsDirty', false);
+    this.notify({ type: 'DIRTY_CHANGED', settingsDirty: false });
+  }
+
+  clearDirtyFor(canvasIds = []) {
     canvasIds.forEach(id => {
       this.dirtyCanvasIds.delete(id);
       const cached = this.canvasesCache.get(id);
@@ -266,24 +288,21 @@ class StateManager {
         idbCache.putCanvas(cached);
       }
     });
-    if (clearedSettings) {
-      this.settingsDirty = false;
-    }
     idbCache.setMeta('dirtyCanvasIds', [...this.dirtyCanvasIds]);
-    idbCache.setMeta('settingsDirty', this.settingsDirty);
     idbCache.setMeta('pendingDeletedCanvasIds', [...this.pendingDeletedCanvasIds]);
     this.listeners.forEach(fn => fn({ type: 'DIRTY_CHANGED' }, this.state));
   }
 
   async restoreFromIndexedDB() {
     try {
-      const [cachedCanvases, activeId, cachedSettings, dirtyIds, deletedIds, settingsDirtyFlag] = await Promise.all([
+      const [cachedCanvases, activeId, cachedSettings, dirtyIds, deletedIds, settingsDirtyFlag, pendingIcons] = await Promise.all([
         idbCache.getAllCanvases(),
         idbCache.getMeta('activeCanvasId'),
         idbCache.getMeta('settings'),
         idbCache.getMeta('dirtyCanvasIds'),
         idbCache.getMeta('pendingDeletedCanvasIds'),
-        idbCache.getMeta('settingsDirty')
+        idbCache.getMeta('settingsDirty'),
+        idbCache.getMeta('pendingCanvasIcons')
       ]);
 
       if (Array.isArray(cachedCanvases)) {
@@ -296,6 +315,9 @@ class StateManager {
       }
       if (Array.isArray(deletedIds)) {
         deletedIds.forEach(id => this.pendingDeletedCanvasIds.add(id));
+      }
+      if (Array.isArray(pendingIcons)) {
+        this.pendingCanvasIcons = new Map(pendingIcons);
       }
       if (settingsDirtyFlag) {
         this.settingsDirty = true;
@@ -320,6 +342,9 @@ class StateManager {
   _loadCacheEntryIntoActive(entry) {
     this.activeCanvasId = entry.id || 'root';
     this.activeCanvasTitle = entry.title || (this.activeCanvasId === 'root' ? '主画布' : '子画布');
+    this.activeCanvasIcon = this.pendingCanvasIcons.has(this.activeCanvasId)
+      ? this.pendingCanvasIcons.get(this.activeCanvasId)
+      : (entry.icon || null);
     this.parentCanvasId = entry.parentCanvasId ?? null;
     this.breadcrumbs = Array.isArray(entry.breadcrumbs) && entry.breadcrumbs.length > 0
       ? clone(entry.breadcrumbs)
@@ -342,6 +367,7 @@ class StateManager {
       id: this.activeCanvasId,
       parentCanvasId: this.parentCanvasId,
       title: this.activeCanvasTitle,
+      icon: this.activeCanvasIcon || null,
       breadcrumbs: clone(this.breadcrumbs),
       viewport: clone(this.state.viewport),
       cards: clone(this.state.cards),
@@ -373,7 +399,8 @@ class StateManager {
       idbCache.setMeta('settings', this.state.settings),
       idbCache.setMeta('dirtyCanvasIds', [...this.dirtyCanvasIds]),
       idbCache.setMeta('pendingDeletedCanvasIds', [...this.pendingDeletedCanvasIds]),
-      idbCache.setMeta('settingsDirty', this.settingsDirty)
+      idbCache.setMeta('settingsDirty', this.settingsDirty),
+      idbCache.setMeta('pendingCanvasIcons', [...this.pendingCanvasIcons])
     ]);
   }
 
@@ -503,6 +530,7 @@ class StateManager {
     if (cid !== this.activeCanvasId) return false;
     if (!Array.isArray(canvasPayload.cards) || !Array.isArray(canvasPayload.connections)) return false;
 
+    // Canvas tree metadata is synchronized separately from graph events.
     if (canvasPayload.title) this.activeCanvasTitle = canvasPayload.title;
     if (canvasPayload.parentCanvasId !== undefined) this.parentCanvasId = canvasPayload.parentCanvasId;
     if (Array.isArray(canvasPayload.breadcrumbs) && canvasPayload.breadcrumbs.length > 0) {
@@ -556,9 +584,19 @@ class StateManager {
     return this.applyRemoteCanvas({ id: this.activeCanvasId, ...remoteState }, sourceEvent);
   }
 
-  setCanvasTree(treeRows) {
-    if (Array.isArray(treeRows)) {
+  setCanvasTree(treeRows, requestId = ++this._canvasTreeRequestId) {
+    if (Array.isArray(treeRows) && requestId > this._appliedCanvasTreeRequestId) {
+      this._appliedCanvasTreeRequestId = requestId;
       this.canvasTree = clone(treeRows);
+      for (const row of this.canvasTree) {
+        if (this.pendingCanvasIcons.has(row.id)) continue;
+        if (row.id === this.activeCanvasId) this.activeCanvasIcon = row.icon || null;
+        const cached = this.canvasesCache.get(row.id);
+        if (cached && cached.icon !== (row.icon || null)) {
+          cached.icon = row.icon || null;
+          idbCache.putCanvas(cached);
+        }
+      }
       this.listeners.forEach(fn => fn({ type: 'CANVAS_TREE_UPDATED', tree: this.canvasTree }, this.state));
     }
   }
@@ -593,32 +631,38 @@ class StateManager {
         id: cid,
         parentCanvasId: entry.parentCanvasId !== undefined ? entry.parentCanvasId : (existing.parentCanvasId ?? null),
         title: (cid === this.activeCanvasId ? this.activeCanvasTitle : entry.title) || existing.title || (cid === 'root' ? '主画布' : '子画布'),
+        icon: this.getCanvasIcon(cid),
         cardCount,
         subcanvasCount,
         dirty: this.dirtyCanvasIds.has(cid)
       });
     }
 
-    // Any parent canvas whose cards are loaded in memory defines its exact set of child subcanvasIds;
-    // filter out stale/orphan canvases not referenced by any subcanvas card in a loaded parent.
+    // For loaded parents, use their portal cards to filter orphan rows and show unsaved colors.
     const loadedParentChildren = new Map();
-    loadedParentChildren.set(
-      this.activeCanvasId,
-      new Set(this.state.cards.filter(c => c.kind === 'subcanvas' && c.subcanvasId).map(c => c.subcanvasId))
-    );
+    const collectPortals = (parentId, cards) => {
+      const portals = new Map();
+      for (const card of cards) {
+        if (card.kind === 'subcanvas' && card.subcanvasId && !portals.has(card.subcanvasId)) {
+          portals.set(card.subcanvasId, card);
+        }
+      }
+      loadedParentChildren.set(parentId, portals);
+    };
+    collectPortals(this.activeCanvasId, this.state.cards);
     for (const [cid, entry] of this.canvasesCache.entries()) {
-      if (cid === this.activeCanvasId) continue;
-      loadedParentChildren.set(
-        cid,
-        new Set((entry.cards || []).filter(c => c.kind === 'subcanvas' && c.subcanvasId).map(c => c.subcanvasId))
-      );
+      if (cid !== this.activeCanvasId) collectPortals(cid, entry.cards || []);
     }
 
-    for (const [cid, node] of [...map.entries()]) {
-      if (cid === 'root') continue;
+    for (const [cid, node] of map) {
       const pid = node.parentCanvasId;
-      if (pid && loadedParentChildren.has(pid) && !loadedParentChildren.get(pid).has(cid)) {
+      const portals = loadedParentChildren.get(pid);
+      if (cid === 'root' || !portals) continue;
+      const portal = portals.get(cid);
+      if (!portal) {
         map.delete(cid);
+      } else if (this.dirtyCanvasIds.has(pid) || node.headerColor === undefined) {
+        node.headerColor = portal.headerColor || null;
       }
     }
 
@@ -626,6 +670,7 @@ class StateManager {
       const crumbs = ensureParentBreadcrumbs(node.id);
       return {
         ...node,
+        icon: this.getCanvasIcon(node.id),
         breadcrumbs: crumbs,
         depth: Math.max(0, crumbs.length - 1),
         dirty: this.dirtyCanvasIds.has(node.id)
@@ -653,16 +698,93 @@ class StateManager {
 
   async refreshCanvasTree() {
     try {
-      const res = await fetch(`${API_BASE}/canvases`);
-      if (res.ok) {
+      while (true) {
+        const requestId = ++this._canvasTreeRequestId;
+        const iconWriteVersion = this._canvasIconWriteVersion;
+        const res = await fetch(`${API_BASE}/canvases`);
+        if (!res.ok) break;
         const body = await res.json();
-        if (body?.ok && Array.isArray(body.data)) {
-          this.setCanvasTree(body.data);
-          return body.data;
-        }
+        if (!body?.ok || !Array.isArray(body.data)) break;
+        // A tree fetched before a PATCH completed may still contain the old icon.
+        if (iconWriteVersion !== this._canvasIconWriteVersion) continue;
+        this.setCanvasTree(body.data, requestId);
+        return this.canvasTree;
       }
     } catch (e) {}
     return this.getCanvasHierarchy();
+  }
+
+  getCanvasIcon(canvasId) {
+    if (this.pendingCanvasIcons.has(canvasId)) return this.pendingCanvasIcons.get(canvasId);
+    if (canvasId === this.activeCanvasId) return this.activeCanvasIcon;
+    const entry = this.canvasesCache.get(canvasId);
+    if (entry?.icon !== undefined) return entry.icon;
+    return this.canvasTree.find(row => row.id === canvasId)?.icon || null;
+  }
+
+  async setCanvasIcon(canvasId, iconKey) {
+    if (!canvasId || this.pendingDeletedCanvasIds.has(canvasId)) return false;
+    const icon = typeof iconKey === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(iconKey) ? iconKey : null;
+    this.pendingCanvasIcons.set(canvasId, icon);
+    if (canvasId === this.activeCanvasId) this.activeCanvasIcon = icon;
+    const entry = canvasId === this.activeCanvasId
+      ? this._saveActiveToCacheMap()
+      : this.canvasesCache.get(canvasId);
+    if (entry) {
+      entry.icon = icon;
+      idbCache.putCanvas(entry);
+    }
+    this.notifyCanvasTreeUpdated();
+    this.notify({ type: 'DIRTY_CHANGED', canvasId });
+    await idbCache.setMeta('pendingCanvasIcons', [...this.pendingCanvasIcons]);
+    return this.flushPendingCanvasIcons();
+  }
+
+  async flushPendingCanvasIcons(savedCanvasIds) {
+    if (this._canvasIconSavePromise) {
+      const ok = await this._canvasIconSavePromise;
+      if (!ok) return false;
+      // A graph save may have created canvases the in-flight flush skipped.
+      return this.flushPendingCanvasIcons(savedCanvasIds);
+    }
+    if (this.pendingCanvasIcons.size === 0) return true;
+    if (!window.__sync?.connected) return false;
+    this._canvasIconSavePromise = Promise.resolve().then(async () => {
+      try {
+        for (const canvasId of this.pendingCanvasIcons.keys()) {
+          const exists = savedCanvasIds?.has(canvasId) || this.canvasTree.some(row => row.id === canvasId);
+          if (!exists) continue;
+          while (this.pendingCanvasIcons.has(canvasId) && !this.pendingDeletedCanvasIds.has(canvasId)) {
+            const icon = this.pendingCanvasIcons.get(canvasId);
+            const res = await fetch(`${API_BASE}/canvases/${encodeURIComponent(canvasId)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', 'X-PinPoint-Client': window.__sync.clientId || '' },
+              body: JSON.stringify({ icon })
+            });
+            if (!res.ok) return false;
+            this._canvasIconWriteVersion += 1;
+            const row = this.canvasTree.find(row => row.id === canvasId);
+            if (row) row.icon = icon;
+            if (this.pendingCanvasIcons.get(canvasId) === icon) {
+              this.pendingCanvasIcons.delete(canvasId);
+              const cached = this.canvasesCache.get(canvasId);
+              if (cached && cached.icon !== icon) {
+                cached.icon = icon;
+                idbCache.putCanvas(cached);
+              }
+            }
+          }
+        }
+        return true;
+      } catch (e) {
+        return false;
+      } finally {
+        this._canvasIconSavePromise = null;
+        await idbCache.setMeta('pendingCanvasIcons', [...this.pendingCanvasIcons]);
+        this.notify({ type: 'DIRTY_CHANGED' });
+      }
+    });
+    return this._canvasIconSavePromise;
   }
 
   async renameCanvas(canvasId, newTitle) {
@@ -833,6 +955,7 @@ class StateManager {
                 id: pid,
                 parentCanvasId: json.data.parentCanvasId ?? null,
                 title: json.data.title || (pid === 'root' ? '主画布' : '子画布'),
+                icon: json.data.icon || null,
                 breadcrumbs: json.data.breadcrumbs || [{ id: pid, title: json.data.title || '画布' }],
                 viewport: json.data.viewport || { x: 0, y: 0, zoom: 1.0 },
                 cards: json.data.cards || [],
@@ -887,7 +1010,7 @@ class StateManager {
         parentEntry.dirty = true;
         parentEntry.updatedAt = Date.now();
         this.canvasesCache.set(pid, parentEntry);
-        this.dirtyCanvasIds.add(pid);
+        this._markCanvasDirty(pid);
         await idbCache.putCanvas(parentEntry);
       }
 
@@ -977,7 +1100,7 @@ class StateManager {
       updatedAt: Date.now()
     };
     this.canvasesCache.set(subcanvasId, childEntry);
-    this.dirtyCanvasIds.add(subcanvasId);
+    this._markCanvasDirty(subcanvasId);
     idbCache.putCanvas(childEntry);
 
     const card = {
@@ -1024,10 +1147,12 @@ class StateManager {
         if (res.ok) {
           const json = await res.json();
           if (json?.ok && json.data) {
+            const treeRow = this.canvasTree.find(row => row.id === targetCanvasId);
             targetData = {
               id: json.data.id || targetCanvasId,
               parentCanvasId: json.data.parentCanvasId ?? null,
               title: json.data.title || '子画布',
+              icon: treeRow ? (treeRow.icon || null) : (json.data.icon || null),
               breadcrumbs: json.data.breadcrumbs || [{ id: targetCanvasId, title: json.data.title || '子画布' }],
               viewport: json.data.viewport || { x: 0, y: 0, zoom: 1.0 },
               cards: json.data.cards || [],
@@ -1109,11 +1234,14 @@ class StateManager {
   putCachedCanvas(entry) {
     if (!entry || !entry.id) return;
     this.pendingDeletedCanvasIds.delete(entry.id);
+    if (entry.icon && !this.canvasTree.some(row => row.id === entry.id) && !this.pendingCanvasIcons.has(entry.id)) {
+      this.pendingCanvasIcons.set(entry.id, entry.icon);
+    }
     this.canvasesCache.set(entry.id, entry);
     if (entry.dirty) {
-      this.dirtyCanvasIds.add(entry.id);
+      this._markCanvasDirty(entry.id);
     }
-    idbCache.putCanvas(entry);
+    return idbCache.putCanvas(entry);
   }
 
   notifyCanvasTreeUpdated() {
@@ -1125,6 +1253,9 @@ class StateManager {
     return {
       id: entry.id || fallbackId,
       title: entry.title || '子画布',
+      icon: this.pendingCanvasIcons.has(entry.id || fallbackId)
+        ? this.pendingCanvasIcons.get(entry.id || fallbackId)
+        : (this.getCanvasIcon(entry.id || fallbackId) ?? entry.icon ?? null),
       viewport: clone(entry.viewport || { x: 0, y: 0, zoom: 1.0 }),
       cards: clone(entry.cards || []).map(c => {
         if (c.kind === 'subcanvas') {
@@ -1153,6 +1284,7 @@ class StateManager {
         entry = {
           id: this.activeCanvasId,
           title: this.activeCanvasTitle,
+          icon: this.activeCanvasIcon,
           viewport: this.state.viewport,
           cards: this.state.cards,
           connections: this.state.connections,
@@ -1189,6 +1321,7 @@ class StateManager {
         entry = {
           id: this.activeCanvasId,
           title: this.activeCanvasTitle,
+          icon: this.activeCanvasIcon,
           viewport: this.state.viewport,
           cards: this.state.cards,
           connections: this.state.connections,
@@ -1221,6 +1354,7 @@ class StateManager {
                 id: sid,
                 parentCanvasId: null,
                 title: data.title || '子画布',
+                icon: data.icon || null,
                 viewport: data.viewport || { x: 0, y: 0, zoom: 1.0 },
                 cards: data.cards || [],
                 connections: data.connections || [],
@@ -1242,6 +1376,7 @@ class StateManager {
                     id: nestedId,
                     parentCanvasId: nestedData.parentCanvasId ?? null,
                     title: nestedSnap.title,
+                    icon: nestedSnap.icon,
                     viewport: clone(nestedSnap.viewport),
                     cards: clone(nestedSnap.cards),
                     connections: clone(nestedSnap.connections),
@@ -1286,6 +1421,7 @@ class StateManager {
       if (cached) {
         this.deletedSubcanvasTrash.set(id, clone(cached));
       }
+      // Suspend pending icon changes until deletion is saved or undone.
       this.pendingDeletedCanvasIds.add(id);
       this.dirtyCanvasIds.delete(id);
       this.canvasesCache.delete(id);
@@ -1305,13 +1441,20 @@ class StateManager {
       const trashed = this.deletedSubcanvasTrash.get(id);
       if (trashed) {
         trashed.dirty = true;
-        this.canvasesCache.set(id, trashed);
-        this.dirtyCanvasIds.add(id);
-        idbCache.putCanvas(trashed);
+        const icon = trashed.icon ?? null;
+        if (!this.pendingCanvasIcons.has(id) && (icon || this.canvasTree.some(row => row.id === id && row.icon))) {
+          this.pendingCanvasIcons.set(id, icon);
+        }
+        this.putCachedCanvas(trashed);
         for (const c of trashed.cards || []) {
           if (c.kind === 'subcanvas' && c.subcanvasId && !seen.has(c.subcanvasId)) {
             queue.push(c.subcanvasId);
           }
+        }
+      }
+      for (const row of this.canvasTree || []) {
+        if (row.parentCanvasId === id && !seen.has(row.id)) {
+          queue.push(row.id);
         }
       }
     }
@@ -2130,6 +2273,7 @@ class StateManager {
           id: this.activeCanvasId,
           parentCanvasId: this.parentCanvasId,
           title: this.activeCanvasTitle,
+          icon: this.activeCanvasIcon || null,
           viewport: clone(this.state.viewport),
           cards: clone(this.state.cards).map(c => {
             if (c.kind === 'subcanvas') {
@@ -2148,6 +2292,7 @@ class StateManager {
           id: cached.id,
           parentCanvasId: cached.parentCanvasId ?? null,
           title: cached.title || '子画布',
+          icon: cached.icon || null,
           viewport: clone(cached.viewport || { x: 0, y: 0, zoom: 1.0 }),
           cards: clone(cached.cards || []).map(c => {
             if (c.kind === 'subcanvas') {
@@ -2171,6 +2316,7 @@ class StateManager {
       timestamp: Date.now(),
       canvasId: rootData.id || canvasId,
       title: rootData.title || (canvasId === 'root' ? '主画布' : '子画布'),
+      icon: this.pendingCanvasIcons.has(canvasId) ? this.pendingCanvasIcons.get(canvasId) : (rootData.icon ?? null),
       viewport: rootData.viewport || { x: 0, y: 0, zoom: 1.0 },
       settings: clone(this.state.settings),
       cards: rootData.cards || [],
@@ -2190,7 +2336,9 @@ class StateManager {
       seen.add(sid);
       const liveSub = getLiveEntry(sid) || subcanvases[sid];
       if (liveSub) {
-        subcanvases[sid] = liveSub;
+        subcanvases[sid] = this.pendingCanvasIcons.has(sid)
+          ? { ...liveSub, icon: this.pendingCanvasIcons.get(sid) }
+          : liveSub;
         for (const sc of liveSub.cards || []) {
           if (sc.kind === 'subcanvas' && sc.subcanvasId && !seen.has(sc.subcanvasId)) {
             queue.push(sc.subcanvasId);
@@ -2410,6 +2558,7 @@ class StateManager {
       id: newSubcanvasId,
       parentCanvasId: this.activeCanvasId,
       title: cleanTitle,
+      icon: typeof data.icon === 'string' ? data.icon : null,
       breadcrumbs: [...this.breadcrumbs, { id: newSubcanvasId, title: cleanTitle }],
       viewport: rootNorm.viewport,
       cards: rootNorm.cards,
@@ -2432,6 +2581,7 @@ class StateManager {
         id: mappedSid,
         parentCanvasId: mappedParent === mappedSid ? newSubcanvasId : mappedParent,
         title: (typeof rawSub.title === 'string' && rawSub.title.trim()) ? rawSub.title.trim() : '子画布',
+        icon: typeof rawSub.icon === 'string' ? rawSub.icon : null,
         viewport: normSub.viewport,
         cards: normSub.cards,
         connections: normSub.connections,
@@ -2476,10 +2626,9 @@ class StateManager {
       }
     }
 
-    for (const [sid, entry] of importedEntries.entries()) {
-      this.canvasesCache.set(sid, entry);
-      this.dirtyCanvasIds.add(sid);
-      await idbCache.putCanvas(entry);
+    for (const sid of visited) {
+      const entry = importedEntries.get(sid);
+      if (entry) await this.putCachedCanvas(entry);
     }
 
     // Place the new subcanvas portal near viewport center (nudge if colliding)

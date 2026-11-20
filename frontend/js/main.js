@@ -7,6 +7,7 @@ import { minimap } from './minimap.js';
 import { sync } from './sync.js';
 import { library } from './library.js';
 import { media } from './media.js';
+import { CANVAS_ICONS, defaultCanvasIcon, renderCanvasIcon } from './canvasIcons.js';
 
 function escapeHtml(str) {
   return String(str || '')
@@ -360,6 +361,10 @@ async function initApp() {
       return true;
     },
     handleEscape: () => {
+      if (canvasIconPickerEl) {
+        closeCanvasIconPicker(true);
+        return true;
+      }
       if (!isCanvasesDrawerOpen()) return false;
       const inCanvases = canvasesFocusActive || canvasesDrawerEl?.contains(document.activeElement);
       if (selectedTreeCanvasIds.size > 0 && inCanvases) {
@@ -454,6 +459,7 @@ async function initApp() {
   function closeCanvasesDrawer() {
     if (!canvasesDrawerEl) return;
     canvasesFocusActive = false;
+    closeCanvasIconPicker();
     if (isCanvasesCheckMode) {
       isCanvasesCheckMode = false;
       btnCanvasesCheckModeEl?.classList.remove('is-active');
@@ -517,6 +523,78 @@ async function initApp() {
       canvasesCountBadgeEl.textContent = String(visibleCount);
     }
   }
+
+  let canvasIconPickerEl = null;
+  let canvasIconPickerCanvasId = null;
+
+  function closeCanvasIconPicker(restoreFocus = false) {
+    canvasIconPickerEl?.remove();
+    canvasIconPickerEl = null;
+    if (restoreFocus && canvasIconPickerCanvasId) {
+      canvasTreeListEl?.querySelector(`[data-canvas-id="${CSS.escape(canvasIconPickerCanvasId)}"] .canvas-tree-icon-btn`)?.focus();
+    }
+    canvasIconPickerCanvasId = null;
+  }
+
+  function openCanvasIconPicker(row, anchor) {
+    closeCanvasIconPicker();
+    const picker = document.createElement('div');
+    picker.className = 'canvas-icon-picker';
+    picker.setAttribute('role', 'dialog');
+    picker.setAttribute('aria-label', `为${row.title}选择图标`);
+    const selectedKey = CANVAS_ICONS.has(row.icon) ? row.icon : '';
+    picker.innerHTML = [...CANVAS_ICONS.entries()].map(([key, icon]) => `
+      <button type="button" class="canvas-icon-option${selectedKey === key ? ' is-selected' : ''}" data-icon="${key}" title="${icon.label}" aria-label="${icon.label}" aria-pressed="${selectedKey === key}">
+        ${renderCanvasIcon(key)}
+      </button>`).join('') + `
+      <button type="button" class="canvas-icon-option canvas-icon-clear${!selectedKey ? ' is-selected' : ''}" data-icon="" title="使用默认图标" aria-label="使用默认图标" aria-pressed="${!selectedKey}">恢复默认</button>`;
+    picker.addEventListener('mousedown', (e) => e.stopPropagation());
+    picker.addEventListener('click', (e) => {
+      const option = e.target.closest('.canvas-icon-option');
+      if (!option) return;
+      const iconKey = option.dataset.icon || null;
+      closeCanvasIconPicker();
+      store.setCanvasIcon(row.id, iconKey);
+      canvasTreeListEl?.querySelector(`[data-canvas-id="${CSS.escape(row.id)}"] .canvas-tree-icon-btn`)?.focus();
+    });
+    picker.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        closeCanvasIconPicker(true);
+        return;
+      }
+      const options = [...picker.querySelectorAll('.canvas-icon-option')];
+      const index = options.indexOf(document.activeElement);
+      const offsets = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 6, ArrowUp: -6 };
+      if (e.key in offsets) {
+        e.preventDefault();
+        e.stopPropagation();
+        options[(index + offsets[e.key] + options.length) % options.length].focus();
+      }
+      if (e.key === 'Tab' && ((!e.shiftKey && index === options.length - 1) || (e.shiftKey && index === 0))) {
+        e.preventDefault();
+        options[e.shiftKey ? options.length - 1 : 0].focus();
+      }
+    });
+    document.body.appendChild(picker);
+    const rect = anchor.getBoundingClientRect();
+    const pickerRect = picker.getBoundingClientRect();
+    const below = rect.bottom + 4;
+    const above = rect.top - pickerRect.height - 4;
+    const top = below + pickerRect.height > window.innerHeight - 8 && above >= 8 ? above : below;
+    picker.style.left = `${Math.max(8, Math.min(window.innerWidth - pickerRect.width - 8, rect.left))}px`;
+    picker.style.top = `${Math.max(8, Math.min(window.innerHeight - pickerRect.height - 8, top))}px`;
+    canvasIconPickerEl = picker;
+    canvasIconPickerCanvasId = row.id;
+    picker.querySelector('.is-selected')?.focus();
+  }
+
+  document.addEventListener('mousedown', (e) => {
+    if (canvasIconPickerEl && !canvasIconPickerEl.contains(e.target) && !e.target.closest('.canvas-tree-icon-btn')) {
+      closeCanvasIconPicker();
+    }
+  }, true);
 
   function renderCanvasTreeDrawer() {
     if (!canvasTreeListEl) return;
@@ -617,18 +695,19 @@ async function initApp() {
         + (row.id === store.activeCanvasId ? ' is-active' : '')
         + (selectedTreeCanvasIds.has(row.id) ? ' is-selected' : '')
         + (isCanvasesCheckMode && !isChecked ? ' is-unchecked' : '');
-      itemEl.style.paddingLeft = `${6 + visibleDepth * 14}px`;
+      itemEl.style.setProperty('--canvas-tree-depth', visibleDepth);
 
       const dirtyMark = row.dirty ? '<span class="canvas-tree-dirty-dot" title="未保存"></span>' : '';
       const totalSub = (row.cardCount ?? 0) + (row.subcanvasCount ?? 0);
       const countText = totalSub > 0 ? String(totalSub) : '';
       const toggleHtml = hasChildren && !q
-        ? `<button type="button" class="canvas-tree-toggle-btn" title="${isCollapsed ? '展开' : '折叠'}">
-             <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.2" fill="none" style="transform: rotate(${isCollapsed ? '-90deg' : '0deg'}); transition: transform 0.14s ease;">
-               <polyline points="6 9 12 15 18 9"></polyline>
+        ? `<button type="button" class="canvas-tree-toggle-btn" title="${isCollapsed ? '展开' : '折叠'}" aria-expanded="${!isCollapsed}">
+             <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+               <path d="m9 6 6 6-6 6"></path>
              </svg>
            </button>`
-        : '<span class="canvas-tree-toggle-spacer"></span>';
+        : '<span class="canvas-tree-toggle-spacer" aria-hidden="true"></span>';
+      const iconKey = CANVAS_ICONS.has(row.icon) ? row.icon : defaultCanvasIcon(row);
       const checkHtml = isCanvasesCheckMode
         ? `<label class="canvas-tree-check-wrap" title="${isChecked ? '在画布树中隐藏' : '在画布树中显示'}">
              <input type="checkbox" class="canvas-tree-checkbox" ${isChecked ? 'checked' : ''} aria-label="显示 ${escapeHtml(row.title)}" />
@@ -639,8 +718,10 @@ async function initApp() {
       itemEl.innerHTML = `
         ${toggleHtml}
         ${checkHtml}
+        <button type="button" class="canvas-tree-icon-btn" title="设置图标" aria-label="设置 ${escapeHtml(row.title)} 的图标" aria-haspopup="dialog">
+          ${renderCanvasIcon(iconKey)}
+        </button>
         <button type="button" class="canvas-tree-jump-btn">
-          <span class="canvas-tree-icon">${visibleDepth > 0 ? '↳' : '◈'}</span>
           <span class="canvas-tree-name">${escapeHtml(row.title)}</span>
           <input type="text" class="canvas-tree-rename-input" style="display: none;" value="${escapeHtml(row.title)}" />
           ${dirtyMark}
@@ -794,6 +875,15 @@ async function initApp() {
         treeSelectionAnchorId = row.id;
         syncCanvasesSelectionVisuals(allRows);
         store.navigateToCanvas(row.id);
+      });
+
+      const iconBtn = itemEl.querySelector('.canvas-tree-icon-btn');
+      if (row.headerColor) {
+        iconBtn.querySelector('.canvas-tree-icon').style.color = row.headerColor;
+      }
+      iconBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openCanvasIconPicker(row, e.currentTarget);
       });
 
       itemEl.querySelector('.canvas-tree-rename-btn')?.addEventListener('click', startInlineRename);

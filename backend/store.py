@@ -73,6 +73,11 @@ _CAPSULE_SPAN_RE = re.compile(r"(<span\b[^>]*\btext-capsule\b[^>]*>)", re.IGNORE
 _DATA_PIN_RE = re.compile(r'(\bdata-pin-id=)(["\'])([^"\']*)\2', re.IGNORECASE)
 
 
+def _normalize_canvas_icon(value: Any) -> str:
+    # Keep keys from newer icon sets; the UI falls back if it doesn't know the key.
+    return value if isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", value) else ""
+
+
 class GraphStore:
     """Thread-safe PinPoint workspace store backed by SQLite with hierarchical subcanvases."""
 
@@ -243,6 +248,8 @@ class GraphStore:
                 if isinstance(raw, dict) and isinstance(raw.get("cards"), list) and isinstance(raw.get("connections"), list):
                     norm = self._normalize_state(raw)
                     self.db.save_canvas_data(ROOT_CANVAS_ID, norm, parent_canvas_id=None, title=raw.get("title") or ROOT_CANVAS_TITLE)
+                    if "icon" in raw:
+                        self.db.update_canvas_meta(ROOT_CANVAS_ID, icon=_normalize_canvas_icon(raw["icon"]))
                     self._import_subcanvases_dict(ROOT_CANVAS_ID, raw.get("subcanvases"))
                     self._canvases[ROOT_CANVAS_ID] = norm
                     self.has_workspace_file = True
@@ -765,6 +772,7 @@ class GraphStore:
                 "canvasId": cid,
                 "parentCanvasId": meta["parentCanvasId"],
                 "title": meta["title"],
+                "icon": meta["icon"],
                 "breadcrumbs": self.db.get_breadcrumbs(cid),
                 "cards": self._attach_thumbnails(self.state["cards"]),
                 "connections": copy.deepcopy(self.state["connections"]),
@@ -896,6 +904,9 @@ class GraphStore:
                 self.state["viewport"] = self._normalize_viewport({**self.state["viewport"], **patch["viewport"]})
                 self.db.update_canvas_meta(cid, viewport=self.state["viewport"])
 
+            if "icon" in patch:
+                self.db.update_canvas_meta(cid, icon=_normalize_canvas_icon(patch["icon"]))
+
             self._publish("CANVAS_UPDATED", {"canvasId": cid, "title": new_title or meta["title"]}, canvas_id=cid)
             return self.get_canvas(cid)
 
@@ -942,6 +953,7 @@ class GraphStore:
                 "timestamp": int(time.time() * 1000),
                 "canvasId": cid,
                 "title": meta["title"],
+                "icon": meta["icon"],
                 "viewport": copy.deepcopy(self.state["viewport"]),
                 "settings": copy.deepcopy(self.settings),
                 "cards": copy.deepcopy(self.state["cards"]),
@@ -966,6 +978,7 @@ class GraphStore:
                             "id": d_data["id"],
                             "parentCanvasId": d_data["parentCanvasId"],
                             "title": d_data["title"],
+                            "icon": d_data.get("icon"),
                             "viewport": d_data["viewport"],
                             "cards": d_cards,
                             "connections": d_data["connections"],
@@ -1000,39 +1013,72 @@ class GraphStore:
             graph_data = self.assets.import_zip_bundle(zip_bytes)
             return self.replace_graph(graph_data, canvas_id=canvas_id)
 
+    def _remap_conflicting_subcanvas_ids(self, data: dict[str, Any]) -> dict[str, Any]:
+        # An imported or cloned subtree must own its descendant canvases.
+        subcanvases = data.get("subcanvases")
+        subcanvases = subcanvases if isinstance(subcanvases, dict) else {}
+        graphs = [data, *(sub for sub in subcanvases.values() if isinstance(sub, dict))]
+        def subcanvas_cards(graphs):
+            for graph in graphs:
+                cards = graph.get("cards")
+                if isinstance(cards, list):
+                    for card in cards:
+                        if isinstance(card, dict) and card.get("kind") == "subcanvas":
+                            yield card
+
+        replacements: dict[str, str] = {}
+        for card in subcanvas_cards(graphs):
+            sid = card.get("subcanvasId")
+            if isinstance(sid, str) and sid not in replacements and self.db.has_canvas(sid):
+                replacements[sid] = self._next_id("canvas")
+        if not replacements:
+            return data
+
+        remapped = copy.deepcopy(data)
+        nested = remapped.get("subcanvases")
+        nested = nested if isinstance(nested, dict) else {}
+        remapped["subcanvases"] = {replacements.get(sid, sid): sub for sid, sub in nested.items()}
+        graphs = [remapped, *(sub for sub in nested.values() if isinstance(sub, dict))]
+        for card in subcanvas_cards(graphs):
+            sid = card.get("subcanvasId")
+            if isinstance(sid, str) and sid in replacements:
+                card["subcanvasId"] = replacements[sid]
+        return remapped
+
     def _import_subcanvases_dict(self, root_parent_id: str, subcanvases: Any) -> None:
         if not isinstance(subcanvases, dict):
             return
         pending = dict(subcanvases)
-        queue_ids = list(self.db.get_subcanvas_ids_on_canvas(root_parent_id))
+        queue_ids = [(sid, root_parent_id) for sid in self.db.get_subcanvas_ids_on_canvas(root_parent_id)]
         seen: set[str] = set()
         while queue_ids:
-            sid = queue_ids.pop(0)
+            sid, parent_id = queue_ids.pop(0)
             if sid in seen:
                 continue
             seen.add(sid)
             raw_sub = pending.get(sid)
             if not isinstance(raw_sub, dict):
                 continue
-            parent_id = raw_sub.get("parentCanvasId")
-            if not parent_id or not self.db.has_canvas(parent_id):
-                parent_id = root_parent_id
             norm_sub = self._normalize_state(raw_sub)
             title = (str(raw_sub.get("title") or "").strip()) or "子画布"
             self.db.save_canvas_data(sid, norm_sub, parent_canvas_id=parent_id, title=title)
+            if "icon" in raw_sub:
+                self.db.update_canvas_meta(sid, icon=_normalize_canvas_icon(raw_sub["icon"]))
             self._canvases[sid] = norm_sub
             self.undo_stacks[sid] = [self._snapshot(sid)]
             self.redo_stacks[sid] = []
             for next_sid in self.db.get_subcanvas_ids_on_canvas(sid):
                 if next_sid not in seen:
-                    queue_ids.append(next_sid)
+                    queue_ids.append((next_sid, sid))
 
     def import_canvas(self, canvas_id: str, data: dict[str, Any]) -> dict[str, Any]:
         return self.replace_graph(data, canvas_id=canvas_id)
 
     def get_graph(self, include: set[str] | None = None, canvas_id: str = ROOT_CANVAS_ID) -> dict[str, Any]:
         with self._lock, self._use_canvas(canvas_id) as cid:
+            meta = self.db.get_canvas_row(cid)
             result: dict[str, Any] = {
+                "icon": meta["icon"] if meta else None,
                 "cards": self._attach_thumbnails(self.state["cards"]),
                 "connections": copy.deepcopy(self.state["connections"]),
                 "groups": copy.deepcopy(self.state.get("groups", [])),
@@ -1042,7 +1088,6 @@ class GraphStore:
             if include is None or "settings" in include:
                 result["settings"] = copy.deepcopy(self.settings)
             if include and "meta" in include:
-                meta = self.db.get_canvas_row(cid)
                 result["canvasId"] = cid
                 result["title"] = meta["title"] if meta else ROOT_CANVAS_TITLE
                 result["breadcrumbs"] = self.db.get_breadcrumbs(cid)
@@ -1111,12 +1156,15 @@ class GraphStore:
                 self.settings = self._normalize_settings(data["settings"])
                 self.db.save_settings(self.settings)
 
+            data = self._remap_conflicting_subcanvas_ids(data)
             self.state = self._normalize_state(data)
             if "title" in data:
                 self.db.update_canvas_meta(
                     cid,
                     title=str(data.get("title") or "").strip() or (ROOT_CANVAS_TITLE if cid == ROOT_CANVAS_ID else "子画布"),
                 )
+            if "icon" in data:
+                self.db.update_canvas_meta(cid, icon=_normalize_canvas_icon(data["icon"]))
             self.db.save_canvas_data(cid, self.state)
             self._import_subcanvases_dict(cid, data.get("subcanvases"))
             self.undo_stack = [self._snapshot(cid)]
@@ -1147,6 +1195,12 @@ class GraphStore:
                         cid,
                         title=str(data.get("title") or "").strip() or (ROOT_CANVAS_TITLE if cid == ROOT_CANVAS_ID else "子画布"),
                     )
+                icon_changed = False
+                if "icon" in data:
+                    icon = _normalize_canvas_icon(data["icon"])
+                    icon_changed = (icon or None) != self.db.get_canvas_row(cid)["icon"]
+                    if icon_changed:
+                        self.db.update_canvas_meta(cid, icon=icon)
                 prev_snap = self._snapshot(cid)
                 prev_vp = copy.deepcopy(self.state["viewport"])
                 prev_settings = copy.deepcopy(self.settings)
@@ -1187,7 +1241,7 @@ class GraphStore:
                 next_snap = self._snapshot(cid)
                 if next_snap != prev_snap:
                     self._commit("GRAPH_SYNCED", canvas_id=cid)
-                elif self.state["viewport"] != prev_vp or self.settings != prev_settings:
+                elif self.state["viewport"] != prev_vp or self.settings != prev_settings or icon_changed:
                     self._publish("GRAPH_SYNCED", canvas_id=cid)
                 else:
                     self._persist_workspace(cid)
@@ -1599,10 +1653,12 @@ class GraphStore:
             return {"created": created, "updated": updated, "deletedIds": deleted}
 
     def _clone_canvas_subtree(self, src_canvas_id: str, new_parent_id: str) -> str:
-        exported = self.export_canvas(src_canvas_id, include_subcanvases=True)
+        exported = self._remap_conflicting_subcanvas_ids(self.export_canvas(src_canvas_id, include_subcanvases=True))
         new_cid = self._next_id("canvas")
         norm = self._normalize_state(exported)
         self.db.save_canvas_data(new_cid, norm, parent_canvas_id=new_parent_id, title=exported.get("title") or "子画布")
+        if exported.get("icon"):
+            self.db.update_canvas_meta(new_cid, icon=exported["icon"])
         self._canvases[new_cid] = norm
         self.undo_stacks[new_cid] = [self._snapshot(new_cid)]
         self.redo_stacks[new_cid] = []
