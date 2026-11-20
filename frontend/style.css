@@ -461,11 +461,17 @@ html[data-theme="light"] .node-group {
   background: var(--group-bg-hover, rgba(255, 255, 255, 0.035));
 }
 
+.node-group.selected,
+.node-group.selected:hover,
 .node-group.active,
 .node-group.active:hover {
-  cursor: grabbing;
   border-color: var(--group-theme, var(--accent));
   box-shadow: 0 0 0 1px var(--group-theme, var(--accent)), var(--elev-card);
+}
+
+.node-group.active .group-label,
+.node-group.active .group-title {
+  cursor: grabbing;
 }
 
 .node-group.group-drop-target {

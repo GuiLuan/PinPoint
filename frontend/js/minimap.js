@@ -398,8 +398,9 @@ class MinimapManager {
         const gw = g.width * scale;
         const gh = g.height * scale;
         this.ctx.fillStyle = isLight ? 'rgba(37, 34, 30, 0.04)' : 'rgba(255, 255, 255, 0.04)';
-        this.ctx.strokeStyle = isLight ? 'rgba(37, 34, 30, 0.2)' : 'rgba(255, 255, 255, 0.18)';
-        this.ctx.lineWidth = 1;
+        const isSelected = nodes?.selectedGroupIds.has(g.id);
+        this.ctx.strokeStyle = isSelected ? accentColor : (isLight ? 'rgba(37, 34, 30, 0.2)' : 'rgba(255, 255, 255, 0.18)');
+        this.ctx.lineWidth = isSelected ? 2 : 1;
         this.drawRoundRect(this.ctx, gx, gy, gw, gh, 3);
         this.ctx.fill();
         this.ctx.stroke();

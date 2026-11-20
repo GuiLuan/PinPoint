@@ -133,6 +133,7 @@ class GraphStore:
         self.selection: dict[str, Any] = {
             "canvasId": ROOT_CANVAS_ID,
             "cardIds": [],
+            "groupIds": [],
             "capsulePinId": None,
             "textSelection": None,
         }
@@ -1272,7 +1273,7 @@ class GraphStore:
                     "connections": [],
                     "groups": [],
                 })
-            self.selection = {"canvasId": cid, "cardIds": [], "capsulePinId": None, "textSelection": None}
+            self.selection = {"canvasId": cid, "cardIds": [], "groupIds": [], "capsulePinId": None, "textSelection": None}
             self.undo_stack = [self._snapshot(cid)]
             self.redo_stack = []
             self._publish("STATE_RESET", canvas_id=cid)
@@ -2585,6 +2586,11 @@ class GraphStore:
                 pruned_ids.append(cid)
         self.selection["cardIds"] = pruned_ids
 
+        existing_group_ids = {g["id"] for g in self.state.get("groups", [])}
+        self.selection["groupIds"] = list(dict.fromkeys(
+            gid for gid in self.selection.get("groupIds", []) if gid in existing_group_ids
+        ))
+
         cap_id = self.selection.get("capsulePinId")
         if cap_id and not self._find_capsule_info(cap_id):
             self.selection["capsulePinId"] = None
@@ -2609,6 +2615,7 @@ class GraphStore:
                 return {
                     "canvasId": target_cid,
                     "cardIds": card_ids,
+                    "groupIds": list(self.selection.get("groupIds", [])),
                     "count": len(card_ids),
                     "cards": selected_cards,
                     "capsulePinId": capsule_info["pinId"] if capsule_info else None,
@@ -2624,6 +2631,7 @@ class GraphStore:
             with self._use_canvas(target_cid):
                 existing_ids = {c["id"] for c in self.state["cards"]}
                 next_card_ids = list(self.selection.get("cardIds", [])) if self.selection.get("canvasId") == target_cid else []
+                next_group_ids = list(self.selection.get("groupIds", [])) if self.selection.get("canvasId") == target_cid else []
                 next_capsule_id = self.selection.get("capsulePinId") if self.selection.get("canvasId") == target_cid else None
                 next_text_sel = copy.deepcopy(self.selection.get("textSelection")) if self.selection.get("canvasId") == target_cid else None
 
@@ -2654,6 +2662,21 @@ class GraphStore:
                             seen.add(cid)
                             next_card_ids.append(cid)
 
+                if "groupIds" in payload:
+                    if not isinstance(payload["groupIds"], list):
+                        raise ApiError(400, "INVALID_GROUP_IDS", "'groupIds' must be an array of strings.")
+                    existing_group_ids = {g["id"] for g in self.state.get("groups", [])}
+                    next_group_ids = []
+                    for raw_gid in payload["groupIds"]:
+                        gid = str(raw_gid)
+                        if gid not in existing_group_ids:
+                            if strict:
+                                raise ApiError(404, "GROUP_NOT_FOUND", f"Group '{gid}' not found.")
+                        elif gid not in next_group_ids:
+                            next_group_ids.append(gid)
+                elif "cardIds" in payload or "groupId" in payload:
+                    next_group_ids = []
+
                 if "capsulePinId" in payload:
                     raw_pin = payload["capsulePinId"]
                     if raw_pin is None or raw_pin == "":
@@ -2682,6 +2705,7 @@ class GraphStore:
                 self.selection = {
                     "canvasId": target_cid,
                     "cardIds": next_card_ids,
+                    "groupIds": next_group_ids,
                     "capsulePinId": next_capsule_id,
                     "textSelection": next_text_sel,
                 }
@@ -2690,6 +2714,7 @@ class GraphStore:
                     {
                         "canvasId": target_cid,
                         "cardIds": list(next_card_ids),
+                        "groupIds": list(next_group_ids),
                         "capsulePinId": next_capsule_id,
                         "textSelection": copy.deepcopy(next_text_sel),
                     },

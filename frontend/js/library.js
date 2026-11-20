@@ -350,7 +350,7 @@ class LibraryManager {
 
   updateSelectionState() {
     if (!this.saveCtaBtnEl) return;
-    const count = nodes.selectedCardIds.size;
+    const count = nodes.getSelectedContentIds().size;
     const sc = store.getShortcut?.('saveToLibrary');
     const suffix = sc ? ` (${sc})` : '';
     if (count > 0) {
@@ -366,7 +366,7 @@ class LibraryManager {
 
   captureSelection() {
     nodes.flushActiveDOMEdits();
-    const selectedSet = new Set(nodes.selectedCardIds);
+    const selectedSet = nodes.getSelectedContentIds();
     if (selectedSet.size === 0) return null;
 
     const selectedCards = store.state.cards
@@ -375,7 +375,8 @@ class LibraryManager {
     if (selectedCards.length === 0) return null;
 
     const selectedGroups = (store.state.groups || [])
-      .filter(g => Array.isArray(g.cardIds) && g.cardIds.length >= 2 && g.cardIds.every(id => selectedSet.has(id)))
+      .filter(g => nodes.selectedGroupIds.has(g.id) ||
+        (g.cardIds?.length >= 2 && g.cardIds.every(id => selectedSet.has(id))))
       .map(g => JSON.parse(JSON.stringify(g)));
 
     const groupIdSet = new Set(selectedGroups.map(g => g.id));
@@ -396,11 +397,18 @@ class LibraryManager {
       c.y = Math.round((Number(c.y) || 0) - minY);
     });
 
+    for (const group of selectedGroups) {
+      if (Number.isFinite(group.x) && Number.isFinite(group.y)) {
+        group.x -= minX;
+        group.y -= minY;
+      }
+    }
+
     let suggestedName = '';
-    if (selectedCards.length === 1) {
+    if (selectedGroups.length === 1 && selectedGroups[0].cardIds.length === selectedCards.length) {
+      suggestedName = selectedGroups[0].title || '未命名组';
+    } else if (selectedCards.length === 1) {
       suggestedName = selectedCards[0].title || '未命名节点';
-    } else if (selectedGroups.length === 1 && selectedGroups[0].cardIds.length === selectedCards.length) {
-      suggestedName = selectedGroups[0].title || `${selectedCards[0].title} 等 ${selectedCards.length} 个节点`;
     } else {
       suggestedName = `${selectedCards[0].title || '未命名节点'} 等 ${selectedCards.length} 个节点`;
     }
@@ -674,7 +682,7 @@ class LibraryManager {
     });
 
     nodes.hideAllMenus();
-    nodes.selectedCardIds = new Set(allNewCards.map(c => c.id));
+    nodes.selectInsertedElements(allNewCards, bundles.flatMap(bundle => bundle.newGroups));
     store.commit();
     nodes.render();
     nodes.renderGroups();

@@ -373,7 +373,7 @@ async function initApp() {
         syncCanvasesSelectionVisuals();
         return true;
       }
-      if (inCanvases || (nodes.selectedCardIds.size === 0 && !nodes.selectedCapsule)) {
+      if (inCanvases || (!nodes.hasSelection() && !nodes.selectedCapsule)) {
         closeCanvasesDrawer();
         return true;
       }
@@ -1107,6 +1107,7 @@ async function initApp() {
     const res = await store.openFromFile();
     if (res?.success) {
       if (res.card?.id) {
+        nodes.selectedGroupIds.clear();
         nodes.selectedCardIds = new Set([res.card.id]);
       }
       canvas.applyTransform();

@@ -1334,6 +1334,7 @@ class MediaManager {
     nodesMgr?.render?.();
     wiresMgr?.render?.();
     if (nodesMgr && createdIds.length > 0) {
+      nodesMgr.selectedGroupIds.clear();
       nodesMgr.selectedCardIds.clear();
       createdIds.forEach(id => nodesMgr.selectedCardIds.add(id));
       nodesMgr.updateSelectionVisuals();
@@ -1462,7 +1463,7 @@ class MediaManager {
 
     // 1. Inside a normal card's .note-body editor (Q20-A & Q21-A)
     const clip = nodesMgr?.clipboard;
-    const hasInternalClip = !!(clip && clip.cards?.length > 0);
+    const hasInternalClip = Boolean(clip?.cards?.length || clip?.groups?.length);
     const matchesInternalMarker = !!(hasInternalClip && clip.marker && plainText === clip.marker);
 
     if (editingBody) {

@@ -47,13 +47,12 @@ class NodeManager {
     this.targetGroup = null;
     this.selectedColor = '#5ca479';
     this.selectedCardIds = new Set();
+    this.selectedGroupIds = new Set();
     this.activeMarquee = null;
     this.activeDrag = null;
-    this.pendingCtrlGroupDrag = null;
     this._lastPointer = null;
     this.clipboard = null;
-    this.pasteCount = 0;
-    this.mouseBoardPos = { x: 0, y: 0 };
+    this.boundCapsules = new WeakSet();
     this.focusExitAnimId = null;
     this.loadedWebpageIds = new Set();
   }
@@ -78,14 +77,6 @@ class NodeManager {
 
     media.init();
     media.bindCanvasDropAndPaste(viewportEl);
-
-    window.addEventListener('mousemove', (e) => {
-      const { x, y, zoom } = store.state.viewport;
-      this.mouseBoardPos = {
-        x: (e.clientX - x) / zoom,
-        y: (e.clientY - y) / zoom
-      };
-    });
 
     this.renderPopoverPalette();
     this.bindCapsuleActionEvents();
@@ -343,7 +334,7 @@ class NodeManager {
           finishTitleEdit();
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          titleInput.value = getCard()?.title || '';
+          e.stopPropagation();
           finishTitleEdit();
         }
       });
@@ -353,6 +344,7 @@ class NodeManager {
       cardEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot, .card-resize-handle, .subcanvas-resize-bottom') || e.target === titleInput) return;
         if (e.button !== 0) return;
+        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         e.preventDefault();
         e.stopPropagation();
         this._blurActiveTextEditor();
@@ -580,7 +572,7 @@ class NodeManager {
           finishTitleEdit();
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          titleInput.value = getCard()?.title || '';
+          e.stopPropagation();
           finishTitleEdit();
         }
       });
@@ -590,28 +582,14 @@ class NodeManager {
       cardEl.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         if (e.target.closest('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .capsule-pin, .text-capsule, .header-title-input')) return;
+        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
         if (isMultiToggle) {
-          const wasSelected = this.selectedCardIds.has(cardId);
           this._blurActiveTextEditor();
           e.preventDefault();
           e.stopPropagation();
           window.getSelection()?.removeAllRanges();
           this.selectCard(cardId, true);
-
-          if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !canvas.isSpacePressed) {
-            const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
-            const hitGroup = this.findGroupAtBoardPos(boardPos, cardId);
-            if (hitGroup) {
-              this.pendingCtrlGroupDrag = {
-                group: hitGroup,
-                cardId,
-                wasSelected,
-                startX: e.clientX,
-                startY: e.clientY
-              };
-            }
-          }
         } else if (!this.selectedCardIds.has(cardId) || this.selectedCardIds.size > 1) {
           this.selectCard(cardId, false);
         }
@@ -628,6 +606,7 @@ class NodeManager {
       headerEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot') || e.target === titleInput) return;
         if (e.button !== 0) return;
+        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         e.preventDefault();
         e.stopPropagation();
         this._blurActiveTextEditor();
@@ -935,6 +914,11 @@ class NodeManager {
     const nextHtml = card.contentHtml || '';
     if (bodyEl && document.activeElement !== bodyEl && bodyEl.innerHTML !== nextHtml) {
       bodyEl.innerHTML = nextHtml;
+      const legacyMarkers = bodyEl.querySelectorAll('.text-capsule[data-bound]');
+      if (legacyMarkers.length > 0) {
+        legacyMarkers.forEach(capsule => capsule.removeAttribute('data-bound'));
+        card.contentHtml = bodyEl.innerHTML;
+      }
     }
 
     return cardEl;
@@ -1053,10 +1037,13 @@ class NodeManager {
   }
 
   bindCapsuleEvents() {
-    document.querySelectorAll('.text-capsule').forEach(capsule => {
-      if (capsule.dataset.bound === '1') return;
-      capsule.dataset.bound = '1';
+    this.containerEl.querySelectorAll('.text-capsule').forEach(capsule => {
+      // Older saves serialized this marker without the associated listeners.
+      capsule.removeAttribute('data-bound');
+      if (this.boundCapsules.has(capsule)) return;
       const pinId = capsule.getAttribute('data-pin-id');
+      if (!pinId) return;
+      this.boundCapsules.add(capsule);
       const pinEl = capsule.querySelector('.capsule-pin');
 
       this.bindPinEvents(pinEl, pinId);
@@ -1427,6 +1414,7 @@ class NodeManager {
       const ctx = this.activeContextMedia;
       this.hideMediaContextMenu();
       if (ctx?.card) {
+        this.selectedGroupIds.clear();
         this.selectedCardIds = new Set([ctx.card.id]);
         this.deleteSelectedCards();
       }
@@ -1608,7 +1596,7 @@ class NodeManager {
           finishTitleEdit();
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          titleInput.value = getCard()?.title || '';
+          e.stopPropagation();
           finishTitleEdit();
         }
       });
@@ -1751,6 +1739,7 @@ class NodeManager {
       cardEl.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         if (e.target.closest('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .card-resize-handle-bottom, .card-resize-corner, .header-title-input, .media-header-btn, .webpage-entry-select, .webpage-action-btn')) return;
+        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
         if (isMultiToggle) {
           e.preventDefault();
@@ -1766,6 +1755,7 @@ class NodeManager {
       headerEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot, .media-header-btn') || e.target === titleInput) return;
         if (e.button !== 0) return;
+        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         e.preventDefault();
         e.stopPropagation();
         this._blurActiveTextEditor();
@@ -2155,7 +2145,7 @@ class NodeManager {
       const ctx = this.activeContextGroup;
       this.hideGroupContextMenu();
       if (ctx?.group) {
-        this.enterFocusMode(ctx.group.cardIds);
+        this.enterFocusMode(ctx.group);
       }
     });
 
@@ -2309,7 +2299,7 @@ class NodeManager {
 
   selectAllCards() {
     this.hideAllMenus();
-    this.selectedCardIds = new Set(store.state.cards.map(c => c.id));
+    this.selectInsertedElements(store.state.cards, store.state.groups || []);
     this.updateSelectionVisuals();
     this.updateAlignmentBar();
   }
@@ -2774,8 +2764,29 @@ class NodeManager {
     }
   }
 
+  getSelectedMemberIds() {
+    const memberIds = new Set();
+    for (const group of store.state.groups || []) {
+      if (this.selectedGroupIds.has(group.id)) {
+        (group.cardIds || []).forEach(id => memberIds.add(id));
+      }
+    }
+    return memberIds;
+  }
+
+  getSelectedContentIds() {
+    return new Set([...this.selectedCardIds, ...this.getSelectedMemberIds()]);
+  }
+
+  hasSelection() {
+    return this.selectedCardIds.size > 0 || this.selectedGroupIds.size > 0;
+  }
+
   selectCard(cardId, isShift = false) {
     window.__canvases?.blurScope?.();
+    if (!isShift) {
+      this.selectedGroupIds.clear();
+    }
     if (isShift) {
       if (this.selectedCardIds.has(cardId)) {
         this.selectedCardIds.delete(cardId);
@@ -2792,13 +2803,19 @@ class NodeManager {
 
   clearSelection() {
     this.selectedCardIds.clear();
+    this.selectedGroupIds.clear();
     this.updateSelectionVisuals();
     this.updateAlignmentBar();
   }
 
   filterSelectionAfterRestore() {
+    const validCardIds = new Set(store.state.cards.map(c => c.id));
+    const validGroupIds = new Set((store.state.groups || []).map(g => g.id));
     this.selectedCardIds = new Set(
-      [...this.selectedCardIds].filter(id => store.state.cards.some(c => c.id === id))
+      [...this.selectedCardIds].filter(id => validCardIds.has(id))
+    );
+    this.selectedGroupIds = new Set(
+      [...this.selectedGroupIds].filter(id => validGroupIds.has(id))
     );
   }
 
@@ -2807,9 +2824,13 @@ class NodeManager {
       const cardId = cardEl.id.replace('card-dom-', '');
       cardEl.classList.toggle('selected', this.selectedCardIds.has(cardId));
     });
+    document.querySelectorAll('.node-group').forEach(groupEl => {
+      const groupId = groupEl.id.replace('group-dom-', '');
+      groupEl.classList.toggle('selected', this.selectedGroupIds.has(groupId));
+    });
     const focusEntryBtn = document.getElementById('btn-focus-mode');
     if (focusEntryBtn) {
-      focusEntryBtn.classList.toggle('is-ready', this.selectedCardIds.size > 0 && !store.isFocusMode);
+      focusEntryBtn.classList.toggle('is-ready', this.hasSelection() && !store.isFocusMode);
     }
     if (!silent && this.onSelectionChange) this.onSelectionChange();
   }
@@ -2828,6 +2849,7 @@ class NodeManager {
     }
     return {
       cardIds: [...this.selectedCardIds],
+      groupIds: [...this.selectedGroupIds],
       capsulePinId: this.selectedCapsule?.getAttribute('data-pin-id') || null,
       textSelection
     };
@@ -2836,7 +2858,9 @@ class NodeManager {
   applyRemoteSelection(sel) {
     if (!sel || typeof sel !== 'object') return;
     const validIds = new Set(store.state.cards.map(c => c.id));
+    const validGroupIds = new Set((store.state.groups || []).map(g => g.id));
     this.selectedCardIds = new Set((sel.cardIds || []).filter(id => validIds.has(id)));
+    this.selectedGroupIds = new Set((sel.groupIds || []).filter(id => validGroupIds.has(id)));
     this.updateSelectionVisuals(true);
     this.updateAlignmentBar();
 
@@ -2877,9 +2901,9 @@ class NodeManager {
   }
 
   deleteSelectedCards() {
-    if (this.selectedCardIds.size === 0) return;
-    const toDelete = [...this.selectedCardIds];
-    store.removeCards(toDelete);
+    if (!this.hasSelection()) return;
+    const toDelete = [...this.getSelectedContentIds()];
+    store.removeCards(toDelete, [...this.selectedGroupIds]);
     this.clearSelection();
     this.render();
     wires.render();
@@ -3029,10 +3053,10 @@ class NodeManager {
   }
 
   copySelectedCards() {
-    if (this.selectedCardIds.size === 0) return false;
+    if (!this.hasSelection()) return false;
 
-    // Sync contentHtml from DOM for any card with active edits
-    this.selectedCardIds.forEach(id => {
+    const selectedContentIds = this.getSelectedContentIds();
+    selectedContentIds.forEach(id => {
       const card = store.state.cards.find(c => c.id === id);
       const cardEl = document.getElementById(`card-dom-${id}`);
       const body = cardEl?.querySelector('.note-body');
@@ -3041,16 +3065,16 @@ class NodeManager {
       }
     });
 
-    const cardsToCopy = store.state.cards.filter(c => this.selectedCardIds.has(c.id));
-    if (cardsToCopy.length === 0) return false;
-
-    // Identify any groups whose member cards are all selected
+    const cardsToCopy = store.state.cards.filter(c => selectedContentIds.has(c.id));
     const groupsToCopy = (store.state.groups || []).filter(g =>
-      g.cardIds && g.cardIds.length > 0 && g.cardIds.every(id => this.selectedCardIds.has(id))
+      this.selectedGroupIds.has(g.id)
     );
-    const groupIdsToCopy = new Set(groupsToCopy.map(g => g.id));
+    if (cardsToCopy.length === 0 && groupsToCopy.length === 0) return false;
 
-    const relevantEntityIds = new Set([...this.selectedCardIds, ...groupIdsToCopy]);
+    const relevantEntityIds = new Set([
+      ...selectedContentIds,
+      ...groupsToCopy.map(group => group.id)
+    ]);
     const internalConnections = store.state.connections.filter(conn => {
       const owner1 = store.findCardIdByPin(conn.fromPinId);
       const owner2 = store.findCardIdByPin(conn.toPinId);
@@ -3074,8 +3098,6 @@ class NodeManager {
       marker,
       markerWritten: false
     };
-    this.pasteCount = 0;
-
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(marker).then(() => {
         if (this.clipboard && this.clipboard.marker === marker) {
@@ -3103,9 +3125,10 @@ class NodeManager {
   }
 
   async cutSelectedCards() {
-    if (this.selectedCardIds.size === 0) return false;
+    if (!this.hasSelection()) return false;
     const originCanvasId = store.activeCanvasId;
-    const cutIds = [...this.selectedCardIds];
+    const cutIds = [...this.getSelectedContentIds()];
+    const cutGroupIds = [...this.selectedGroupIds];
     const ok = this.copySelectedCards();
     if (!ok) return false;
 
@@ -3131,16 +3154,15 @@ class NodeManager {
     }
 
     if (store.activeCanvasId === originCanvasId) {
-      this.selectedCardIds = new Set(cutIds);
-      this.deleteSelectedCards();
+      store.removeCards(cutIds, cutGroupIds);
+      this.clearSelection();
+      this.render();
+      wires.render();
+      store.scheduleAutoSave();
     } else {
       const originEntry = store.canvasesCache.get(originCanvasId);
       if (originEntry) {
-        const cutSet = new Set(cutIds);
-        const cutSubIds = (originEntry.cards || [])
-          .filter(c => cutSet.has(c.id) && c.kind === 'subcanvas' && c.subcanvasId)
-          .map(c => c.subcanvasId);
-        originEntry.cards = (originEntry.cards || []).filter(c => !cutSet.has(c.id));
+        const cutSubIds = store.removeCanvasElements(originEntry, cutIds, cutGroupIds);
         originEntry.dirty = true;
         store.putCachedCanvas(originEntry);
         cutSubIds.forEach(sid => store._markSubcanvasSubtreeDeleted(sid));
@@ -3150,59 +3172,59 @@ class NodeManager {
     return true;
   }
 
+  get mouseBoardPos() {
+    if (!this._lastPointer) return null;
+    return canvas.screenToBoard(this._lastPointer.clientX, this._lastPointer.clientY);
+  }
+
+  selectInsertedElements(cards, groups) {
+    this.selectedGroupIds = new Set(groups.map(group => group.id));
+    const memberIds = new Set(groups.flatMap(group => group.cardIds));
+    this.selectedCardIds = new Set(cards.map(card => card.id).filter(id => !memberIds.has(id)));
+  }
+
   async pasteCards() {
-    if (!this.clipboard || !this.clipboard.cards || this.clipboard.cards.length === 0) return false;
+    const clip = this.clipboard;
+    if (!clip?.cards?.length && !clip?.groups?.length) return false;
+    const pasteAnchor = this.mouseBoardPos || canvas.screenToBoard(innerWidth / 2, innerHeight / 2);
+    const originState = store.state;
+    const originCanvasId = store.activeCanvasId;
     if (this._clipboardHydratePromise) {
       try {
         await this._clipboardHydratePromise;
       } catch (e) {}
+      if (store.state !== originState || store.activeCanvasId !== originCanvasId) return false;
     }
-
-    this.pasteCount++;
-    const offset = 32 * this.pasteCount;
 
     const { newCards, newGroups, newConnections } = this.cloneCardsAndGroups(
-      this.clipboard.cards,
-      this.clipboard.groups || [],
-      this.clipboard.internalConnections || [],
-      { subcanvases: this.clipboard.subcanvases || null }
+      clip.cards || [],
+      clip.groups || [],
+      clip.internalConnections || [],
+      { subcanvases: clip.subcanvases || null }
     );
 
-    newCards.forEach(c => {
-      c.x = Math.round(c.x + offset);
-      c.y = Math.round(c.y + offset);
-      if (store.state.settings?.gridSnapMode) {
-        const GRID_SIZE = 24;
-        c.x = Math.round(c.x / GRID_SIZE) * GRID_SIZE;
-        c.y = Math.round(c.y / GRID_SIZE) * GRID_SIZE;
-      }
-      store.state.cards.push(c);
+    const positionedGroups = newGroups.filter(g => Number.isFinite(g.x) && Number.isFinite(g.y));
+    const positioned = [...newCards, ...positionedGroups];
+    const sourceMinX = Math.min(...positioned.map(element => Number(element.x) || 0));
+    const sourceMinY = Math.min(...positioned.map(element => Number(element.y) || 0));
+    const snap = store.state.settings?.gridSnapMode ? 24 : 1;
+    const deltaX = Math.round(pasteAnchor.x / snap) * snap - sourceMinX;
+    const deltaY = Math.round(pasteAnchor.y / snap) * snap - sourceMinY;
+    positioned.forEach(element => {
+      element.x = (Number(element.x) || 0) + deltaX;
+      element.y = (Number(element.y) || 0) + deltaY;
     });
 
-    if (newGroups && newGroups.length > 0) {
-      if (!store.state.groups) store.state.groups = [];
-      newGroups.forEach(g => {
-        if (typeof g.x === 'number' && typeof g.y === 'number') {
-          g.x = Math.round(g.x + offset);
-          g.y = Math.round(g.y + offset);
-          if (store.state.settings?.gridSnapMode) {
-            const GRID_SIZE = 24;
-            g.x = Math.round(g.x / GRID_SIZE) * GRID_SIZE;
-            g.y = Math.round(g.y / GRID_SIZE) * GRID_SIZE;
-          }
-        }
-        store.state.groups.push(g);
-      });
-    }
+    store.state.cards.push(...newCards);
+    (store.state.groups ||= []).push(...newGroups);
 
     newConnections.forEach(conn => {
       store.state.connections.push(conn);
     });
 
-    this.selectedCardIds = new Set(newCards.map(c => c.id));
+    this.selectInsertedElements(newCards, newGroups);
     store.commit();
     this.render();
-    this.renderGroups();
     wires.render();
     store.scheduleAutoSave();
     this.updateAlignmentBar();
@@ -3361,8 +3383,19 @@ class NodeManager {
     return null;
   }
 
+  tryStartCtrlGroupDrag(e, cardId = null) {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || canvas.isSpacePressed) return false;
+    const group = this.findGroupAtBoardPos(canvas.screenToBoard(e.clientX, e.clientY), cardId);
+    if (!group) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    this.startGroupDrag(group, e, { viaCtrlBody: true });
+    return true;
+  }
+
   startGroupDrag(group, e, { viaCtrlBody = false } = {}) {
     if (!group) return;
+    window.__canvases?.blurScope?.();
     const groupEl = document.getElementById(`group-dom-${group.id}`);
     this._blurActiveTextEditor();
     wires.clearFocus();
@@ -3373,26 +3406,16 @@ class NodeManager {
     this.hideCanvasContextMenu();
     this.hideGroupContextMenu();
 
-    const isMultiToggle = !viaCtrlBody && (e.shiftKey || e.ctrlKey || e.metaKey);
-    const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
-    const memberIds = memberCards.map(c => c.id);
-    let toggleOffGroupIds = null;
-
-    if (isMultiToggle) {
-      const allSelected = memberIds.length > 0 && memberIds.every(id => this.selectedCardIds.has(id));
-      if (allSelected) {
-        toggleOffGroupIds = memberIds;
-      } else {
-        memberIds.forEach(id => this.selectedCardIds.add(id));
-        this.updateSelectionVisuals();
-        this.updateAlignmentBar();
-      }
-    } else {
-      this.selectedCardIds = new Set(memberIds);
-      this.updateSelectionVisuals();
-      this.updateAlignmentBar();
+    if (viaCtrlBody || !(e.shiftKey || e.ctrlKey || e.metaKey)) {
+      this.selectedCardIds.clear();
+      this.selectedGroupIds.clear();
     }
+    this.selectedGroupIds.add(group.id);
+    (group.cardIds || []).forEach(id => this.selectedCardIds.delete(id));
+    this.updateSelectionVisuals();
+    this.updateAlignmentBar();
 
+    const memberCards = store.state.cards.filter(c => group.cardIds.includes(c.id));
     const curBounds = this.calcGroupBounds(group) || { x: 0, y: 0, width: 288, height: 140 };
     const initMinX = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.x)) : curBounds.x;
     const initMinY = memberCards.length > 0 ? Math.min(...memberCards.map(c => c.y)) : curBounds.y;
@@ -3403,7 +3426,7 @@ class NodeManager {
       startY: e.clientY,
       isAlt: e.altKey,
       viaCtrlBody,
-      toggleOffGroupIds,
+      moved: false,
       cloned: false,
       initMinX,
       initMinY,
@@ -3430,7 +3453,7 @@ class NodeManager {
       if (!bounds) return;
 
       const groupEl = document.createElement('div');
-      groupEl.className = 'node-group';
+      groupEl.className = 'node-group' + (this.selectedGroupIds.has(group.id) ? ' selected' : '');
       groupEl.id = `group-dom-${group.id}`;
       groupEl.style.left = `${bounds.x}px`;
       groupEl.style.top = `${bounds.y}px`;
@@ -3539,7 +3562,7 @@ class NodeManager {
           finishRename();
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          titleInput.value = prevTitle;
+          e.stopPropagation();
           finishRename();
         }
       });
@@ -3652,6 +3675,7 @@ class NodeManager {
 
   ungroup(groupId) {
     store.removeGroup(groupId);
+    if (this.selectedGroupIds.delete(groupId)) this.updateSelectionVisuals();
     this.render();
     wires.render();
     store.scheduleAutoSave();
@@ -3659,12 +3683,18 @@ class NodeManager {
 
   ungroupSelected() {
     if (!store.state.groups || store.state.groups.length === 0) return;
-    const groupsToRemove = store.state.groups.filter(g =>
-      g.cardIds.some(id => this.selectedCardIds.has(id))
+    const hasSelectedGroups = this.selectedGroupIds.size > 0;
+    const groupsToRemove = store.state.groups.filter(g => hasSelectedGroups
+      ? this.selectedGroupIds.has(g.id)
+      : g.cardIds.some(id => this.selectedCardIds.has(id))
     );
     if (groupsToRemove.length > 0) {
-      groupsToRemove.forEach(g => store.removeGroup(g.id));
+      groupsToRemove.forEach(g => {
+        store.removeGroup(g.id);
+        this.selectedGroupIds.delete(g.id);
+      });
       this.render();
+      this.updateSelectionVisuals();
       wires.render();
       store.scheduleAutoSave();
     }
@@ -3849,7 +3879,7 @@ class NodeManager {
 
     const focusEntryBtn = document.getElementById('btn-focus-mode');
     if (focusEntryBtn) {
-      focusEntryBtn.classList.toggle('is-ready', !isFocus && this.selectedCardIds.size > 0);
+      focusEntryBtn.classList.toggle('is-ready', !isFocus && this.hasSelection());
     }
 
     const saveBtn = document.getElementById('btn-save');
@@ -3863,7 +3893,7 @@ class NodeManager {
     window.__sync?.updateStatusDot?.();
   }
 
-  enterFocusMode(cardIdsOverride = null) {
+  enterFocusMode(groupOverride = null) {
     if (store.isFocusMode) return false;
     if (this.focusExitAnimId) {
       cancelAnimationFrame(this.focusExitAnimId);
@@ -3875,11 +3905,10 @@ class NodeManager {
     this.hideAllMenus();
     wires.clearFocus();
 
-    const targetIds = cardIdsOverride
-      ? [...new Set(cardIdsOverride)].filter(id => store.state.cards.some(c => c.id === id))
-      : [...this.selectedCardIds].filter(id => store.state.cards.some(c => c.id === id));
+    const targetGroupIds = groupOverride ? new Set([groupOverride.id]) : this.selectedGroupIds;
+    const targetIds = groupOverride ? groupOverride.cardIds : [...this.getSelectedContentIds()];
 
-    if (targetIds.length === 0) {
+    if (targetIds.length === 0 && targetGroupIds.size === 0) {
       store.emitToast('请先选中至少一个节点或组，再进入专注模式', 'info');
       return false;
     }
@@ -3888,7 +3917,7 @@ class NodeManager {
     const beforeRects = targetIds.map(id => rectMap.get(id)).filter(Boolean);
     const beforeBox = computeRectsBoundingBox(beforeRects);
 
-    const ok = store.enterFocusMode(targetIds, beforeBox, rectMap);
+    const ok = store.enterFocusMode(targetIds, beforeBox, rectMap, targetGroupIds);
     if (!ok) return false;
 
     this.filterSelectionAfterRestore();
@@ -4228,22 +4257,14 @@ class NodeManager {
       this.clearCapsuleSelection();
       wires.dismissDropMenu(true);
 
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey) {
-        const boardPos = canvas.screenToBoard(e.clientX, e.clientY);
-        const hitGroup = this.findGroupAtBoardPos(boardPos);
-        if (hitGroup) {
-          e.preventDefault();
-          e.stopPropagation();
-          this.startGroupDrag(hitGroup, e, { viaCtrlBody: true });
-          return;
-        }
-      }
+      if (this.tryStartCtrlGroupDrag(e)) return;
 
       this.activeMarquee = {
         startX: e.clientX,
         startY: e.clientY,
         isAdditive: e.shiftKey || e.ctrlKey || e.metaKey,
         initialSelection: new Set(this.selectedCardIds),
+        initialGroupSelection: new Set(this.selectedGroupIds),
         moved: false
       };
     });
@@ -4280,26 +4301,6 @@ class NodeManager {
     window.addEventListener('mousemove', (e) => {
       this._lastPointer = { clientX: e.clientX, clientY: e.clientY, target: e.target };
 
-      if (this.pendingCtrlGroupDrag) {
-        const dist = Math.hypot(e.clientX - this.pendingCtrlGroupDrag.startX, e.clientY - this.pendingCtrlGroupDrag.startY);
-        if (dist > 4) {
-          const pending = this.pendingCtrlGroupDrag;
-          this.pendingCtrlGroupDrag = null;
-          // Restore the card's pre-toggle selection state before selecting the whole group
-          if (pending.wasSelected) this.selectedCardIds.add(pending.cardId);
-          else this.selectedCardIds.delete(pending.cardId);
-          this.startGroupDrag(pending.group, {
-            ...e,
-            clientX: pending.startX,
-            clientY: pending.startY,
-            shiftKey: false,
-            ctrlKey: true,
-            metaKey: false,
-            altKey: e.altKey
-          }, { viaCtrlBody: true });
-        }
-      }
-
       this._updateCtrlGroupCursor((e.ctrlKey || e.metaKey) && !e.shiftKey);
       if (this.activeMarquee) {
         const dist = Math.hypot(e.clientX - this.activeMarquee.startX, e.clientY - this.activeMarquee.startY);
@@ -4318,8 +4319,25 @@ class NodeManager {
 
           const marqueeRect = { left, top, right: left + width, bottom: top + height };
           const intersected = new Set();
+          const enclosedGroups = new Set();
+          const enclosedMemberIds = new Set();
+
+          for (const group of store.state.groups || []) {
+            const groupEl = document.getElementById(`group-dom-${group.id}`);
+            const r = groupEl?.getBoundingClientRect();
+            if (!r) continue;
+            const contained = r.left >= marqueeRect.left &&
+              r.top >= marqueeRect.top &&
+              r.right <= marqueeRect.right &&
+              r.bottom <= marqueeRect.bottom;
+            if (contained) {
+              enclosedGroups.add(group.id);
+              (group.cardIds || []).forEach(id => enclosedMemberIds.add(id));
+            }
+          }
 
           store.state.cards.forEach(card => {
+            if (enclosedMemberIds.has(card.id)) return;
             const el = document.getElementById(`card-dom-${card.id}`);
             if (!el) return;
             const r = el.getBoundingClientRect();
@@ -4329,9 +4347,12 @@ class NodeManager {
 
           if (this.activeMarquee.isAdditive) {
             this.selectedCardIds = new Set([...this.activeMarquee.initialSelection, ...intersected]);
+            this.selectedGroupIds = new Set([...this.activeMarquee.initialGroupSelection, ...enclosedGroups]);
           } else {
             this.selectedCardIds = intersected;
+            this.selectedGroupIds = enclosedGroups;
           }
+          this.getSelectedMemberIds().forEach(id => this.selectedCardIds.delete(id));
 
           this.updateSelectionVisuals();
           this.updateAlignmentBar();
@@ -4346,13 +4367,9 @@ class NodeManager {
           if ((this.activeDrag.isAlt || e.altKey) && !this.activeDrag.cloned) {
             const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
             if (dist > 3) {
-              const cardsToClone = store.state.cards.filter(c => this.selectedCardIds.has(c.id));
-              const groupsToClone = (store.state.groups || []).filter(g =>
-                g.cardIds && g.cardIds.length > 0 && g.cardIds.every(id => this.selectedCardIds.has(id))
-              );
-              const { newCards, newGroups, newConnections, cardIdMap } = this.cloneCardsAndGroups(cardsToClone, groupsToClone);
+              const cardsToClone = store.state.cards.filter(c => this.activeDrag.initialPositions.has(c.id));
+              const { newCards, newConnections, cardIdMap } = this.cloneCards(cardsToClone);
               newCards.forEach(c => store.state.cards.push(c));
-              newGroups.forEach(g => store.state.groups.push(g));
               newConnections.forEach(conn => store.state.connections.push(conn));
 
               const newPositions = new Map();
@@ -4360,6 +4377,7 @@ class NodeManager {
                 newPositions.set(c.id, { x: c.x, y: c.y, width: c.width || 310 });
               });
               const newLeadId = cardIdMap.get(this.activeDrag.leadCardId) || newCards[0].id;
+              this.selectedGroupIds.clear();
               this.selectedCardIds = new Set(newCards.map(c => c.id));
               this.activeDrag.cloned = true;
               this.activeDrag.leadCardId = newLeadId;
@@ -4452,32 +4470,34 @@ class NodeManager {
 
           wires.render();
         } else if (this.activeDrag.type === 'MOVE_GROUP') {
+          const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
+          if (!this.activeDrag.moved && dist <= 4) return;
+          this.activeDrag.moved = true;
           // Alt+Drag: Clone group, member cards and connections
           if ((this.activeDrag.isAlt || e.altKey) && !this.activeDrag.cloned) {
-            const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
-            if (dist > 3) {
-              const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
-              if (group) {
-                const cardsToClone = store.state.cards.filter(c => group.cardIds.includes(c.id));
-                const { newCards, newGroups, newConnections, groupIdMap } = this.cloneCardsAndGroups(cardsToClone, [group]);
-                newCards.forEach(c => store.state.cards.push(c));
-                newGroups.forEach(g => store.state.groups.push(g));
-                newConnections.forEach(conn => store.state.connections.push(conn));
+            const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
+            if (group) {
+              const cardsToClone = store.state.cards.filter(c => group.cardIds.includes(c.id));
+              const { newCards, newGroups, newConnections, groupIdMap } = this.cloneCardsAndGroups(cardsToClone, [group]);
+              newCards.forEach(c => store.state.cards.push(c));
+              newGroups.forEach(g => store.state.groups.push(g));
+              newConnections.forEach(conn => store.state.connections.push(conn));
 
-                const newGroupId = groupIdMap.get(group.id);
-                const newGroupObj = store.state.groups.find(g => g.id === newGroupId);
-                const newMemberCards = store.state.cards.filter(c => newCards.some(nc => nc.id === c.id));
-                this.activeDrag.cloned = true;
-                this.activeDrag.groupId = newGroupId;
-                this.activeDrag.initMinX = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.x)) : (newGroupObj?.x ?? 0);
-                this.activeDrag.initMinY = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.y)) : (newGroupObj?.y ?? 0);
-                this.activeDrag.initGroupX = newGroupObj?.x ?? this.activeDrag.initGroupX;
-                this.activeDrag.initGroupY = newGroupObj?.y ?? this.activeDrag.initGroupY;
-                this.activeDrag.initialPositions = new Map(newMemberCards.map(c => [c.id, { x: c.x, y: c.y }]));
-                this.render();
-                this.renderGroups();
-                document.getElementById(`group-dom-${newGroupId}`)?.classList.add('active');
-              }
+              const newGroupId = groupIdMap.get(group.id);
+              const newGroupObj = store.state.groups.find(g => g.id === newGroupId);
+              const newMemberCards = store.state.cards.filter(c => newCards.some(nc => nc.id === c.id));
+              this.activeDrag.cloned = true;
+              this.activeDrag.groupId = newGroupId;
+              this.selectedGroupIds.delete(group.id);
+              this.selectedGroupIds.add(newGroupId);
+              this.activeDrag.initMinX = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.x)) : (newGroupObj?.x ?? 0);
+              this.activeDrag.initMinY = newMemberCards.length > 0 ? Math.min(...newMemberCards.map(c => c.y)) : (newGroupObj?.y ?? 0);
+              this.activeDrag.initGroupX = newGroupObj?.x ?? this.activeDrag.initGroupX;
+              this.activeDrag.initGroupY = newGroupObj?.y ?? this.activeDrag.initGroupY;
+              this.activeDrag.initialPositions = new Map(newMemberCards.map(c => [c.id, { x: c.x, y: c.y }]));
+              this.render();
+              this.updateSelectionVisuals();
+              document.getElementById(`group-dom-${newGroupId}`)?.classList.add('active');
             }
           }
 
@@ -4776,7 +4796,6 @@ class NodeManager {
     });
 
     window.addEventListener('mouseup', (e) => {
-      this.pendingCtrlGroupDrag = null;
       if (this.activeMarquee) {
         this.marqueeBoxEl.style.display = 'none';
         if (!this.activeMarquee.moved && !this.activeMarquee.isAdditive) {
@@ -4835,17 +4854,15 @@ class NodeManager {
             }
           }
         } else if (this.activeDrag.type === 'MOVE_GROUP') {
-          const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
-          if (dist < 4 && this.activeDrag.toggleOffGroupIds) {
-            this.activeDrag.toggleOffGroupIds.forEach(id => this.selectedCardIds.delete(id));
-            this.updateSelectionVisuals();
-            this.updateAlignmentBar();
-          }
           document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
-          this.updateGroupDOMBounds(this.activeDrag.groupId);
           if (this.viewportEl && !canvas.isSpacePressed) {
             this.viewportEl.style.cursor = '';
           }
+          if (!this.activeDrag.moved) {
+            this.activeDrag = null;
+            return;
+          }
+          this.updateGroupDOMBounds(this.activeDrag.groupId);
         } else if (this.activeDrag.type === 'RESIZE_GROUP') {
           document.querySelectorAll('.group-resize-handle.active').forEach(h => h.classList.remove('active'));
           document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
@@ -4886,8 +4903,8 @@ class NodeManager {
         let targetCardId = null;
         if (cardEl) {
           targetCardId = cardEl.id.replace('card-dom-', '');
-        } else if (this.selectedCardIds.size > 0) {
-          targetCardId = Array.from(this.selectedCardIds)[0];
+        } else {
+          targetCardId = this.selectedCardIds.values().next().value;
         }
         if (targetCardId) {
           e.preventDefault();
@@ -4938,7 +4955,7 @@ class NodeManager {
 
       // Copy
       if (!isEditingText && matchesShortcut(e, store.getShortcut('copy'))) {
-        if (this.selectedCardIds.size > 0) {
+        if (this.hasSelection()) {
           e.preventDefault();
           this.copySelectedCards();
           return;
@@ -4947,7 +4964,7 @@ class NodeManager {
 
       // Cut
       if (!isEditingText && matchesShortcut(e, store.getShortcut('cut'))) {
-        if (this.selectedCardIds.size > 0) {
+        if (this.hasSelection()) {
           e.preventDefault();
           this.cutSelectedCards();
           return;
@@ -4958,7 +4975,7 @@ class NodeManager {
       // only intercept here if user rebound paste to a non-Ctrl+V shortcut.
       const pasteSc = store.getShortcut('paste');
       if (!isEditingText && pasteSc && pasteSc.toUpperCase() !== 'CTRL+V' && matchesShortcut(e, pasteSc)) {
-        if (this.clipboard && this.clipboard.cards?.length > 0) {
+        if (this.clipboard?.cards?.length || this.clipboard?.groups?.length) {
           e.preventDefault();
           this.pasteCards();
           return;
@@ -4981,7 +4998,7 @@ class NodeManager {
 
       // Focus Mode
       if (!isEditingText && matchesShortcut(e, store.getShortcut('toggleFocusMode'))) {
-        if (!store.isFocusMode && this.selectedCardIds.size > 0) {
+        if (!store.isFocusMode && this.hasSelection()) {
           e.preventDefault();
           this.enterFocusMode();
           return;
@@ -5020,7 +5037,7 @@ class NodeManager {
 
       // Ungroup
       if (!isEditingText && matchesShortcut(e, store.getShortcut('ungroup'))) {
-        if (this.selectedCardIds.size > 0) {
+        if (this.hasSelection()) {
           e.preventDefault();
           this.ungroupSelected();
           return;
@@ -5040,7 +5057,7 @@ class NodeManager {
           this.deleteCapsule(this.selectedCapsule);
           return;
         }
-        if (!isEditingText && this.selectedCardIds.size > 0) {
+        if (!isEditingText && this.hasSelection()) {
           e.preventDefault();
           this.deleteSelectedCards();
         }
@@ -5064,7 +5081,7 @@ class NodeManager {
         if (this.selectedCapsule) {
           this.clearCapsuleSelection();
         }
-        if (this.selectedCardIds.size > 0 && !wires.activeDrag) {
+        if (this.hasSelection() && !wires.activeDrag) {
           this.clearSelection();
         }
       }
@@ -5080,7 +5097,6 @@ class NodeManager {
     });
 
     window.addEventListener('blur', () => {
-      this.pendingCtrlGroupDrag = null;
       this._updateCtrlGroupCursor(false);
     });
   }

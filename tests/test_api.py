@@ -308,6 +308,47 @@ class PinPointApiTestCase(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(sel_after["data"]["cardIds"], ["card-1"])
 
+    def test_selection_group_ids_round_trip(self) -> None:
+        status, group = self._request("POST", "/groups", {"cardIds": ["card-1", "card-2"]})
+        self.assertEqual(status, 201)
+        group_id = group["data"]["id"]
+
+        status, selected = self._request("PUT", "/selection", {
+            "cardIds": ["card-1"], "groupIds": [group_id, group_id],
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(selected["data"]["cardIds"], ["card-1"])
+        self.assertEqual(selected["data"]["groupIds"], [group_id])
+        self.assertEqual(selected["data"]["count"], 1)
+        self.assertEqual([card["id"] for card in selected["data"]["cards"]], ["card-1"])
+        _, selected = self._request("GET", "/selection")
+        self.assertEqual(selected["data"]["groupIds"], [group_id])
+
+        for patch in ({"capsulePinId": None}, {"textSelection": {"cardId": "card-1", "text": "hello"}}):
+            status, selected = self._request("PATCH", "/selection", patch)
+            self.assertEqual(status, 200)
+            self.assertEqual(selected["data"]["cardIds"], ["card-1"])
+            self.assertEqual(selected["data"]["groupIds"], [group_id])
+
+        status, _ = self._request("PUT", "/selection", {"groupIds": "invalid"})
+        self.assertEqual(status, 400)
+        status, _ = self._request("PUT", "/selection", {"groupIds": ["missing"], "strict": True})
+        self.assertEqual(status, 404)
+        _, selected = self._request("GET", "/selection")
+        self.assertEqual(selected["data"]["groupIds"], [group_id])
+
+        _, selected = self._request("PUT", "/selection", {"cardIds": ["card-2"]})
+        self.assertEqual(selected["data"]["groupIds"], [])
+        _, selected = self._request("PUT", "/selection", {"groupId": group_id})
+        self.assertEqual(selected["data"]["cardIds"], ["card-1", "card-2"])
+        self.assertEqual(selected["data"]["groupIds"], [])
+        self.assertEqual(selected["data"]["count"], 2)
+
+        self._request("PUT", "/selection", {"cardIds": [], "groupIds": [group_id]})
+        self._request("DELETE", f"/groups/{group_id}")
+        _, selected = self._request("GET", "/selection")
+        self.assertEqual(selected["data"]["groupIds"], [])
+
     def test_batch_atomicity_and_update_connection_duplicate_guard(self) -> None:
         # Batch failure must roll back earlier creations in the same batch
         status, _ = self._request("POST", "/cards/batch", {

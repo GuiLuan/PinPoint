@@ -1791,40 +1791,35 @@ class StateManager {
     return card;
   }
 
-  removeCards(cardIds) {
-    const idSet = new Set(cardIds);
-    const removedSubIds = this.state.cards
-      .filter(c => idSet.has(c.id) && c.kind === 'subcanvas' && c.subcanvasId)
+  removeCanvasElements(canvasState, cardIds, groupIds = []) {
+    const removedCardIds = new Set(cardIds);
+    const removedGroupIds = new Set(groupIds);
+    const cards = canvasState.cards;
+    const groups = canvasState.groups || [];
+    const removedSubIds = cards
+      .filter(c => removedCardIds.has(c.id) && c.kind === 'subcanvas' && c.subcanvasId)
       .map(c => c.subcanvasId);
 
-    this.state.cards = this.state.cards.filter(c => !idSet.has(c.id));
-    if (this.state.groups) {
-      this.state.groups.forEach(g => {
-        g.cardIds = g.cardIds.filter(id => !idSet.has(id));
-      });
-      const legacyEmptyGroups = this.state.groups.filter(g => {
-        const hasBounds = typeof g.x === 'number' && typeof g.y === 'number' && typeof g.width === 'number' && typeof g.height === 'number';
-        return !hasBounds && g.cardIds.length < 2;
-      });
-      legacyEmptyGroups.forEach(g => {
-        const leftPinId = `pin-group-left-${g.id}`;
-        const rightPinId = `pin-group-right-${g.id}`;
-        this.state.connections = this.state.connections.filter(c =>
-          c.fromPinId !== leftPinId && c.toPinId !== leftPinId &&
-          c.fromPinId !== rightPinId && c.toPinId !== rightPinId
-        );
-      });
-      this.state.groups = this.state.groups.filter(g => {
-        const hasBounds = typeof g.x === 'number' && typeof g.y === 'number' && typeof g.width === 'number' && typeof g.height === 'number';
-        return hasBounds || g.cardIds.length >= 2;
-      });
+    for (const group of groups) {
+      if (removedGroupIds.has(group.id)) continue;
+      group.cardIds = group.cardIds.filter(id => !removedCardIds.has(id));
+      const hasBounds = [group.x, group.y, group.width, group.height].every(Number.isFinite);
+      if (!hasBounds && group.cardIds.length < 2) removedGroupIds.add(group.id);
     }
-    this.state.connections = this.state.connections.filter(c => {
-      const c1 = this.findCardIdByPin(c.fromPinId);
-      const c2 = this.findCardIdByPin(c.toPinId);
-      return (!c1 || !idSet.has(c1)) && (!c2 || !idSet.has(c2));
-    });
+    canvasState.groups = groups.filter(g => !removedGroupIds.has(g.id));
 
+    // Resolve capsule owners against the original cards before removing those cards.
+    const isRemovedPin = (pinId) => {
+      const ownerId = this.findCardIdByPin(pinId, cards, groups);
+      return pinId?.startsWith('pin-group-') ? removedGroupIds.has(ownerId) : removedCardIds.has(ownerId);
+    };
+    canvasState.connections = canvasState.connections.filter(c => !isRemovedPin(c.fromPinId) && !isRemovedPin(c.toPinId));
+    canvasState.cards = cards.filter(c => !removedCardIds.has(c.id));
+    return removedSubIds;
+  }
+
+  removeCards(cardIds, groupIds = []) {
+    const removedSubIds = this.removeCanvasElements(this.state, cardIds, groupIds);
     removedSubIds.forEach(sid => this._markSubcanvasSubtreeDeleted(sid));
 
     this.commit();
@@ -1941,12 +1936,12 @@ class StateManager {
     return true;
   }
 
-  enterFocusMode(selectedCardIds, beforeBox, cardRectsMap) {
+  enterFocusMode(selectedCardIds, beforeBox, cardRectsMap, selectedGroupIds = new Set()) {
     if (this.isFocusMode) return false;
     const focusIdSet = new Set(
       [...(selectedCardIds || [])].filter(id => this.state.cards.some(c => c.id === id))
     );
-    if (focusIdSet.size === 0) return false;
+    if (focusIdSet.size === 0 && !(this.state.groups || []).some(g => selectedGroupIds.has(g.id))) return false;
 
     clearTimeout(this.cacheTimeout);
 
@@ -1989,9 +1984,7 @@ class StateManager {
       if (!hasBounds && members.length < 2) continue;
 
       const inCount = members.filter(id => focusIdSet.has(id)).length;
-      if (members.length === 0) {
-        outsideGroups.push(g);
-      } else if (inCount === members.length) {
+      if (selectedGroupIds.has(g.id) || (members.length > 0 && inCount === members.length)) {
         insideGroups.push(g);
       } else if (inCount === 0) {
         outsideGroups.push(g);

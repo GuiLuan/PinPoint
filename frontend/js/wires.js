@@ -637,18 +637,12 @@ class WireManager {
 
       if (targetPinId && store.canConnect(fromPinId, targetPinId)) {
         this.activeDrag = null;
-        let finalColor = wireColor;
-        if (!finalColor || finalColor === '#98989d') {
-          const targetColor = this.resolvePinColor(targetPinId);
-          if (targetColor) {
-            finalColor = targetColor;
-          }
-        }
+        const finalColor = wireColor || '#98989d';
         if (type === 'RECONNECT') {
           store.reconnect(connId, targetPinId);
-          if (finalColor && finalColor !== '#98989d') {
-            const conn = store.state.connections.find(c => c.id === connId);
-            if (conn && conn.color === '#98989d') conn.color = finalColor;
+          const conn = store.state.connections.find(c => c.id === connId);
+          if (conn && conn.color === '#98989d' && finalColor !== '#98989d') {
+            conn.color = finalColor;
           }
         } else {
           store.addConnection(fromPinId, targetPinId, finalColor);
