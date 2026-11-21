@@ -57,6 +57,8 @@ DEFAULT_SHORTCUTS = {
     "saveToLibrary": "Shift+L",
     "toggleFocusMode": "F",
     "openSettings": "Ctrl+,",
+    "searchCurrentCanvas": "Ctrl+K",
+    "searchAllCanvases": "Ctrl+Shift+K",
     "saveGraph": "Ctrl+S",
     "undo": "Ctrl+Z",
     "redo": "Ctrl+Y",

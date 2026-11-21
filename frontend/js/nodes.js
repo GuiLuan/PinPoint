@@ -6,6 +6,87 @@ import { renderThumbnailCanvas, computeLocalThumbnail } from './subcanvas.js';
 import { matchesShortcut } from './shortcuts.js';
 import { media, CARD_HEADER_HEIGHT, sanitizeIframeUrl, shouldWebpageStartDormant, isLikelyVideoSiteUrl } from './media.js';
 
+function isTextEditingTarget(e) {
+  const targetEl = e.target instanceof Element ? e.target : e.target?.parentElement;
+  const activeEl = document.activeElement instanceof Element ? document.activeElement : null;
+  return Boolean(
+    targetEl?.isContentEditable ||
+    activeEl?.isContentEditable ||
+    targetEl?.closest?.('input, textarea, select, [contenteditable]') ||
+    activeEl?.closest?.('input, textarea, select, [contenteditable]')
+  );
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (segmentsIntersect(point, point, a, b)) return true;
+    const crosses = (a.y > point.y) !== (b.y > point.y);
+    if (crosses && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const cross = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const abC = cross(a, b, c), abD = cross(a, b, d);
+  const cdA = cross(c, d, a), cdB = cross(c, d, b);
+  if (Math.max(a.x, b.x) < Math.min(c.x, d.x) || Math.max(c.x, d.x) < Math.min(a.x, b.x) ||
+      Math.max(a.y, b.y) < Math.min(c.y, d.y) || Math.max(c.y, d.y) < Math.min(a.y, b.y)) return false;
+  return abC * abD <= 0 && cdA * cdB <= 0;
+}
+
+function polygonIntersectsRect(points, rect) {
+  if (points.length < 3) return false;
+  const corners = rectCorners(rect);
+  if (corners.some(point => pointInPolygon(point, points))) return true;
+  if (points.some(point => point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom)) return true;
+  return points.some((point, index) => corners.some((corner, cornerIndex) =>
+    segmentsIntersect(point, points[(index + 1) % points.length], corner, corners[(cornerIndex + 1) % corners.length])
+  ));
+}
+
+function rectCorners(rect) {
+  return [
+    { x: rect.left, y: rect.top },
+    { x: rect.right, y: rect.top },
+    { x: rect.right, y: rect.bottom },
+    { x: rect.left, y: rect.bottom }
+  ];
+}
+
+function segmentCrossesRectInterior(a, b, rect) {
+  let start = 0;
+  let end = 1;
+  for (const [origin, delta, min, max] of [
+    [a.x, b.x - a.x, rect.left, rect.right],
+    [a.y, b.y - a.y, rect.top, rect.bottom]
+  ]) {
+    if (delta === 0) {
+      if (origin <= min || origin >= max) return false;
+      continue;
+    }
+    const t1 = (min - origin) / delta;
+    const t2 = (max - origin) / delta;
+    start = Math.max(start, Math.min(t1, t2));
+    end = Math.min(end, Math.max(t1, t2));
+    if (start >= end) return false;
+  }
+  return true;
+}
+
+function polygonContainsRect(points, rect) {
+  if (points.length < 3 || !rectCorners(rect).every(point => pointInPolygon(point, points))) return false;
+  // A concave boundary can enter the rectangle even when all four corners are inside.
+  return !points.some((point, index) =>
+    segmentCrossesRectInterior(point, points[(index + 1) % points.length], rect)
+  );
+}
+
 export function hexToRgba(hex, alpha = 1) {
   if (!hex) return `rgba(48, 209, 88, ${alpha})`;
   let c = hex.replace('#', '');
@@ -344,7 +425,6 @@ class NodeManager {
       cardEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot, .card-resize-handle, .subcanvas-resize-bottom') || e.target === titleInput) return;
         if (e.button !== 0) return;
-        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         e.preventDefault();
         e.stopPropagation();
         this._blurActiveTextEditor();
@@ -365,7 +445,7 @@ class NodeManager {
             this.updateSelectionVisuals();
             this.updateAlignmentBar();
           }
-        } else if (!wasSelected) {
+        } else if (!wasSelected || this.selectedGroupIds.size) {
           this.selectCard(cardId, false);
         }
 
@@ -582,7 +662,6 @@ class NodeManager {
       cardEl.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         if (e.target.closest('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .capsule-pin, .text-capsule, .header-title-input')) return;
-        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
         if (isMultiToggle) {
           this._blurActiveTextEditor();
@@ -590,7 +669,7 @@ class NodeManager {
           e.stopPropagation();
           window.getSelection()?.removeAllRanges();
           this.selectCard(cardId, true);
-        } else if (!this.selectedCardIds.has(cardId) || this.selectedCardIds.size > 1) {
+        } else if (!this.selectedCardIds.has(cardId) || this.selectedCardIds.size > 1 || this.selectedGroupIds.size) {
           this.selectCard(cardId, false);
         }
       });
@@ -606,7 +685,6 @@ class NodeManager {
       headerEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot') || e.target === titleInput) return;
         if (e.button !== 0) return;
-        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         e.preventDefault();
         e.stopPropagation();
         this._blurActiveTextEditor();
@@ -627,7 +705,7 @@ class NodeManager {
             this.updateSelectionVisuals();
             this.updateAlignmentBar();
           }
-        } else if (!wasSelected) {
+        } else if (!wasSelected || this.selectedGroupIds.size) {
           this.selectCard(cardId, false);
         }
 
@@ -1739,13 +1817,12 @@ class NodeManager {
       cardEl.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         if (e.target.closest('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .card-resize-handle-bottom, .card-resize-corner, .header-title-input, .media-header-btn, .webpage-entry-select, .webpage-action-btn')) return;
-        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         const isMultiToggle = e.shiftKey || e.ctrlKey || e.metaKey;
         if (isMultiToggle) {
           e.preventDefault();
           e.stopPropagation();
           this.selectCard(cardId, true);
-        } else if (!this.selectedCardIds.has(cardId) || this.selectedCardIds.size > 1) {
+        } else if (!this.selectedCardIds.has(cardId) || this.selectedCardIds.size > 1 || this.selectedGroupIds.size) {
           this.selectCard(cardId, false);
         }
       });
@@ -1755,7 +1832,6 @@ class NodeManager {
       headerEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.header-pin, .header-port-slot, .media-header-btn') || e.target === titleInput) return;
         if (e.button !== 0) return;
-        if (this.tryStartCtrlGroupDrag(e, cardId)) return;
         e.preventDefault();
         e.stopPropagation();
         this._blurActiveTextEditor();
@@ -1769,7 +1845,7 @@ class NodeManager {
             this.updateSelectionVisuals();
             this.updateAlignmentBar();
           }
-        } else if (!wasSelected) {
+        } else if (!wasSelected || this.selectedGroupIds.size) {
           this.selectCard(cardId, false);
         }
 
@@ -3353,22 +3429,12 @@ class NodeManager {
     return changed;
   }
 
-  findGroupAtBoardPos(boardPos, preferMemberCardId = null) {
+  findGroupAtBoardPos(boardPos, { selectedOnly = false } = {}) {
     if (!boardPos) return null;
     const groups = store.state.groups || [];
-    if (preferMemberCardId) {
-      for (let i = groups.length - 1; i >= 0; i--) {
-        const g = groups[i];
-        if (!Array.isArray(g.cardIds) || !g.cardIds.includes(preferMemberCardId)) continue;
-        const b = this.calcGroupBounds(g);
-        if (!b) continue;
-        if (boardPos.x >= b.x && boardPos.x <= b.x + b.width && boardPos.y >= b.y && boardPos.y <= b.y + b.height) {
-          return g;
-        }
-      }
-    }
     for (let i = groups.length - 1; i >= 0; i--) {
       const g = groups[i];
+      if (selectedOnly && !this.selectedGroupIds.has(g.id)) continue;
       const b = this.calcGroupBounds(g);
       if (!b) continue;
       if (
@@ -3383,9 +3449,9 @@ class NodeManager {
     return null;
   }
 
-  tryStartCtrlGroupDrag(e, cardId = null) {
-    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || canvas.isSpacePressed) return false;
-    const group = this.findGroupAtBoardPos(canvas.screenToBoard(e.clientX, e.clientY), cardId);
+  tryStartCtrlGroupDrag(e) {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || canvas.isSpacePressed) return false;
+    const group = this.findGroupAtBoardPos(canvas.screenToBoard(e.clientX, e.clientY));
     if (!group) return false;
     e.preventDefault();
     e.stopPropagation();
@@ -3406,7 +3472,8 @@ class NodeManager {
     this.hideCanvasContextMenu();
     this.hideGroupContextMenu();
 
-    if (viaCtrlBody || !(e.shiftKey || e.ctrlKey || e.metaKey)) {
+    const wasSelected = this.selectedGroupIds.has(group.id);
+    if (!(e.shiftKey || e.ctrlKey || e.metaKey) && !wasSelected) {
       this.selectedCardIds.clear();
       this.selectedGroupIds.clear();
     }
@@ -3426,6 +3493,7 @@ class NodeManager {
       startY: e.clientY,
       isAlt: e.altKey,
       viaCtrlBody,
+      toggleOffOnClick: (e.ctrlKey || e.metaKey || e.shiftKey) && wasSelected,
       moved: false,
       cloned: false,
       initMinX,
@@ -3592,11 +3660,22 @@ class NodeManager {
 
           const curBounds = this.calcGroupBounds(group);
           if (!curBounds) return;
+          const wasSelected = this.selectedGroupIds.has(group.id);
+          if (!(e.shiftKey || e.ctrlKey || e.metaKey)) {
+            this.selectedCardIds.clear();
+            this.selectedGroupIds.clear();
+          }
+          this.selectedGroupIds.add(group.id);
+          (group.cardIds || []).forEach(id => this.selectedCardIds.delete(id));
+          this.updateSelectionVisuals();
+          this.updateAlignmentBar();
           handle.classList.add('active');
           groupEl.classList.add('active');
           this.activeDrag = {
             type: 'RESIZE_GROUP',
             groupId: group.id,
+            toggleOffOnClick: (e.shiftKey || e.ctrlKey || e.metaKey) && wasSelected,
+            moved: false,
             dir: handle.dataset.dir,
             startX: e.clientX,
             startY: e.clientY,
@@ -3614,7 +3693,7 @@ class NodeManager {
         if (e.button !== 0 || canvas.isSpacePressed) return;
         e.preventDefault();
         e.stopPropagation();
-        this.startGroupDrag(group, e, { viaCtrlBody: false });
+        this.startGroupDrag(group, e);
       });
 
       // Group pins
@@ -4253,15 +4332,28 @@ class NodeManager {
       if (!isBg) return;
       if (e.button !== 0 || canvas.isSpacePressed) return;
 
+      if (!e.altKey && !e.shiftKey && !(e.ctrlKey || e.metaKey) && this.selectedGroupIds.size) {
+        const group = this.findGroupAtBoardPos(canvas.screenToBoard(e.clientX, e.clientY), { selectedOnly: true });
+        if (group) {
+          e.preventDefault();
+          this.startGroupDrag(group, e);
+          return;
+        }
+      }
+      if (this.tryStartCtrlGroupDrag(e)) return;
+
       this._blurActiveTextEditor();
       this.clearCapsuleSelection();
       wires.dismissDropMenu(true);
-
-      if (this.tryStartCtrlGroupDrag(e)) return;
-
+      e.preventDefault();
+      const isLasso = e.altKey;
+      this.marqueeBoxEl.classList.toggle('is-lasso', isLasso);
+      this.marqueeBoxEl.querySelector('#lasso-path polygon')?.setAttribute('fill-rule', 'evenodd');
       this.activeMarquee = {
+        mode: isLasso ? 'lasso' : 'rect',
         startX: e.clientX,
         startY: e.clientY,
+        points: isLasso ? [{ x: e.clientX, y: e.clientY }] : null,
         isAdditive: e.shiftKey || e.ctrlKey || e.metaKey,
         initialSelection: new Set(this.selectedCardIds),
         initialGroupSelection: new Set(this.selectedGroupIds),
@@ -4270,27 +4362,101 @@ class NodeManager {
     });
   }
 
-  _updateCtrlGroupCursor(ctrlActive) {
+  updateMarquee(e, final = false) {
+    const marquee = this.activeMarquee;
+    if (!marquee) return;
+    const point = { x: e.clientX, y: e.clientY };
+    const dist = Math.hypot(point.x - marquee.startX, point.y - marquee.startY);
+    let containsGroup;
+    let intersectsCard;
+
+    if (marquee.mode === 'lasso') {
+      const points = marquee.points;
+      const last = points[points.length - 1];
+      const step = Math.hypot(point.x - last.x, point.y - last.y);
+      if (step <= 6 && !(final && marquee.moved && step > 0)) return;
+      marquee.moved = true;
+      points.push(point);
+      this.marqueeBoxEl.querySelector('#lasso-path polygon')?.setAttribute(
+        'points', points.map(p => `${p.x},${p.y}`).join(' ')
+      );
+      containsGroup = rect => polygonContainsRect(points, rect);
+      intersectsCard = rect => polygonIntersectsRect(points, rect);
+    } else {
+      if (!marquee.moved && dist <= 4) return;
+      marquee.moved = true;
+      const left = Math.min(point.x, marquee.startX);
+      const top = Math.min(point.y, marquee.startY);
+      const right = Math.max(point.x, marquee.startX);
+      const bottom = Math.max(point.y, marquee.startY);
+      Object.assign(this.marqueeBoxEl.style, {
+        left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px`
+      });
+      containsGroup = rect => rect.left >= left && rect.top >= top && rect.right <= right && rect.bottom <= bottom;
+      intersectsCard = rect => !(rect.right < left || rect.left > right || rect.bottom < top || rect.top > bottom);
+    }
+
+    this.marqueeBoxEl.style.display = 'block';
+    const enclosedGroups = new Set();
+    const enclosedMemberIds = new Set();
+    for (const group of store.state.groups || []) {
+      const rect = document.getElementById(`group-dom-${group.id}`)?.getBoundingClientRect();
+      if (!rect || !containsGroup(rect)) continue;
+      enclosedGroups.add(group.id);
+      (group.cardIds || []).forEach(id => enclosedMemberIds.add(id));
+    }
+    const intersected = new Set();
+    for (const card of store.state.cards) {
+      if (enclosedMemberIds.has(card.id)) continue;
+      const rect = document.getElementById(`card-dom-${card.id}`)?.getBoundingClientRect();
+      if (rect && intersectsCard(rect)) intersected.add(card.id);
+    }
+    this.selectedCardIds = marquee.isAdditive
+      ? new Set([...marquee.initialSelection, ...intersected]) : intersected;
+    this.selectedGroupIds = marquee.isAdditive
+      ? new Set([...marquee.initialGroupSelection, ...enclosedGroups]) : enclosedGroups;
+    this.getSelectedMemberIds().forEach(id => this.selectedCardIds.delete(id));
+    this.updateSelectionVisuals();
+    this.updateAlignmentBar();
+  }
+
+  finishMarquee(cancelled = false) {
+    const marquee = this.activeMarquee;
+    if (!marquee) return;
+    this.activeMarquee = null;
+    this.marqueeBoxEl.style.display = 'none';
+    this.marqueeBoxEl.classList.remove('is-lasso');
+    this.marqueeBoxEl.querySelector('#lasso-path polygon')?.removeAttribute('points');
+    if (cancelled) {
+      this.selectedCardIds = marquee.initialSelection;
+      this.selectedGroupIds = marquee.initialGroupSelection;
+      this.updateSelectionVisuals();
+      this.updateAlignmentBar();
+    } else if (!marquee.moved && !marquee.isAdditive) {
+      this.clearSelection();
+    }
+  }
+
+  _updateGroupCursor({ ctrlKey, metaKey, shiftKey, altKey } = {}) {
     if (!this.viewportEl || canvas.isSpacePressed || canvas.dragAction || this.activeMarquee || wires.activeDrag) return;
     if (this.activeDrag?.type === 'MOVE_GROUP') {
       this.viewportEl.style.cursor = 'grabbing';
       return;
     }
     if (this.activeDrag) return;
-    if (!ctrlActive || !this._lastPointer) {
+    if (!this._lastPointer) {
       if (this.viewportEl.style.cursor === 'grab' || this.viewportEl.style.cursor === 'grabbing') {
         this.viewportEl.style.cursor = '';
       }
       return;
     }
     const { clientX, clientY, target } = this._lastPointer;
-    const isBgOrCardBody = (
-      target === this.viewportEl ||
-      target === document.getElementById('board') ||
-      target?.id === 'wire-svg' ||
-      (target?.closest?.('.note-card') && !target.closest?.('.note-header, .header-pin, .header-port-slot, .card-resize-handle, .capsule-pin, .text-capsule, .header-title-input'))
-    );
-    if (isBgOrCardBody && this.findGroupAtBoardPos(canvas.screenToBoard(clientX, clientY))) {
+    const isBackground = target === this.viewportEl ||
+      target === document.getElementById('board') || target?.id === 'wire-svg';
+    const ctrlActive = ctrlKey || metaKey;
+    const group = isBackground && !shiftKey && !altKey && (ctrlActive || this.selectedGroupIds.size) &&
+      this.findGroupAtBoardPos(canvas.screenToBoard(clientX, clientY), { selectedOnly: !ctrlActive });
+    if (group) {
       this.viewportEl.style.cursor = 'grab';
     } else if (this.viewportEl.style.cursor === 'grab') {
       this.viewportEl.style.cursor = '';
@@ -4301,63 +4467,8 @@ class NodeManager {
     window.addEventListener('mousemove', (e) => {
       this._lastPointer = { clientX: e.clientX, clientY: e.clientY, target: e.target };
 
-      this._updateCtrlGroupCursor((e.ctrlKey || e.metaKey) && !e.shiftKey);
-      if (this.activeMarquee) {
-        const dist = Math.hypot(e.clientX - this.activeMarquee.startX, e.clientY - this.activeMarquee.startY);
-        if (dist > 4) {
-          this.activeMarquee.moved = true;
-          const left = Math.min(e.clientX, this.activeMarquee.startX);
-          const top = Math.min(e.clientY, this.activeMarquee.startY);
-          const width = Math.abs(e.clientX - this.activeMarquee.startX);
-          const height = Math.abs(e.clientY - this.activeMarquee.startY);
-
-          this.marqueeBoxEl.style.display = 'block';
-          this.marqueeBoxEl.style.left = `${left}px`;
-          this.marqueeBoxEl.style.top = `${top}px`;
-          this.marqueeBoxEl.style.width = `${width}px`;
-          this.marqueeBoxEl.style.height = `${height}px`;
-
-          const marqueeRect = { left, top, right: left + width, bottom: top + height };
-          const intersected = new Set();
-          const enclosedGroups = new Set();
-          const enclosedMemberIds = new Set();
-
-          for (const group of store.state.groups || []) {
-            const groupEl = document.getElementById(`group-dom-${group.id}`);
-            const r = groupEl?.getBoundingClientRect();
-            if (!r) continue;
-            const contained = r.left >= marqueeRect.left &&
-              r.top >= marqueeRect.top &&
-              r.right <= marqueeRect.right &&
-              r.bottom <= marqueeRect.bottom;
-            if (contained) {
-              enclosedGroups.add(group.id);
-              (group.cardIds || []).forEach(id => enclosedMemberIds.add(id));
-            }
-          }
-
-          store.state.cards.forEach(card => {
-            if (enclosedMemberIds.has(card.id)) return;
-            const el = document.getElementById(`card-dom-${card.id}`);
-            if (!el) return;
-            const r = el.getBoundingClientRect();
-            const overlap = !(r.right < marqueeRect.left || r.left > marqueeRect.right || r.bottom < marqueeRect.top || r.top > marqueeRect.bottom);
-            if (overlap) intersected.add(card.id);
-          });
-
-          if (this.activeMarquee.isAdditive) {
-            this.selectedCardIds = new Set([...this.activeMarquee.initialSelection, ...intersected]);
-            this.selectedGroupIds = new Set([...this.activeMarquee.initialGroupSelection, ...enclosedGroups]);
-          } else {
-            this.selectedCardIds = intersected;
-            this.selectedGroupIds = enclosedGroups;
-          }
-          this.getSelectedMemberIds().forEach(id => this.selectedCardIds.delete(id));
-
-          this.updateSelectionVisuals();
-          this.updateAlignmentBar();
-        }
-      }
+      this._updateGroupCursor(e);
+      this.updateMarquee(e);
 
       if (this.activeDrag) {
         const { zoom } = store.state.viewport;
@@ -4718,6 +4829,9 @@ class NodeManager {
             wires.render();
           }
         } else if (this.activeDrag.type === 'RESIZE_GROUP') {
+          const dist = Math.hypot(e.clientX - this.activeDrag.startX, e.clientY - this.activeDrag.startY);
+          if (!this.activeDrag.moved && dist <= 4) return;
+          this.activeDrag.moved = true;
           const dx = (e.clientX - this.activeDrag.startX) / zoom;
           const dy = (e.clientY - this.activeDrag.startY) / zoom;
           const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
@@ -4796,12 +4910,10 @@ class NodeManager {
     });
 
     window.addEventListener('mouseup', (e) => {
-      if (this.activeMarquee) {
-        this.marqueeBoxEl.style.display = 'none';
-        if (!this.activeMarquee.moved && !this.activeMarquee.isAdditive) {
-          this.clearSelection();
-        }
-        this.activeMarquee = null;
+      if (this.activeMarquee && e.button === 0) {
+        this.updateMarquee(e, true);
+        this.finishMarquee();
+        this._updateGroupCursor(e);
       }
 
       if (this.activeDrag) {
@@ -4859,18 +4971,35 @@ class NodeManager {
             this.viewportEl.style.cursor = '';
           }
           if (!this.activeDrag.moved) {
+            if (this.activeDrag.toggleOffOnClick) {
+              this.selectedGroupIds.delete(this.activeDrag.groupId);
+              this.updateSelectionVisuals();
+              this.updateAlignmentBar();
+            }
             this.activeDrag = null;
+            this._updateGroupCursor(e);
             return;
           }
           this.updateGroupDOMBounds(this.activeDrag.groupId);
+          this.clearSelection();
         } else if (this.activeDrag.type === 'RESIZE_GROUP') {
           document.querySelectorAll('.group-resize-handle.active').forEach(h => h.classList.remove('active'));
           document.getElementById(`group-dom-${this.activeDrag.groupId}`)?.classList.remove('active');
+          if (!this.activeDrag.moved) {
+            if (this.activeDrag.toggleOffOnClick) {
+              this.selectedGroupIds.delete(this.activeDrag.groupId);
+              this.updateSelectionVisuals();
+              this.updateAlignmentBar();
+            }
+            this.activeDrag = null;
+            return;
+          }
           const group = store.state.groups?.find(g => g.id === this.activeDrag.groupId);
           if (group) {
             this.syncGroupMembershipByBounds(group);
           }
           this.updateGroupDOMBounds(this.activeDrag.groupId);
+          this.clearSelection();
         } else if (this.activeDrag.type === 'RESIZE_CARD' || this.activeDrag.type === 'RESIZE_MEDIA_CORNER' || this.activeDrag.type === 'RESIZE_WEBPAGE') {
           document.querySelectorAll('.card-resize-handle.active, .card-resize-handle-bottom.active, .card-resize-corner.active').forEach(h => h.classList.remove('active'));
         } else if (this.activeDrag.type === 'RESIZE_SUBCANVAS_HEIGHT') {
@@ -4885,10 +5014,37 @@ class NodeManager {
     });
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Control' || e.key === 'Meta') {
-        this._updateCtrlGroupCursor(!e.shiftKey);
+      if (['Control', 'Meta', 'Shift', 'Alt'].includes(e.key)) {
+        this._updateGroupCursor(e);
+      }
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Escape' && this.activeMarquee) {
+        e.preventDefault();
+        this.finishMarquee(true);
+        this._updateGroupCursor(e);
+        return;
       }
       if (window.__settings?.isRecordingShortcut?.()) return;
+      const targetEl = e.target instanceof Element ? e.target : e.target?.parentElement;
+      const activeEl = document.activeElement instanceof Element ? document.activeElement : null;
+      const isEditingText = isTextEditingTarget(e);
+      const search = window.__search;
+      const searchFocused = search?.isOpen?.() && search.panelEl?.contains(activeEl);
+      if (!window.__settings?.isOpen?.()) {
+        if (!isEditingText || searchFocused) {
+          if (matchesShortcut(e, store.getShortcut('searchCurrentCanvas'))) {
+            e.preventDefault();
+            search?.open('current');
+            return;
+          }
+          if (matchesShortcut(e, store.getShortcut('searchAllCanvases'))) {
+            e.preventDefault();
+            search?.open('all');
+            return;
+          }
+        }
+        if ((searchFocused || e.key === 'Escape') && search?.handleKeydown?.(e)) return;
+      }
 
       // Shortcut to toggle settings modal
       if (matchesShortcut(e, store.getShortcut('openSettings'))) {
@@ -4912,16 +5068,6 @@ class NodeManager {
           return;
         }
       }
-
-      if (e.isComposing || e.keyCode === 229) return;
-      const targetEl = e.target instanceof Element ? e.target : e.target?.parentElement;
-      const activeEl = document.activeElement instanceof Element ? document.activeElement : null;
-      const isEditingText = Boolean(
-        targetEl?.isContentEditable ||
-        activeEl?.isContentEditable ||
-        targetEl?.closest?.('input, textarea, select, [contenteditable]') ||
-        activeEl?.closest?.('input, textarea, select, [contenteditable]')
-      );
 
       if (!isEditingText && matchesShortcut(e, store.getShortcut('undo'))) {
         e.preventDefault();
@@ -5088,16 +5234,18 @@ class NodeManager {
     });
 
     window.addEventListener('keyup', (e) => {
-      if (e.key === 'Control' || e.key === 'Meta') {
-        this._updateCtrlGroupCursor(false);
-        if (!store.state.settings?.alignMode) {
-          wires.clearGuideLines();
-        }
+      if (['Control', 'Meta', 'Shift', 'Alt'].includes(e.key) || e.code === 'Space') {
+        this._updateGroupCursor(e);
+      }
+      if ((e.key === 'Control' || e.key === 'Meta') && !store.state.settings?.alignMode) {
+        wires.clearGuideLines();
       }
     });
 
     window.addEventListener('blur', () => {
-      this._updateCtrlGroupCursor(false);
+      this.finishMarquee(true);
+      this._lastPointer = null;
+      this._updateGroupCursor();
     });
   }
 }

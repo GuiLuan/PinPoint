@@ -212,8 +212,21 @@
     </div>
   </main>
 
-  <!-- 鼠标直接拉选框 -->
-  <div id="marquee-box"></div>
+  <!-- 鼠标直接拉选框或 Alt 套索 -->
+  <div id="marquee-box">
+    <svg id="lasso-path" aria-hidden="true"><polygon></polygon></svg>
+  </div>
+
+  <section id="search-panel" aria-hidden="true" aria-label="快速搜索">
+    <div class="search-panel-header">
+      <div class="search-panel-title">快速搜索 <span id="search-scope">当前画布</span></div>
+      <button type="button" id="search-close" class="search-close" aria-label="关闭搜索">×</button>
+    </div>
+    <input id="search-input" type="search" autocomplete="off" placeholder="搜索节点标题" aria-label="搜索节点" />
+    <label class="search-option"><input id="search-include-content" type="checkbox" /> 搜索正文内容</label>
+    <div id="search-results" class="search-results"></div>
+    <div id="search-empty" class="search-empty" role="status">输入关键词开始搜索</div>
+  </section>
 
   <!-- 划选/改色浮动工具栏（左侧预设一点即用 + 右侧素雅调色盘展开确认） -->
   <div id="selection-popover">

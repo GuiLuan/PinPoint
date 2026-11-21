@@ -7,6 +7,7 @@ import { minimap } from './minimap.js';
 import { sync } from './sync.js';
 import { library } from './library.js';
 import { media } from './media.js';
+import { search } from './search.js';
 import { CANVAS_ICONS, defaultCanvasIcon, renderCanvasIcon } from './canvasIcons.js';
 
 function escapeHtml(str) {
@@ -33,6 +34,7 @@ async function initApp() {
   const minimapWidgetEl = document.getElementById('minimap-widget');
   const libraryDrawerEl = document.getElementById('library-drawer');
   const btnLibraryEl = document.getElementById('btn-library');
+  const searchPanelEl = document.getElementById('search-panel');
 
   const btnCanvasesEl = document.getElementById('btn-canvases');
   const canvasesDrawerEl = document.getElementById('canvases-drawer');
@@ -58,6 +60,7 @@ async function initApp() {
   settings.init(settingsOverlayEl);
   minimap.init(minimapWidgetEl);
   library.init(libraryDrawerEl, btnLibraryEl);
+  search.init(searchPanelEl);
 
   window.__store = store;
   window.__canvas = canvas;
@@ -68,6 +71,7 @@ async function initApp() {
   window.__sync = sync;
   window.__library = library;
   window.__media = media;
+  window.__search = search;
 
   canvas.onTransform = () => {
     nodes.updatePopoverPosition();
