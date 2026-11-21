@@ -110,6 +110,27 @@ class ApiRouter:
         def get_canvas_summary(_query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
             return 200, self.store.get_summary(canvas_id=canvasId)
 
+        @self._route("GET", "/canvases/{canvasId}/snapshots")
+        def list_snapshots(_query: dict[str, list[str]], _body: Any, canvasId: str) -> tuple[int, Any]:
+            return 200, self.store.list_snapshots(canvasId)
+
+        @self._route("POST", "/canvases/{canvasId}/snapshots")
+        def create_snapshot(_query: dict[str, list[str]], body: Any, canvasId: str) -> tuple[int, Any]:
+            payload = body if isinstance(body, dict) else {}
+            return 201, self.store.create_snapshot(canvasId, reason=str(payload.get("reason", "manual")), force=True)
+
+        @self._route("GET", "/canvases/{canvasId}/snapshots/{snapshotId}")
+        def get_snapshot(_query: dict[str, list[str]], _body: Any, canvasId: str, snapshotId: str) -> tuple[int, Any]:
+            return 200, self.store.get_snapshot(canvasId, snapshotId)
+
+        @self._route("POST", "/canvases/{canvasId}/snapshots/{snapshotId}/restore")
+        def restore_snapshot(_query: dict[str, list[str]], _body: Any, canvasId: str, snapshotId: str) -> tuple[int, Any]:
+            return 200, self.store.restore_snapshot(canvasId, snapshotId)
+
+        @self._route("DELETE", "/canvases/{canvasId}/snapshots/{snapshotId}")
+        def delete_snapshot(_query: dict[str, list[str]], _body: Any, canvasId: str, snapshotId: str) -> tuple[int, Any]:
+            return 200, self.store.delete_snapshot(canvasId, snapshotId)
+
         # Graph & Workspace
         @self._route("GET", "/graph")
         def get_graph(query: dict[str, list[str]], _body: Any) -> tuple[int, Any]:

@@ -18,6 +18,84 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+function initSnapshotsUI() {
+  const overlay = document.getElementById('snapshots-overlay');
+  const list = document.getElementById('snapshots-list');
+  const detail = document.getElementById('snapshot-detail');
+  const title = document.getElementById('snapshots-canvas-title');
+  if (!overlay || !list) return;
+  let activeCanvasId = null;
+  const reasonLabel = { auto: '自动', manual: '手动', 'before-restore': '恢复前' };
+  const formatTime = (ts) => new Date(ts).toLocaleString('zh-CN', { hour12: false });
+  const request = async (url, options) => {
+    const res = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) } });
+    const body = await res.json();
+    if (!res.ok || body?.ok === false) throw new Error(body?.error?.message || '请求失败');
+    return body?.data ?? body;
+  };
+  const savePendingChanges = async () => {
+    if (!store.hasUnsavedChanges()) return;
+    const result = await sync.saveAllToBackend({ manual: false });
+    if (!result?.ok) throw new Error('当前编辑尚未保存，无法执行快照操作');
+  };
+  const render = async () => {
+    list.innerHTML = '<div class="library-empty-state"><p>正在读取快照...</p></div>';
+    try {
+      const rows = await request(`/api/v1/canvases/${encodeURIComponent(activeCanvasId)}/snapshots`);
+      if (!rows.length) {
+        list.innerHTML = '<div class="library-empty-state"><p>暂无快照，点击“立即创建”保存当前版本</p></div>';
+        return;
+      }
+      list.innerHTML = rows.map(row => `
+        <div class="snapshot-row" data-snapshot-id="${escapeHtml(row.id)}">
+          <div class="snapshot-row-meta"><strong>${formatTime(row.createdAt)}</strong><small>${reasonLabel[row.reason] || row.reason} · ${row.cardCount} 节点 · ${row.connectionCount} 连接 · ${row.groupCount} 分组</small></div>
+          <div class="snapshot-row-actions"><button type="button" class="settings-action-btn secondary snapshot-view-btn">查看</button><button type="button" class="settings-action-btn snapshot-restore-btn">恢复</button></div>
+        </div>`).join('');
+      list.querySelectorAll('.snapshot-view-btn').forEach(btn => btn.addEventListener('click', async () => {
+        const id = btn.closest('.snapshot-row').dataset.snapshotId;
+        const snap = await request(`/api/v1/canvases/${encodeURIComponent(activeCanvasId)}/snapshots/${encodeURIComponent(id)}`);
+        detail.hidden = false;
+        detail.textContent = JSON.stringify({ 时间: formatTime(snap.createdAt), 类型: reasonLabel[snap.reason] || snap.reason, 标题: snap.state?.title, 节点: snap.state?.cards || [], 连接: snap.state?.connections || [], 分组: snap.state?.groups || [] }, null, 2);
+      }));
+      list.querySelectorAll('.snapshot-restore-btn').forEach(btn => btn.addEventListener('click', async () => {
+        const id = btn.closest('.snapshot-row').dataset.snapshotId;
+        if (!confirm('恢复此快照？当前版本会先自动保存为“恢复前”快照。')) return;
+        try {
+          await savePendingChanges();
+          const restored = await request(`/api/v1/canvases/${encodeURIComponent(activeCanvasId)}/snapshots/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+          if (restored) {
+            if (activeCanvasId !== store.activeCanvasId) {
+              // Drop a stale local entry before switching so navigation fetches
+              // the just-restored server state for this canvas.
+              store.canvasesCache.delete(activeCanvasId);
+              store.clearDirtyFor([activeCanvasId]);
+              await store.navigateToCanvas(activeCanvasId);
+            }
+            sync.applyRemote(restored, 'SNAPSHOT_RESTORED');
+          }
+          store.emitToast('已恢复历史快照', 'success');
+          overlay.classList.remove('is-open');
+        } catch (err) { store.emitToast(err.message || '恢复失败', 'warning'); }
+      }));
+    } catch (err) { list.innerHTML = `<div class="library-empty-state"><p>${escapeHtml(err.message || '读取快照失败')}</p></div>`; }
+  };
+  const open = async (canvasId = store.activeCanvasId) => {
+    activeCanvasId = canvasId;
+    const row = store.getCanvasHierarchy().find(item => item.id === canvasId);
+    title.textContent = row?.title || store.activeCanvasTitle || canvasId;
+    detail.hidden = true;
+    overlay.classList.add('is-open');
+    await render();
+  };
+  document.getElementById('btn-close-snapshots')?.addEventListener('click', () => overlay.classList.remove('is-open'));
+  document.getElementById('btn-create-snapshot')?.addEventListener('click', async () => {
+    try { await savePendingChanges(); await request(`/api/v1/canvases/${encodeURIComponent(activeCanvasId)}/snapshots`, { method: 'POST', body: JSON.stringify({ reason: 'manual' }) }); await render(); store.emitToast('已创建快照', 'success'); }
+    catch (err) { store.emitToast(err.message || '创建快照失败', 'warning'); }
+  });
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.remove('is-open'); });
+  window.__snapshots = { open, close: () => overlay.classList.remove('is-open') };
+}
+
 async function initApp() {
   const viewportEl = document.getElementById('viewport');
   const boardEl = document.getElementById('board');
@@ -58,6 +136,7 @@ async function initApp() {
   wires.init(wireSvgEl, (pos, skipCommit, title, headerColor) => nodes.spawnNode(pos, title, skipCommit, headerColor), wireDropMenuEl);
   nodes.init(cardsContainerEl, selectionPopoverEl, marqueeBoxEl, alignmentBarEl, viewportEl, capsuleActionBarEl, canvasContextMenuEl);
   settings.init(settingsOverlayEl);
+  initSnapshotsUI();
   minimap.init(minimapWidgetEl);
   library.init(libraryDrawerEl, btnLibraryEl);
   search.init(searchPanelEl);
@@ -745,6 +824,9 @@ async function initApp() {
               <line x1="12" y1="15" x2="12" y2="3"></line>
             </svg>
           </button>
+          <button type="button" class="canvas-tree-action-btn canvas-tree-snapshot-btn" title="历史快照">
+            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg>
+          </button>
         </div>
       `;
 
@@ -895,6 +977,10 @@ async function initApp() {
       itemEl.querySelector('.canvas-tree-export-btn')?.addEventListener('click', (e) => {
         e.stopPropagation();
         store.exportCanvasToFile(row.id);
+      });
+      itemEl.querySelector('.canvas-tree-snapshot-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.__snapshots?.open?.(row.id);
       });
 
       canvasTreeListEl.appendChild(itemEl);

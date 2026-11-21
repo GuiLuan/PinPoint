@@ -21,6 +21,11 @@ export const DEFAULT_SAVE_SETTINGS = {
   mode: 'auto',
   intervalSec: 1
 };
+export const DEFAULT_SNAPSHOT_SETTINGS = {
+  enabled: true,
+  interval: '1h',
+  maxCount: 100
+};
 
 export const DEFAULT_MEDIA_SETTINGS = {
   webpageLoadMode: 'smart'
@@ -53,6 +58,7 @@ export const DEFAULT_SETTINGS = {
     width: 348
   },
   save: { ...DEFAULT_SAVE_SETTINGS },
+  snapshots: { ...DEFAULT_SNAPSHOT_SETTINGS },
   media: { ...DEFAULT_MEDIA_SETTINGS },
   navigation: { ...DEFAULT_NAVIGATION_SETTINGS },
   toast: { ...DEFAULT_TOAST_SETTINGS },
@@ -170,6 +176,13 @@ class StateManager {
     const wheelMode = ['auto', 'trackpad', 'mouse'].includes(nv.wheelMode)
       ? nv.wheelMode
       : 'auto';
+    const snap = s.snapshots || {};
+    const snapshotInterval = typeof snap.interval === 'string' && /^\s*\d+\s*[dhms](?:\s*\d+\s*[dhms])*\s*$/i.test(snap.interval)
+      ? snap.interval.replace(/\s+/g, '').toLowerCase()
+      : DEFAULT_SNAPSHOT_SETTINGS.interval;
+    const snapshotMaxCount = typeof snap.maxCount === 'number' && Number.isInteger(snap.maxCount)
+      ? Math.max(1, Math.min(1000, snap.maxCount))
+      : DEFAULT_SNAPSHOT_SETTINGS.maxCount;
     const ts = s.toast || {};
     const toastPos = VALID_TOAST_POSITIONS.includes(ts.position) ? ts.position : 'bottom-left';
     const toastDur = typeof ts.durationSec === 'number' && !Number.isNaN(ts.durationSec)
@@ -212,6 +225,11 @@ class StateManager {
       save: {
         mode: saveMode,
         intervalSec
+      },
+      snapshots: {
+        enabled: snap.enabled !== false,
+        interval: snapshotInterval,
+        maxCount: snapshotMaxCount
       },
       media: {
         webpageLoadMode
@@ -532,6 +550,7 @@ class StateManager {
 
     // Canvas tree metadata is synchronized separately from graph events.
     if (canvasPayload.title) this.activeCanvasTitle = canvasPayload.title;
+    if (canvasPayload.icon !== undefined) this.activeCanvasIcon = canvasPayload.icon || null;
     if (canvasPayload.parentCanvasId !== undefined) this.parentCanvasId = canvasPayload.parentCanvasId;
     if (Array.isArray(canvasPayload.breadcrumbs) && canvasPayload.breadcrumbs.length > 0) {
       this.breadcrumbs = clone(canvasPayload.breadcrumbs);
@@ -562,7 +581,7 @@ class StateManager {
     const nextSnap = this.snapshot();
     const nextVpJson = JSON.stringify(this.state.viewport);
 
-    if (sourceEvent === 'GRAPH_REPLACED' || sourceEvent === 'STATE_RESET' || sourceEvent === 'CONNECTED' || sourceEvent === 'CANVAS_LOADED') {
+    if (sourceEvent === 'GRAPH_REPLACED' || sourceEvent === 'STATE_RESET' || sourceEvent === 'CONNECTED' || sourceEvent === 'CANVAS_LOADED' || sourceEvent === 'SNAPSHOT_RESTORED') {
       this.undoStack = [nextSnap];
       this.redoStack = [];
     } else if (nextSnap !== prevSnap) {
@@ -1564,6 +1583,25 @@ class StateManager {
     }
     if (typeof patch.intervalSec === 'number' && !Number.isNaN(patch.intervalSec)) {
       sv.intervalSec = Math.max(1, Math.min(300, Math.round(patch.intervalSec)));
+    }
+    this.markSettingsDirty();
+    this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });
+  }
+
+  getSnapshotSettings() {
+    if (!this.state.settings) this.state.settings = clone(DEFAULT_SETTINGS);
+    if (!this.state.settings.snapshots) this.state.settings.snapshots = { ...DEFAULT_SNAPSHOT_SETTINGS };
+    return this.state.settings.snapshots;
+  }
+
+  setSnapshotSettings(patch) {
+    const ss = this.getSnapshotSettings();
+    if (typeof patch.enabled === 'boolean') ss.enabled = patch.enabled;
+    if (typeof patch.interval === 'string' && /^\s*\d+\s*[dhms](?:\s*\d+\s*[dhms])*\s*$/i.test(patch.interval)) {
+      ss.interval = patch.interval.replace(/\s+/g, '').toLowerCase();
+    }
+    if (typeof patch.maxCount === 'number' && Number.isInteger(patch.maxCount)) {
+      ss.maxCount = Math.max(1, Math.min(1000, patch.maxCount));
     }
     this.markSettingsDirty();
     this.notify({ type: 'SETTINGS_CHANGED', settings: this.state.settings });

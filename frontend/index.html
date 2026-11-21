@@ -917,6 +917,37 @@
               </div>
             </div>
 
+            <div class="settings-section" id="settings-snapshot-section">
+              <div class="settings-section-header">
+                <div class="settings-title-with-info">
+                  <h4 class="settings-section-title" style="font-size: 12px;">历史快照</h4>
+                  <span class="info-hint" data-tooltip="按设定间隔为每个画布保存可恢复的历史版本"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></span>
+                </div>
+              </div>
+              <div class="settings-card-group">
+                <div class="settings-row" id="row-toggle-snapshots" style="cursor: pointer;">
+                  <div class="settings-row-info">
+                    <span class="settings-row-label">自动保存历史快照</span>
+                    <span class="settings-row-sub">每个画布独立保留历史版本</span>
+                  </div>
+                  <div class="toggle-pill" id="settings-toggle-snapshots"><div class="toggle-knob"></div></div>
+                </div>
+              </div>
+              <div class="snapshot-interval-control">
+                <label for="snapshot-interval-input">保存间隔</label>
+                <input id="snapshot-interval-input" type="text" value="1h" placeholder="例如 1d1h" spellcheck="false" />
+                <span class="settings-row-sub">支持 1d、1d1h、1h30m</span>
+              </div>
+              <div class="snapshot-interval-control">
+                <label for="snapshot-max-count-input">保留数量</label>
+                <input id="snapshot-max-count-input" type="number" value="100" min="1" max="1000" step="1" />
+                <span class="settings-row-sub">每个画布最多保留 1–1000 个版本</span>
+              </div>
+              <div class="palette-actions-row">
+                <button class="settings-action-btn secondary" id="btn-open-snapshots" type="button">查看当前画布快照</button>
+              </div>
+            </div>
+
             <div class="palette-actions-row">
               <button class="settings-action-btn" id="btn-settings-save-now" type="button">
                 <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
@@ -1149,6 +1180,17 @@
       <div class="html-entry-picker-footer">
         <button type="button" id="btn-cancel-html-entry" class="settings-action-btn secondary">取消</button>
       </div>
+    </div>
+  </div>
+
+  <div id="snapshots-overlay" class="snapshots-overlay" role="dialog" aria-modal="true" aria-label="历史快照">
+    <div class="snapshots-modal">
+      <div class="snapshots-header">
+        <div><h3>历史快照</h3><span id="snapshots-canvas-title"></span></div>
+        <div class="snapshots-header-actions"><button id="btn-create-snapshot" class="settings-action-btn secondary" type="button">立即创建</button><button id="btn-close-snapshots" class="library-close-btn" type="button" aria-label="关闭">×</button></div>
+      </div>
+      <div id="snapshots-list" class="snapshots-list"></div>
+      <div id="snapshot-detail" class="snapshot-detail" hidden></div>
     </div>
   </div>
 

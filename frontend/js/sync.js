@@ -294,7 +294,7 @@ class SyncManager {
         ) && evt.state?.cards?.some(card =>
           card.kind === 'subcanvas' && (evt.type !== 'CARD_UPDATED' || card.id === evt.payload?.cardId)
         );
-        if (evt.type === 'CANVAS_CREATED' || evt.type === 'CANVAS_DELETED' || evt.type === 'CANVAS_UPDATED' || evt.type === 'GRAPH_SYNCED' || evt.type === 'GRAPH_REPLACED' || mayHaveChangedPortalColor) {
+        if (evt.type === 'CANVAS_CREATED' || evt.type === 'CANVAS_DELETED' || evt.type === 'CANVAS_UPDATED' || evt.type === 'GRAPH_SYNCED' || evt.type === 'GRAPH_REPLACED' || evt.type === 'SNAPSHOT_RESTORED' || mayHaveChangedPortalColor) {
           store.refreshCanvasTree();
         }
 
@@ -321,8 +321,8 @@ class SyncManager {
           return;
         }
 
-        // Do not overwrite locally modified unsaved work automatically
-        if (store.isCanvasDirty(store.activeCanvasId)) {
+        // Snapshot restoration is an explicit, authoritative overwrite.
+        if (store.isCanvasDirty(store.activeCanvasId) && evt.type !== 'SNAPSHOT_RESTORED') {
           return;
         }
 
@@ -375,6 +375,9 @@ class SyncManager {
     this.isApplyingRemote = true;
     try {
       store.applyRemoteCanvas(remoteState, sourceEvent);
+      if (sourceEvent === 'SNAPSHOT_RESTORED') {
+        store.clearDirtyFor([store.activeCanvasId]);
+      }
     } finally {
       this.isApplyingRemote = false;
     }

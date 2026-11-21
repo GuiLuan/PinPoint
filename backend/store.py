@@ -31,6 +31,7 @@ from .models import (
     DEFAULT_NAVIGATION_SETTINGS,
     DEFAULT_PALETTE,
     DEFAULT_SAVE_SETTINGS,
+    DEFAULT_SNAPSHOT_SETTINGS,
     DEFAULT_SHORTCUTS,
     DEFAULT_STATE,
     DEFAULT_SUBCANVAS_HEIGHT,
@@ -139,6 +140,10 @@ class GraphStore:
         }
         self.undo_stacks[ROOT_CANVAS_ID] = [self._snapshot(ROOT_CANVAS_ID)]
         self.redo_stacks[ROOT_CANVAS_ID] = []
+        self._snapshot_stop = threading.Event()
+        self._snapshot_wakeup = threading.Event()
+        self._snapshot_thread = threading.Thread(target=self._snapshot_worker, name="pinpoint-snapshots", daemon=True)
+        self._snapshot_thread.start()
 
     def _current_canvas_id(self) -> str:
         return getattr(self._local, "active_canvas_id", None) or ROOT_CANVAS_ID
@@ -185,6 +190,11 @@ class GraphStore:
         self.redo_stacks[cid] = value
 
     def close(self) -> None:
+        self._snapshot_stop.set()
+        self._snapshot_wakeup.set()
+        thread = getattr(self, "_snapshot_thread", None)
+        if thread and thread.is_alive():
+            thread.join(timeout=2)
         with self._lock:
             self.db.close()
             if self._temp_assets_dir is not None:
@@ -382,6 +392,21 @@ class GraphStore:
         if wheel_mode not in VALID_WHEEL_MODES:
             wheel_mode = DEFAULT_NAVIGATION_SETTINGS["wheelMode"]
 
+        snap_raw = s.get("snapshots") if isinstance(s.get("snapshots"), dict) else {}
+        snapshot_enabled = bool(snap_raw.get("enabled", DEFAULT_SNAPSHOT_SETTINGS["enabled"]))
+        snapshot_interval = snap_raw.get("interval", DEFAULT_SNAPSHOT_SETTINGS["interval"])
+        snapshot_max_count = snap_raw.get("maxCount", DEFAULT_SNAPSHOT_SETTINGS["maxCount"])
+        if isinstance(snapshot_max_count, bool) or not isinstance(snapshot_max_count, (int, float)):
+            snapshot_max_count = DEFAULT_SNAPSHOT_SETTINGS["maxCount"]
+        snapshot_max_count = max(1, min(1000, int(snapshot_max_count)))
+        try:
+            snapshot_interval = self.parse_duration(snapshot_interval)
+            if snapshot_interval > 365 * 86400:
+                raise ValueError("Snapshot interval cannot exceed 365 days.")
+            snapshot_interval_text = self.format_duration(snapshot_interval)
+        except (TypeError, ValueError):
+            snapshot_interval_text = DEFAULT_SNAPSHOT_SETTINGS["interval"]
+
         return {
             "alignMode": bool(s.get("alignMode", False)),
             "gridSnapMode": bool(s.get("gridSnapMode", False)),
@@ -411,12 +436,48 @@ class GraphStore:
             "navigation": {
                 "wheelMode": wheel_mode,
             },
+            "snapshots": {
+                "enabled": snapshot_enabled,
+                "interval": snapshot_interval_text,
+                "maxCount": snapshot_max_count,
+            },
             "toast": {
                 "position": toast_pos,
                 "durationSec": toast_dur,
             },
             "shortcuts": shortcuts,
         }
+
+    @staticmethod
+    def parse_duration(value: Any) -> int:
+        """Parse compact duration text such as 1d1h30m into seconds."""
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            seconds = int(value)
+            if seconds > 0:
+                return seconds
+        if not isinstance(value, str):
+            raise ValueError("Duration must be text like 1d1h or 30m.")
+        text = value.strip().lower()
+        if not text:
+            raise ValueError("Duration cannot be empty.")
+        matches = re.findall(r"(\d+)\s*([dhms])", text)
+        if not matches or "".join(f"{n}{u}" for n, u in matches) != re.sub(r"\s+", "", text):
+            raise ValueError("Duration must use d, h, m, or s units.")
+        units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+        seconds = sum(int(number) * units[unit] for number, unit in matches)
+        if seconds <= 0:
+            raise ValueError("Duration must be greater than zero.")
+        return seconds
+
+    @staticmethod
+    def format_duration(seconds: int) -> str:
+        remaining = int(seconds)
+        parts: list[str] = []
+        for unit, size in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+            count, remaining = divmod(remaining, size)
+            if count:
+                parts.append(f"{count}{unit}")
+        return "".join(parts) or "1s"
 
     def _normalize_viewport(self, raw_vp: dict[str, Any] | None) -> dict[str, Any]:
         vp = raw_vp or {}
@@ -555,6 +616,135 @@ class GraphStore:
             },
             ensure_ascii=False,
         )
+
+    def _snapshot_document(self, canvas_id: str) -> dict[str, Any]:
+        state = self._get_canvas_state(canvas_id)
+        meta = self.db.get_canvas_row(canvas_id)
+        if meta is None:
+            raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{canvas_id}' not found.")
+        return {
+            "canvasId": canvas_id,
+            "title": meta["title"],
+            "icon": meta.get("icon"),
+            "viewport": copy.deepcopy(state["viewport"]),
+            "cards": copy.deepcopy(state["cards"]),
+            "connections": copy.deepcopy(state["connections"]),
+            "groups": copy.deepcopy(state.get("groups", [])),
+        }
+
+    @staticmethod
+    def _snapshot_document_key(document: dict[str, Any]) -> str:
+        return json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _snapshot_worker(self) -> None:
+        while not self._snapshot_stop.is_set():
+            with self._lock:
+                snapshot_settings = self.settings.get("snapshots", {})
+                enabled = bool(snapshot_settings.get("enabled", True))
+                try:
+                    interval = self.parse_duration(snapshot_settings.get("interval", "1h"))
+                except (TypeError, ValueError):
+                    interval = 3600
+            # Event.wait accepts the full interval. Avoid capping long intervals
+            # at one day, otherwise a configured 2d snapshot would run daily.
+            woke = self._snapshot_wakeup.wait(timeout=max(1, interval))
+            self._snapshot_wakeup.clear()
+            if self._snapshot_stop.is_set():
+                return
+            if woke:
+                continue
+            if not enabled:
+                continue
+            try:
+                rows = self.list_canvases()
+                for row in rows:
+                    try:
+                        self.create_snapshot(row["id"], reason="auto")
+                    except Exception:
+                        # A canvas can disappear between listing and snapshotting.
+                        # Continue with the remaining canvases in this cycle.
+                        continue
+            except Exception:
+                # Snapshotting must never stop the application worker.
+                continue
+
+    def create_snapshot(self, canvas_id: str = ROOT_CANVAS_ID, reason: str = "manual", force: bool = False) -> dict[str, Any]:
+        if reason not in {"manual", "auto", "before-restore"}:
+            raise ApiError(400, "INVALID_SNAPSHOT_REASON", "Snapshot reason is invalid.")
+        with self._lock:
+            if not self.db.has_canvas(canvas_id):
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{canvas_id}' not found.")
+            document = self._snapshot_document(canvas_id)
+            if not force:
+                snapshots = self.db.list_canvas_snapshots(canvas_id)
+                if snapshots:
+                    latest = self.db.get_canvas_snapshot(canvas_id, snapshots[0]["id"])
+                    if latest and self._snapshot_document_key(latest.get("state") or {}) == self._snapshot_document_key(document):
+                        return snapshots[0]
+            snapshot_id = self._next_id("snapshot")
+            created = self.db.create_canvas_snapshot(snapshot_id, canvas_id, document, reason)
+            self._trim_canvas_snapshots(canvas_id)
+            return created
+
+    def _trim_canvas_snapshots(self, canvas_id: str) -> None:
+        snapshot_settings = self.settings.get("snapshots", {})
+        raw_limit = snapshot_settings.get("maxCount", DEFAULT_SNAPSHOT_SETTINGS["maxCount"])
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, (int, float)):
+            limit = DEFAULT_SNAPSHOT_SETTINGS["maxCount"]
+        else:
+            limit = max(1, min(1000, int(raw_limit)))
+        snapshots = self.db.list_canvas_snapshots(canvas_id)
+        for stale in snapshots[limit:]:
+            self.db.delete_canvas_snapshot(canvas_id, stale["id"])
+
+    def list_snapshots(self, canvas_id: str = ROOT_CANVAS_ID) -> list[dict[str, Any]]:
+        with self._lock:
+            if not self.db.has_canvas(canvas_id):
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{canvas_id}' not found.")
+            return self.db.list_canvas_snapshots(canvas_id)
+
+    def get_snapshot(self, canvas_id: str, snapshot_id: str) -> dict[str, Any]:
+        with self._lock:
+            if not self.db.has_canvas(canvas_id):
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{canvas_id}' not found.")
+            snapshot = self.db.get_canvas_snapshot(canvas_id, snapshot_id)
+            if snapshot is None:
+                raise ApiError(404, "SNAPSHOT_NOT_FOUND", f"Snapshot '{snapshot_id}' not found.")
+            return snapshot
+
+    def delete_snapshot(self, canvas_id: str, snapshot_id: str) -> dict[str, Any]:
+        with self._lock:
+            if not self.db.has_canvas(canvas_id):
+                raise ApiError(404, "CANVAS_NOT_FOUND", f"Canvas '{canvas_id}' not found.")
+            if not self.db.delete_canvas_snapshot(canvas_id, snapshot_id):
+                raise ApiError(404, "SNAPSHOT_NOT_FOUND", f"Snapshot '{snapshot_id}' not found.")
+            return {"deleted": True, "id": snapshot_id, "canvasId": canvas_id}
+
+    def restore_snapshot(self, canvas_id: str, snapshot_id: str) -> dict[str, Any]:
+        with self._lock:
+            snapshot = self.get_snapshot(canvas_id, snapshot_id)
+            current = self._snapshot_document(canvas_id)
+            if self._snapshot_document_key(current) != self._snapshot_document_key(snapshot.get("state") or {}):
+                self.create_snapshot(canvas_id, reason="before-restore", force=True)
+            state = snapshot.get("state") or {}
+            restored = self._normalize_state({
+                "viewport": state.get("viewport"),
+                "settings": self.settings,
+                "cards": state.get("cards"),
+                "connections": state.get("connections"),
+                "groups": state.get("groups"),
+            })
+            self._canvases[canvas_id] = restored
+            self.db.save_canvas_data(canvas_id, restored, title=state.get("title"))
+            self.db.update_canvas_meta(
+                canvas_id,
+                title=state.get("title"),
+                icon=_normalize_canvas_icon(state.get("icon")),
+            )
+            self.undo_stacks[canvas_id] = [self._snapshot(canvas_id)]
+            self.redo_stacks[canvas_id] = []
+            self._publish("SNAPSHOT_RESTORED", {"snapshotId": snapshot_id}, canvas_id=canvas_id)
+            return self.get_canvas(canvas_id)
 
     def _commit(
         self,
@@ -2541,10 +2731,36 @@ class GraphStore:
                     if wm not in VALID_WHEEL_MODES:
                         raise ApiError(400, "INVALID_WHEEL_MODE", f"wheelMode must be one of {sorted(VALID_WHEEL_MODES)}.")
                     nv["wheelMode"] = wm
+            if "snapshots" in patch:
+                snapshot_patch = patch["snapshots"]
+                if not isinstance(snapshot_patch, dict):
+                    raise ApiError(400, "INVALID_SNAPSHOT_SETTINGS", "'snapshots' must be an object.")
+                snapshots = settings.setdefault("snapshots", dict(DEFAULT_SNAPSHOT_SETTINGS))
+                if "enabled" in snapshot_patch:
+                    snapshots["enabled"] = bool(snapshot_patch["enabled"])
+                if "interval" in snapshot_patch:
+                    try:
+                        seconds = self.parse_duration(snapshot_patch["interval"])
+                    except (TypeError, ValueError) as exc:
+                        raise ApiError(400, "INVALID_SNAPSHOT_INTERVAL", str(exc)) from exc
+                    if seconds > 365 * 86400:
+                        raise ApiError(400, "INVALID_SNAPSHOT_INTERVAL", "Snapshot interval cannot exceed 365 days.")
+                    snapshots["interval"] = self.format_duration(seconds)
+                if "maxCount" in snapshot_patch:
+                    max_count = snapshot_patch["maxCount"]
+                    if isinstance(max_count, bool) or not isinstance(max_count, (int, float)) or int(max_count) != max_count:
+                        raise ApiError(400, "INVALID_SNAPSHOT_MAX_COUNT", "maxCount must be an integer between 1 and 1000.")
+                    max_count = int(max_count)
+                    if max_count < 1 or max_count > 1000:
+                        raise ApiError(400, "INVALID_SNAPSHOT_MAX_COUNT", "maxCount must be an integer between 1 and 1000.")
+                    snapshots["maxCount"] = max_count
+                    for canvas in self.db.list_canvases():
+                        self._trim_canvas_snapshots(canvas["id"])
 
             for st in self._canvases.values():
                 st["settings"] = self.settings
             self.db.save_settings(self.settings)
+            self._snapshot_wakeup.set()
             self._publish("SETTINGS_CHANGED", settings)
             return copy.deepcopy(settings)
 

@@ -25,6 +25,8 @@ tags:
     description: "Alignment, equal distribution, and automatic graph layout"
   - name: History
     description: Undo and redo history stack
+  - name: Snapshots
+    description: Persistent per-canvas history snapshots and restoration
   - name: Viewport
     description: "Canvas pan, zoom, fit-to-content, and focus"
   - name: Settings
@@ -174,6 +176,130 @@ paths:
                 $ref: "#/components/schemas/OkResponse"
         400:
           $ref: "#/components/responses/BadRequest"
+  "/canvases/{canvasId}/snapshots":
+    parameters:
+      - name: canvasId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - Snapshots
+      operationId: listCanvasSnapshots
+      summary: List persistent snapshots for a canvas
+      responses:
+        200:
+          description: Snapshot summaries ordered newest first
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/OkResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SnapshotSummary"
+        404:
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags:
+        - Snapshots
+      operationId: createCanvasSnapshot
+      summary: Create a persistent snapshot of the current canvas
+      requestBody:
+        required: false
+        content:
+          "application/json":
+            schema:
+              $ref: "#/components/schemas/SnapshotCreateInput"
+      responses:
+        201:
+          description: Snapshot created
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/OkResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SnapshotSummary"
+        404:
+          $ref: "#/components/responses/NotFound"
+  "/canvases/{canvasId}/snapshots/{snapshotId}":
+    parameters:
+      - name: canvasId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: snapshotId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - Snapshots
+      operationId: getCanvasSnapshot
+      summary: Get a snapshot including its historical canvas state
+      responses:
+        200:
+          description: Snapshot detail
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/OkResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SnapshotDetail"
+        404:
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags:
+        - Snapshots
+      operationId: deleteCanvasSnapshot
+      summary: Delete a persistent canvas snapshot
+      responses:
+        200:
+          description: Snapshot deleted
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        404:
+          $ref: "#/components/responses/NotFound"
+  "/canvases/{canvasId}/snapshots/{snapshotId}/restore":
+    parameters:
+      - name: canvasId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: snapshotId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - Snapshots
+      operationId: restoreCanvasSnapshot
+      summary: Restore a canvas from a persistent snapshot
+      responses:
+        200:
+          description: Canvas restored
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        404:
+          $ref: "#/components/responses/NotFound"
   "/cards":
     get:
       tags:
@@ -988,6 +1114,8 @@ components:
             type: string
         minimap:
           $ref: "#/components/schemas/MinimapSettings"
+        snapshots:
+          $ref: "#/components/schemas/SnapshotSettings"
     SettingsPatch:
       type: object
       properties:
@@ -1003,6 +1131,68 @@ components:
             type: string
         minimap:
           $ref: "#/components/schemas/MinimapSettings"
+        snapshots:
+          $ref: "#/components/schemas/SnapshotSettings"
+    SnapshotSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        interval:
+          type: string
+          pattern: "^\\s*\\d+\\s*[dhms](?:\\s*\\d+\\s*[dhms])*\\s*$"
+          description: Compact duration such as 1h, 1d, or 1d1h. Maximum 365 days.
+        maxCount:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+          description: Maximum number of snapshots retained per canvas. Older snapshots are deleted first.
+    SnapshotCreateInput:
+      type: object
+      properties:
+        reason:
+          type: string
+          enum:
+            - manual
+            - auto
+            - before-restore
+    SnapshotSummary:
+      type: object
+      required:
+        - id
+        - canvasId
+        - createdAt
+        - reason
+      properties:
+        id:
+          type: string
+        canvasId:
+          type: string
+        createdAt:
+          type: integer
+          format: int64
+        reason:
+          type: string
+          enum:
+            - manual
+            - auto
+            - before-restore
+        cardCount:
+          type: integer
+        connectionCount:
+          type: integer
+        groupCount:
+          type: integer
+    SnapshotDetail:
+      allOf:
+        - $ref: "#/components/schemas/SnapshotSummary"
+        - type: object
+          required:
+            - state
+          properties:
+            state:
+              $ref: "#/components/schemas/GraphState"
     Capsule:
       type: object
       required:

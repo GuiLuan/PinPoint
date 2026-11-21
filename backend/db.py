@@ -126,6 +126,17 @@ class SQLiteDatabase:
                     value_json TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS canvas_snapshots (
+                    id TEXT PRIMARY KEY,
+                    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+                    created_at INTEGER NOT NULL,
+                    reason TEXT NOT NULL DEFAULT 'manual',
+                    state_json TEXT NOT NULL,
+                    card_count INTEGER NOT NULL DEFAULT 0,
+                    connection_count INTEGER NOT NULL DEFAULT 0,
+                    group_count INTEGER NOT NULL DEFAULT 0
+                );
+
                 CREATE TABLE IF NOT EXISTS library_items (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -140,6 +151,7 @@ class SQLiteDatabase:
                 CREATE INDEX IF NOT EXISTS idx_groups_canvas ON groups(canvas_id, sort_order);
                 CREATE INDEX IF NOT EXISTS idx_conns_canvas ON connections(canvas_id, sort_order);
                 CREATE INDEX IF NOT EXISTS idx_canvases_parent ON canvases(parent_canvas_id);
+                CREATE INDEX IF NOT EXISTS idx_snapshots_canvas ON canvas_snapshots(canvas_id, created_at DESC);
                 """
             )
             cols = {
@@ -211,6 +223,74 @@ class SQLiteDatabase:
                 "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
                 (json.dumps(settings, ensure_ascii=False),),
             )
+
+    # ------------------------------------------------------------------
+    # Persistent canvas snapshots
+    # ------------------------------------------------------------------
+
+    def create_canvas_snapshot(self, snapshot_id: str, canvas_id: str, state: dict[str, Any], reason: str) -> dict[str, Any]:
+        created_at = int(time.time() * 1000)
+        state_json = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        cards = state.get("cards") if isinstance(state.get("cards"), list) else []
+        connections = state.get("connections") if isinstance(state.get("connections"), list) else []
+        groups = state.get("groups") if isinstance(state.get("groups"), list) else []
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO canvas_snapshots "
+                "(id, canvas_id, created_at, reason, state_json, card_count, connection_count, group_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (snapshot_id, canvas_id, created_at, reason, state_json, len(cards), len(connections), len(groups)),
+            )
+        return {
+            "id": snapshot_id,
+            "canvasId": canvas_id,
+            "createdAt": created_at,
+            "reason": reason,
+            "cardCount": len(cards),
+            "connectionCount": len(connections),
+            "groupCount": len(groups),
+        }
+
+    def list_canvas_snapshots(self, canvas_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT id, canvas_id, created_at, reason, card_count, connection_count, group_count "
+            "FROM canvas_snapshots WHERE canvas_id = ? ORDER BY created_at DESC, rowid DESC",
+            (canvas_id,),
+        ).fetchall()
+        return [
+            {
+                "id": r["id"], "canvasId": r["canvas_id"], "createdAt": int(r["created_at"]),
+                "reason": r["reason"], "cardCount": int(r["card_count"]),
+                "connectionCount": int(r["connection_count"]), "groupCount": int(r["group_count"]),
+            }
+            for r in rows
+        ]
+
+    def get_canvas_snapshot(self, canvas_id: str, snapshot_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT id, canvas_id, created_at, reason, state_json, card_count, connection_count, group_count "
+            "FROM canvas_snapshots WHERE canvas_id = ? AND id = ?",
+            (canvas_id, snapshot_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            state = json.loads(row["state_json"])
+        except Exception:
+            state = {}
+        return {
+            "id": row["id"], "canvasId": row["canvas_id"], "createdAt": int(row["created_at"]),
+            "reason": row["reason"], "state": state,
+            "cardCount": int(row["card_count"]), "connectionCount": int(row["connection_count"]),
+            "groupCount": int(row["group_count"]),
+        }
+
+    def delete_canvas_snapshot(self, canvas_id: str, snapshot_id: str) -> bool:
+        with self.conn:
+            cur = self.conn.execute(
+                "DELETE FROM canvas_snapshots WHERE canvas_id = ? AND id = ?", (canvas_id, snapshot_id)
+            )
+        return cur.rowcount > 0
 
     # ------------------------------------------------------------------
     # Canvases & Hierarchy

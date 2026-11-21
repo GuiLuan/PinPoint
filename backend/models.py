@@ -45,6 +45,7 @@ VALID_LIBRARY_POSITIONS = {"left", "right"}
 VALID_LIBRARY_LAYOUTS = {"grid", "list"}
 VALID_SAVE_MODES = {"auto", "manual"}
 DEFAULT_SAVE_SETTINGS = {"mode": "auto", "intervalSec": 1}
+DEFAULT_SNAPSHOT_SETTINGS = {"enabled": True, "interval": "1h", "maxCount": 100}
 VALID_WEBPAGE_LOAD_MODES = {"smart", "lazy", "eager"}
 DEFAULT_MEDIA_SETTINGS = {"webpageLoadMode": "smart"}
 VALID_WHEEL_MODES = {"auto", "trackpad", "mouse"}

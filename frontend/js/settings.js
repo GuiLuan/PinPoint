@@ -3,6 +3,14 @@ import { hexToRgba } from './nodes.js';
 import { SHORTCUT_DEFINITIONS, formatShortcutDisplay, formatShortcutFromEvent } from './shortcuts.js';
 import { formatBytes } from './media.js';
 
+function parseSnapshotIntervalSeconds(value) {
+  const text = String(value || '').trim().toLowerCase();
+  const matches = [...text.matchAll(/(\d+)\s*([dhms])/g)];
+  if (!matches.length || matches.map(match => `${match[1]}${match[2]}`).join('') !== text.replace(/\s+/g, '')) return 0;
+  const units = { d: 86400, h: 3600, m: 60, s: 1 };
+  return matches.reduce((total, match) => total + Number(match[1]) * units[match[2]], 0);
+}
+
 class SettingsManager {
   constructor() {
     this.overlayEl = null;
@@ -463,6 +471,40 @@ class SettingsManager {
     const panel = this.overlayEl.querySelector('#tab-panel-save');
     if (!panel) return;
 
+    const snapshotToggle = panel.querySelector('#row-toggle-snapshots');
+    snapshotToggle?.addEventListener('click', (e) => {
+      e.preventDefault();
+      const ss = store.getSnapshotSettings();
+      store.setSnapshotSettings({ enabled: !ss.enabled });
+      this.syncSnapshotSettings();
+    });
+    const snapshotInput = panel.querySelector('#snapshot-interval-input');
+    snapshotInput?.addEventListener('change', () => {
+      const value = snapshotInput.value.trim();
+      const seconds = parseSnapshotIntervalSeconds(value);
+      if (!seconds || seconds > 365 * 86400) {
+        snapshotInput.setCustomValidity('请输入不超过 365 天的时间间隔，例如 1d1h、1h 或 30m');
+        snapshotInput.reportValidity();
+        return;
+      }
+      snapshotInput.setCustomValidity('');
+      store.setSnapshotSettings({ interval: value });
+      this.syncSnapshotSettings();
+    });
+    const snapshotCountInput = panel.querySelector('#snapshot-max-count-input');
+    snapshotCountInput?.addEventListener('change', () => {
+      const value = Number(snapshotCountInput.value);
+      if (!Number.isInteger(value) || value < 1 || value > 1000) {
+        snapshotCountInput.setCustomValidity('请输入 1 到 1000 之间的整数');
+        snapshotCountInput.reportValidity();
+        return;
+      }
+      snapshotCountInput.setCustomValidity('');
+      store.setSnapshotSettings({ maxCount: value });
+      this.syncSnapshotSettings();
+    });
+    panel.querySelector('#btn-open-snapshots')?.addEventListener('click', () => window.__snapshots?.open?.());
+
     panel.addEventListener('click', (e) => {
       const modeCard = e.target.closest('.save-mode-card');
       if (modeCard) {
@@ -595,6 +637,18 @@ class SettingsManager {
     if (valEl) valEl.textContent = `${sv.intervalSec} 秒`;
 
     this.refreshAssetStats();
+    this.syncSnapshotSettings();
+  }
+
+  syncSnapshotSettings() {
+    if (!this.overlayEl) return;
+    const ss = store.getSnapshotSettings();
+    const toggle = this.overlayEl.querySelector('#settings-toggle-snapshots');
+    toggle?.classList.toggle('is-active', !!ss.enabled);
+    const input = this.overlayEl.querySelector('#snapshot-interval-input');
+    if (input && document.activeElement !== input) input.value = ss.interval || '1h';
+    const countInput = this.overlayEl.querySelector('#snapshot-max-count-input');
+    if (countInput && document.activeElement !== countInput) countInput.value = String(ss.maxCount || 100);
   }
 
   bindToastListeners() {
