@@ -1,11 +1,13 @@
 import { store } from './state.js';
 import { canvas } from './canvas.js';
+import { createSearchMatcher } from './searchMatch.mjs';
 
 const INCLUDE_CONTENT_KEY = 'pinpoint.search.includeContent';
 const BLOCK_TAGS = 'address, article, blockquote, dd, div, dt, h1, h2, h3, h4, h5, h6, li, p, pre, section, td, th, tr';
 const SEARCH_UPDATE_EVENTS = new Set([
-  'CARD_ADDED', 'CARD_UPDATED', 'CARD_REMOVED', 'STATE_RESTORED', 'STATE_RESET',
-  'CANVAS_SWITCHED', 'CANVAS_TREE_UPDATED', 'FOCUS_MODE_ENTERED', 'FOCUS_MODE_EXITED', 'FOCUS_MODE_CANCELLED'
+  'CARD_ADDED', 'CARD_UPDATED', 'CARD_REMOVED', 'GROUP_ADDED', 'GROUP_UPDATED', 'GROUP_REMOVED',
+  'STATE_RESTORED', 'STATE_RESET', 'CANVAS_SWITCHED', 'CANVAS_TREE_UPDATED',
+  'FOCUS_MODE_ENTERED', 'FOCUS_MODE_EXITED', 'FOCUS_MODE_CANCELLED'
 ]);
 
 function readContentText(html, template) {
@@ -20,22 +22,30 @@ function readContentText(html, template) {
   return content.textContent.replace(/\s+/g, ' ').trim();
 }
 
-function appendHighlightedText(parent, text, matcher) {
+function appendHighlightedText(parent, text, ranges) {
   let cursor = 0;
-  for (const match of text.matchAll(matcher)) {
-    parent.append(text.slice(cursor, match.index));
+  for (const [start, end] of ranges) {
+    parent.append(text.slice(cursor, start));
     const mark = document.createElement('mark');
-    mark.textContent = match[0];
+    mark.textContent = text.slice(start, end);
     parent.append(mark);
-    cursor = match.index + match[0].length;
+    cursor = end;
   }
   parent.append(text.slice(cursor));
 }
 
-function makeSnippet(text, match) {
-  const start = Math.max(0, match.index - 48);
-  const end = Math.min(text.length, match.index + match[0].length + 102);
-  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+function makeSnippet(text, ranges) {
+  if (!ranges.length) return { text: '', ranges: [] };
+  const start = Math.max(0, ranges[0][0] - 48);
+  const end = Math.min(text.length, Math.max(start + 180, ranges[0][1] + 48));
+  const prefix = start > 0 ? '…' : '';
+  return {
+    text: `${prefix}${text.slice(start, end)}${end < text.length ? '…' : ''}`,
+    ranges: ranges.filter(range => range[0] < end && range[1] > start).map(range => [
+      Math.max(start, range[0]) - start + prefix.length,
+      Math.min(end, range[1]) - start + prefix.length
+    ])
+  };
 }
 
 class SearchManager {
@@ -94,7 +104,7 @@ class SearchManager {
   }
 
   updatePlaceholder() {
-    this.inputEl.placeholder = this.includeContent ? '搜索节点标题或正文' : '搜索节点标题';
+    this.inputEl.placeholder = this.includeContent ? '搜索节点标题、组名或正文' : '搜索节点标题或组名';
   }
 
   isOpen() {
@@ -172,29 +182,44 @@ class SearchManager {
       if (!remote) this.remoteSnapshot = null;
     }
 
-    const matcher = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'igu');
+    const matchText = createSearchMatcher(query);
     const template = this.includeContent ? document.createElement('template') : null;
     const { entries, incomplete } = this.collectCanvases(isGlobal, remote);
     for (const entry of entries) {
       for (const card of entry.cards) {
         const title = card.title || (card.kind === 'subcanvas' ? '未命名子画布' : '未命名节点');
         const content = template ? readContentText(card.contentHtml, template) : '';
-        const match = content.matchAll(matcher).next().value;
-        matcher.lastIndex = 0;
-        const titleMatch = matcher.test(title);
-        matcher.lastIndex = 0;
-        if (!titleMatch && !match) continue;
+        const match = matchText(title, content);
+        if (!match) continue;
+        const snippet = makeSnippet(content, match.contentRanges);
         this.results.push({
           canvasId: entry.id,
           canvasTitle: entry.title,
           cardId: card.id,
           title,
-          snippet: match ? makeSnippet(content, match) : ''
+          titleRanges: match.titleRanges,
+          snippet: snippet.text,
+          snippetRanges: snippet.ranges,
+          score: match.score
         });
-        matcher.lastIndex = 0;
+      }
+      for (const group of entry.groups || []) {
+        const title = group.title || '未命名组';
+        const match = matchText(title);
+        if (!match) continue;
+        this.results.push({
+          canvasId: entry.id,
+          canvasTitle: entry.title,
+          groupId: group.id,
+          title,
+          titleRanges: match.titleRanges,
+          snippet: '',
+          score: match.score
+        });
       }
     }
-    this.renderResults(matcher, incomplete);
+    this.results.sort((a, b) => a.score - b.score);
+    this.renderResults(incomplete);
   }
 
   async loadRemoteSnapshot() {
@@ -216,7 +241,10 @@ class SearchManager {
       title: store.activeCanvasTitle,
       cards: store.focusSession
         ? [...store.state.cards, ...store.focusSession.outsideCards]
-        : store.state.cards
+        : store.state.cards,
+      groups: store.focusSession
+        ? [...store.state.groups, ...store.focusSession.outsideGroups, ...store.focusSession.partialGroups]
+        : store.state.groups || []
     };
     if (!isGlobal) return { entries: [active], incomplete: false };
 
@@ -235,7 +263,12 @@ class SearchManager {
       const local = cached && (cached.dirty || store.dirtyCanvasIds.has(id));
       const data = id === activeId ? active : (local ? cached : remote?.get(id) || cached);
       if (data) {
-        if (id !== activeId) entries.push({ id, title: title || data.title, cards: data.cards });
+        if (id !== activeId) entries.push({
+          id,
+          title: title || data.title,
+          cards: data.cards,
+          groups: data.groups || []
+        });
         for (const card of data.cards) {
           if (card.kind === 'subcanvas' && card.subcanvasId) visit(card.subcanvasId, card.title);
         }
@@ -262,7 +295,7 @@ class SearchManager {
     }
   }
 
-  renderResults(matcher, incomplete) {
+  renderResults(incomplete) {
     const results = document.createDocumentFragment();
     for (const [index, result] of this.results.entries()) {
       const item = document.createElement('button');
@@ -274,7 +307,7 @@ class SearchManager {
       const title = document.createElement('span');
       title.className = 'search-result-title';
       title.title = result.title;
-      appendHighlightedText(title, result.title, matcher);
+      appendHighlightedText(title, result.title, result.titleRanges);
       item.append(title);
 
       const meta = document.createElement('span');
@@ -286,7 +319,7 @@ class SearchManager {
       if (result.snippet) {
         const content = document.createElement('span');
         content.className = 'search-result-content';
-        appendHighlightedText(content, result.snippet, matcher);
+        appendHighlightedText(content, result.snippet, result.snippetRanges);
         item.append(content);
       }
       results.append(item);
@@ -294,7 +327,7 @@ class SearchManager {
     this.resultsEl.replaceChildren(results);
     this.statusEl.textContent = incomplete
       ? '部分画布未加载，搜索结果可能不完整'
-      : (this.results.length ? '' : '没有找到匹配节点');
+      : (this.results.length ? '' : '没有找到匹配节点或组');
   }
 
   async openResult(index) {
@@ -308,6 +341,36 @@ class SearchManager {
         if (this.isOpen()) this.refresh();
         return;
       }
+      if (result.groupId) {
+        const group = store.state.groups?.find(item => item.id === result.groupId);
+        if (!group) {
+          store.emitToast(store.isFocusMode ? '请先退出专注模式，再定位此组' : '该组已不存在', 'warning');
+          if (!store.isFocusMode) {
+            this.remoteSnapshot = null;
+            this.refresh();
+          }
+          return;
+        }
+
+        const nodes = window.__nodes;
+        const bounds = nodes?.calcGroupBounds(group);
+        if (!bounds) return;
+        if (nodes) {
+          nodes.selectedCardIds.clear();
+          nodes.selectedGroupIds = new Set([group.id]);
+          nodes.updateSelectionVisuals();
+          nodes.updateAlignmentBar();
+        }
+        const zoom = store.state.viewport.zoom || 1;
+        canvas.animateToViewport({
+          x: canvas.viewportEl.clientWidth / 2 - (bounds.x + bounds.width / 2) * zoom,
+          y: canvas.viewportEl.clientHeight / 2 - (bounds.y + bounds.height / 2) * zoom,
+          zoom
+        });
+        this.close({ restoreFocus: false });
+        return;
+      }
+
       const card = store.state.cards.find(item => item.id === result.cardId);
       if (!card) {
         store.emitToast(store.isFocusMode ? '请先退出专注模式，再定位此节点' : '该节点已不存在', 'warning');
